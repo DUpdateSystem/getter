@@ -1,3 +1,0 @@
-{:aliases {:run {:exec-fn getter.runner/run}},
- :deps {version-clj/version-clj {:mvn/version "2.0.2"}},
- :paths ["src"]}
