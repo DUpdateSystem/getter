@@ -1,0 +1,377 @@
+[
+  {
+    "version_number": "0.13-beta.4",
+    "changelog": "Changelog:\r\nAdd Ukrainian Language\r\n更新日志：\r\n添加乌克兰语",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.13-beta.4.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-beta.4/UpgradeAll_0.13-beta.4.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.13-beta.3",
+    "changelog": "Changelog:\r\n1. Add about page\r\n2. Speed ​​up loading efficiency\r\n3. Add new update getter API for hub class\r\n\r\n更新日志：\r\n1. 增加了“关于”界面\r\n2. 加快了加载效率\r\n3. 为软件源抽象层增加了新的更新获取 API",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.13-beta.3.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-beta.3/UpgradeAll_0.13-beta.3.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.13-beta.2",
+    "changelog": "Changelog:\r\nFix F-Droid support\r\n\r\n更新日志：\r\n修复 F-Droid 的支持",
+    "assets": [
+      {
+        "file_name": "output-metadata.json",
+        "file_type": "application/json",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-beta.2/output-metadata.json"
+      },
+      {
+        "file_name": "UpgradeAll_0.13-beta.2.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-beta.2/UpgradeAll_0.13-beta.2.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.13-beta.1",
+    "changelog": "Changelog:\r\nFix crash due to NullPointerException\r\n\r\n更新日志：\r\n修复可能导致崩溃的 NullPointerException 错误",
+    "assets": [
+      {
+        "file_name": "mapping.txt",
+        "file_type": "text/plain",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-beta.1/mapping.txt"
+      },
+      {
+        "file_name": "UpgradeAll_0.13-beta.1.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-beta.1/UpgradeAll_0.13-beta.1.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.13-beta",
+    "changelog": "Changelog:\r\nFix bug\r\n\r\n更新日志：\r\n修复漏洞",
+    "assets": [
+      {
+        "file_name": "mapping.txt",
+        "file_type": "text/plain",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-beta/mapping.txt"
+      },
+      {
+        "file_name": "UpgradeAll_0.13-alpha.5.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-beta/UpgradeAll_0.13-alpha.5.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.13-alpha.5",
+    "changelog": "Changelog:\r\n1. Improve Google Play support\r\n2. Fix cloud config parse crash\r\n3. Fix backup for database\r\n\r\n更新日志：\r\n1. 优化 Google Play 的支持\r\n2. 修复云配置解析崩溃\r\n3. 修复数据库备份为空",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.13-alpha.5.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-alpha.5/UpgradeAll_0.13-alpha.5.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.13-alpha.4",
+    "changelog": "更新日志：\r\n修复了错误的混淆规则导致的 Google Play 源不可用\r\n\r\nChangelog:\r\nFix wrong proguard-rules of Google Play API",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.13-alpha.4.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-alpha.4/UpgradeAll_0.13-alpha.4.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.13-alpha.3",
+    "changelog": "Changelog:\r\nAdd Google Play support\r\n\r\n更新日志：\r\n添加 Google Play 的支持",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.13-alpha.3.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-alpha.3/UpgradeAll_0.13-alpha.3.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.13-alpha.2",
+    "changelog": "Changelog\r\nFix bug",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.13-alpha.2.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-alpha.2/UpgradeAll_0.13-alpha.2.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.13-alpha.1",
+    "changelog": "If you wish to join develop, please contact us\r\nAnd white paper of the APP will be published in a few days\r\n如果你希望加入开发，请联系我们\r\n几天后将发布 UPA 白皮书\r\n\r\nChangelog:\r\n1. Drop update service dependent, and move some function to client. (due to lack of developers and server maintainers)\r\n2. Add local disk cache\r\n3. Change downloader library(although still very unstable)\r\n\r\n更新日志：\r\n1. 移除了对更新服务器的强制依赖，把一部分功能移植到了客户端上\r\n2. 添加了本地持久化缓存的支持\r\n3. 更换了下载库（~~尽管依然是垃圾，未来核心可能考虑用 rust 重构~~）",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.13-alpha.1.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-alpha.1/UpgradeAll_0.13-alpha.1.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.12-rc.2",
+    "changelog": "1. Update dependencies\r\n2. Add German language\r\n3. Optimize discover dialog ui\r\n\r\n**Full Changelog**: https://github.com/DUpdateSystem/UpgradeAll/compare/0.12-rc.1...0.12-rc.2",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.12-rc.2_9e7540c7a1-signed.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.12-rc.2/UpgradeAll_0.12-rc.2_9e7540c7a1-signed.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.12-rc.1",
+    "changelog": "1. Update dependencies\r\n2. Add Portuguese(Brazilian) Translation\r\n3. Update Taiwan Traditional Translation",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.12-rc.1.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.12-rc.1/UpgradeAll_0.12-rc.1.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.12-rc",
+    "changelog": "1. 修复春节彩蛋\r\n2. 同步台湾翻译\r\n3. 修复一处空值导致的崩溃\r\n4. 更新依赖",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.12-rc.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.12-rc/UpgradeAll_0.12-rc.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.11-rc.3",
+    "changelog": "更新日志：\r\n1. 修复自定义 Git 仓库的设置功能\r\n2. 更新依赖",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.11-rc.3.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.11-rc.3/UpgradeAll_0.11-rc.3.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.11-rc.1",
+    "changelog": "Fix an emergency bug",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.11-rc.1.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.11-rc.1/UpgradeAll_0.11-rc.1.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.11-rc.0",
+    "changelog": "1. 添加全部更新功能\r\n2. 修复恢复备份失败\r\n***\r\n1. Add Upgrade All Function\r\n2. Fix restore backup",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.11-rc.0.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.11/UpgradeAll_0.11-rc.0.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.10.1",
+    "changelog": "1. 修复恢复备份功能\r\n2. 添加下载地址替换功能\r\n3. 优化 UI\r\n4. 更新中文台湾翻译\r\n5. 修复若干 bug\r\n***\r\n1. Fix restore / backup\r\n2. add download URL replace\r\n3. Optimize UI\r\n4. Update zh-rTW\r\n5. Fix bugs",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.10.1.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.10.1/UpgradeAll_0.10.1.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.10.1-beta.1",
+    "changelog": "1. 修复备份功能（备份文件与之前不兼容）\r\n2. 优化下载逻辑\r\n***\r\n1. Fix backup (forward compatibility broken)\r\n2. Optimize downloader code",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.10.1-beta.1.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.10.1-beta.1/UpgradeAll_0.10.1-beta.1.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.10.0-beta",
+    "changelog": "1. 修复云配置无法下载的问题\r\n2. 修复下载功能\r\n3. 修复安装功能\r\n4. 优化下载提示信息\r\n***\r\n1. Fix cloud config can not download\r\n2. Fix download\r\n3. Fix install function\r\n4. Better download notification",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.10.0-beta.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.10.0-beta/UpgradeAll_0.10.0-beta.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.1.5.1-rc.6",
+    "changelog": "1. 修复应用市场界面的 UI 显示错误\r\n2. 修复下载地址获取失败导致的崩溃",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.1.5.1-rc.6.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.1.5.1-rc.6/UpgradeAll_0.1.5.1-rc.6.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.1.5.1-rc.5",
+    "changelog": "1. 修复下载空值导致的崩溃\r\n2. 修复数据解析失败后的崩溃\r\n3. 修复云规则获取失败导致的崩溃",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.1.5.1-rc.5.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.1.5.1-rc.5/UpgradeAll_0.1.5.1-rc.5.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.10.0-alpha.4",
+    "changelog": "1. 修复数据解析失败后的崩溃\r\n2. 支持 Magisk 模块安装",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.10.0-alpha.4.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.10.0-alpha.4/UpgradeAll_0.10.0-alpha.4.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.1.5.1-rc.2",
+    "changelog": "1. 修复下载崩溃的问题",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.1.5.1-rc.2.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.1.5.1-rc.2/UpgradeAll_0.1.5.1-rc.2.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.1.5.1-rc.1",
+    "changelog": "1. 修复下载崩溃的问题",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.1.5.1-rc.1.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.1.5.1-rc.1/UpgradeAll_0.1.5.1-rc.1.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.10.0-alpha.2",
+    "changelog": "1. 修复下载崩溃的问题\r\n2. 修复无法编辑应用项的问题",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.10.0-alpha.2.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.10.0-alpha.2/UpgradeAll_0.10.0-alpha.2.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.1.5.1-rc",
+    "changelog": "1. 适配服务端 HTTP API\r\n2. 添加台湾翻译（感谢 @cracky5322 ）",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.1.5.1-rc.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.1.5.1-rc/UpgradeAll_0.1.5.1-rc.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.10.0-alpha",
+    "changelog": "1. 适配服务端 HTTP REST API",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.10.0-alpha.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.10.0-alpha/UpgradeAll_0.10.0-alpha.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.10.0-alpha.1",
+    "changelog": "1. 修复下载崩溃的问题\r\n2. 延长缓存时间到 20 分钟",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.10.0-alpha.1.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.10.0-alpha.1/UpgradeAll_0.10.0-alpha.1.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.9.11-rc.1",
+    "changelog": "1. 修复下载云配置时长时间卡顿的问题\r\n2. 修复更新现有的云配置导致暂时出现相同软件项的问题\r\n3. 添加长按主页按钮强制重新刷新的功能\r\n4. 优化检查到应用更新后的自动刷新机制",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.9.11-rc.1.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.9.11-rc.1/UpgradeAll_0.9.11-rc.1.apk"
+      }
+    ],
+    "extra": null
+  },
+  {
+    "version_number": "0.9.11-rc",
+    "changelog": "1. 尝试解决检查更新时偶发卡死/检查失败的问题\r\n2. 修改 Release 接口为非阻塞接口\r\n3. 修改设置后会自动重载 gRPC 设置\r\n4. 减少不必要的 gRPC 连接\r\n5. 提升 SDK 到 31",
+    "assets": [
+      {
+        "file_name": "UpgradeAll_0.9.11-rc.apk",
+        "file_type": "application/vnd.android.package-archive",
+        "download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.9.11-rc/UpgradeAll_0.9.11-rc.apk"
+      }
+    ],
+    "extra": null
+  }
+]
