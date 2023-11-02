@@ -10,6 +10,10 @@ pub struct GithubProvider {
 }
 
 impl GithubProvider {
+    pub fn new(url_proxy_map: HashMap<String, String>) -> GithubProvider {
+        GithubProvider { url_proxy_map }
+    }
+
     fn replace_proxy_url(&self, url: &str) -> String {
         let mut url = url.to_string();
         for (url_prefix, proxy_url) in &self.url_proxy_map {
