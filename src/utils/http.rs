@@ -1,5 +1,7 @@
 use bytes::Bytes;
+use hyper::client::HttpConnector;
 use hyper::{Client, StatusCode, Uri};
+use hyper_rustls::HttpsConnector;
 use std::{collections::HashMap, fmt};
 
 // Custom http response Error
@@ -101,16 +103,33 @@ pub async fn https_head(
     _https_get(url, header_map, true).await
 }
 
+fn https_config() -> HttpsConnector<HttpConnector> {
+    #[cfg(feature = "webpki-roots")]
+    {
+        return hyper_rustls::HttpsConnectorBuilder::new()
+            .with_webpki_roots()
+            .https_only()
+            .enable_http1()
+            .enable_http2()
+            .build();
+    }
+    #[cfg(not(feature = "webpki-roots"))]
+    {
+        return hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_only()
+            .enable_http1()
+            .enable_http2()
+            .build();
+    }
+}
+
 async fn _https_get(
     url: Uri,
     header_map: &HashMap<String, String>,
     only_status: bool,
 ) -> Result<ResponseData, Box<dyn std::error::Error + Send + Sync>> {
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()
-        .https_only()
-        .enable_http1()
-        .build();
+    let https = https_config();
 
     let client: Client<_, hyper::Body> = Client::builder().build(https);
 

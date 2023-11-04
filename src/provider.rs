@@ -19,6 +19,13 @@ static PROVIDER_MAP: Lazy<Arc<HashMap<&'static str, Arc<dyn BaseProvider + Send 
         Arc::new(m)
     });
 
+pub fn get_provider_list() -> Vec<String> {
+    PROVIDER_MAP
+        .keys()
+        .map(|k| k.to_string())
+        .collect::<Vec<String>>()
+}
+
 fn get_provider(uuid: &str) -> Option<&Arc<dyn BaseProvider + Send + Sync>> {
     PROVIDER_MAP.get(uuid)
 }
