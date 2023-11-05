@@ -11,7 +11,7 @@ pub struct GithubProvider {
 
 impl GithubProvider {
     pub fn new(url_proxy_map: HashMap<String, String>) -> GithubProvider {
-        GithubProvider { url_proxy_map }
+        GithubProvider {url_proxy_map}
     }
 
     fn replace_proxy_url(&self, url: &str) -> String {
@@ -51,7 +51,7 @@ impl BaseProvider for GithubProvider {
             };
             if let Ok(rsp) = get(parsed_uri, &header_map).await {
                 if let Ok(data) = serde_json::from_slice::<Vec<Value>>(&rsp.body.unwrap()) {
-                    return Some(
+                    let mut release_list =
                         data.iter()
                             .filter_map(|json| {
                                 let assets_data = match json.get("assets") {
@@ -85,8 +85,9 @@ impl BaseProvider for GithubProvider {
                                     extra: None,
                                 })
                             })
-                            .collect(),
-                    );
+                            .collect::<Vec<ReleaseData>>();
+                    release_list.reverse();
+                    return Some(release_list);
                 }
             }
         }
