@@ -5,7 +5,7 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use self::base_provider::BaseProvider;
+use self::base_provider::*;
 use self::github::GithubProvider;
 use crate::data::release::ReleaseData;
 
@@ -32,10 +32,10 @@ fn get_provider(uuid: &str) -> Option<&Arc<dyn BaseProvider + Send + Sync>> {
 
 pub async fn check_app_available(
     uuid: &str,
-    id_map: &HashMap<String, String>,
+    id_map: &HashMap<&str, &str>,
 ) -> Option<bool> {
     if let Some(provider) = get_provider(uuid) {
-        provider.check_app_available(id_map).await
+        provider.check_app_available(&FIn::new(id_map)).await.data
     } else {
         None
     }
@@ -43,10 +43,10 @@ pub async fn check_app_available(
 
 pub async fn get_latest_release(
     uuid: &str,
-    id_map: &HashMap<String, String>,
+    id_map: &HashMap<&str, &str>,
 ) -> Option<ReleaseData> {
     if let Some(provider) = get_provider(uuid) {
-        provider.get_latest_release(id_map).await
+        provider.get_latest_release(&FIn::new(id_map)).await.data
     } else {
         None
     }
@@ -54,10 +54,10 @@ pub async fn get_latest_release(
 
 pub async fn get_releases(
     uuid: &str,
-    id_map: &HashMap<String, String>,
+    id_map: &HashMap<&str, &str>,
 ) -> Option<Vec<ReleaseData>> {
     if let Some(provider) = get_provider(uuid) {
-        provider.get_releases(id_map).await
+        provider.get_releases(&FIn::new(id_map)).await.data
     } else {
         None
     }
