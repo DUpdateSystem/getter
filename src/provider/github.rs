@@ -28,7 +28,7 @@ static GITHUB_API_URL: &str = "https://api.github.com";
 
 #[async_trait]
 impl BaseProvider for GithubProvider {
-    fn get_cache_request_key(&self, function_type: FunctionType, id_map: IdMap) -> Vec<String> {
+    fn get_cache_request_key(&self, function_type: &FunctionType, id_map: &IdMap) -> Vec<String> {
         match function_type {
             FunctionType::CheckAppAvailable => vec![],
             FunctionType::GetLatestRelease | FunctionType::GetReleases => vec![format!(
@@ -53,14 +53,13 @@ impl BaseProvider for GithubProvider {
 
     async fn get_releases(&self, fin: &FIn) -> FOut<Vec<ReleaseData>> {
         let id_map = fin.id_map;
-        let cache_map = fin.cache_map;
         let url = format!(
             "https://api.github.com/repos/{}/{}/releases",
             id_map["owner"], id_map["repo"]
         );
         let url = self.replace_proxy_url(&url);
         let mut fout = FOut::new_empty();
-        let cache_body = cache_map.get(&url);
+        let cache_body = fin.get_cache(&url);
         let mut rsp_body = None;
         if cache_body.is_none() {
             if let Ok(parsed_url) = url.parse() {
@@ -87,7 +86,7 @@ impl BaseProvider for GithubProvider {
         }
 
         if let Ok(data) = serde_json::from_slice::<Vec<Value>>(body) {
-            let mut release_list = data
+            let release_list = data
                 .iter()
                 .filter_map(|json| {
                     let assets_data = match json.get("assets") {
@@ -118,12 +117,11 @@ impl BaseProvider for GithubProvider {
                     })
                 })
                 .collect::<Vec<ReleaseData>>();
-            release_list.reverse();
             fout = fout.set_data(release_list);
         };
 
         if let Some(content) = rsp_body {
-            fout.set_cached_map(CacheMap::new().set(url, content))
+            fout.set_cached_map(HashMap::from([(url, content)]))
         } else {
             fout
         }
@@ -147,12 +145,7 @@ mod tests {
             .create_async()
             .await;
 
-        let id_map = {
-            let mut map = HashMap::new();
-            map.insert("owner".to_string(), "DUpdateSystem".to_string());
-            map.insert("repo".to_string(), "UpgradeAll".to_string());
-            map
-        };
+        let id_map = IdMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
 
         let url_proxy_map = {
             let mut map = HashMap::new();
@@ -163,8 +156,9 @@ mod tests {
         let github_provider = GithubProvider { url_proxy_map };
 
         assert!(github_provider
-            .check_app_available(FIn::new(&id_map))
+            .check_app_available(&FIn::new(&id_map))
             .await
+            .result
             .unwrap());
     }
 
@@ -178,12 +172,7 @@ mod tests {
             .with_body(body)
             .create();
 
-        let id_map = {
-            let mut map = HashMap::new();
-            map.insert("owner".to_string(), "DUpdateSystem".to_string());
-            map.insert("repo".to_string(), "UpgradeAll".to_string());
-            map
-        };
+        let id_map = IdMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
 
         let url_proxy_map = {
             let mut map = HashMap::new();
@@ -194,8 +183,9 @@ mod tests {
         let github_provider = GithubProvider { url_proxy_map };
 
         let releases = github_provider
-            .get_releases(FIn::new(&id_map))
+            .get_releases(&FIn::new(&id_map))
             .await
+            .result
             .unwrap();
 
         let release_json =

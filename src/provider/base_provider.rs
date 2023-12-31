@@ -1,28 +1,35 @@
 use crate::data::release::*;
-use std::{collections::HashMap, hash::Hash};
+use std::{
+    collections::{BTreeMap, HashMap},
+    error::Error,
+    hash::Hash,
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 
-pub type IdMap<'a> = HashMap<&'a str, &'a str>;
+pub type IdMap<'a> = BTreeMap<&'a str, &'a str>;
 
-#[derive(Debug, PartialEq)]
-pub struct CacheMap<K: Eq + Hash, T: PartialEq> {
-    pub map: Option<HashMap<K, T>>,
+pub type CacheMap<K, T> = HashMap<K, T>;
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct CacheMapBuilder<K: Eq + Hash + Clone, T: PartialEq + Clone> {
+    map: Option<CacheMap<K, T>>,
 }
 
-impl<K: Eq + Hash, T: PartialEq> CacheMap<K, T> {
+impl<K: Eq + Hash + Clone, T: PartialEq + Clone> CacheMapBuilder<K, T> {
     pub fn new() -> Self {
-        CacheMap {
-            map: Some(HashMap::new()),
-        }
+        CacheMapBuilder { map: None }
     }
 
-    pub fn set(mut self, key: K, value: T) -> Self {
+    pub fn set(&mut self, key: K, value: T) {
         if let Some(map) = &mut self.map {
             map.insert(key, value);
+        } else {
+            let mut map = CacheMap::new();
+            map.insert(key, value);
+            self.map = Some(map);
         }
-        self
     }
 
     pub fn get(&self, key: K) -> Option<&T> {
@@ -32,6 +39,23 @@ impl<K: Eq + Hash, T: PartialEq> CacheMap<K, T> {
             }
         }
         None
+    }
+
+    pub fn extend(mut self, other: &Self) -> Self {
+        if let Some(map) = &mut self.map {
+            if let Some(other_map) = &other.map {
+                map.extend(other_map.clone().drain())
+            }
+        } else {
+            if let Some(other_map) = &other.map {
+                self.map = Some(other_map.clone());
+            }
+        }
+        self
+    }
+
+    pub fn build(self) -> Option<CacheMap<K, T>> {
+        self.map
     }
 }
 
@@ -43,50 +67,54 @@ pub enum FunctionType {
 
 pub struct FIn<'a> {
     pub id_map: &'a IdMap<'a>,
-    pub cache_map: &'a CacheMap<&'a str, &'a Bytes>,
+    cache_map: Option<HashMap<String, Bytes>>,
 }
 
 impl<'a> FIn<'a> {
-    pub fn new<'b>(id_map: &'a IdMap) -> Self {
-        FIn {
-            id_map,
-            cache_map: &CacheMap { map: None },
-        }
+    pub fn new(id_map: &'a IdMap<'a>, cache_map: Option<CacheMap<String, Bytes>>) -> Self {
+        FIn { id_map, cache_map }
     }
 
-    pub fn set_cache_map(mut self, cache_map: &'a CacheMap<&'a str, &'a Bytes>) -> Self {
-        self.cache_map = cache_map;
-        self
+    pub fn get_cache(&self, key: &str) -> Option<&Bytes> {
+        if let Some(cache_map) = &self.cache_map {
+            if let Some(value) = cache_map.get(key) {
+                return Some(value);
+            }
+        }
+        None
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct FOut<T> {
-    pub data: Option<T>,
-    pub cached_map: Option<CacheMap<String, Bytes>>,
+    pub result: Result<T, Box<dyn Error + Send + Sync>>,
+    pub cached_map: Option<HashMap<String, Bytes>>,
 }
 
 impl<T> FOut<T> {
     pub fn new(data: T) -> Self {
         FOut {
-            data: Some(data),
+            result: Ok(data),
             cached_map: None,
         }
     }
 
     pub fn new_empty() -> Self {
         FOut {
-            data: None,
+            result: Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "no data",
+            ))),
             cached_map: None,
         }
     }
 
     pub fn set_data(mut self, data: T) -> Self {
-        self.data = Some(data);
+        self.result = Ok(data);
         self
     }
 
-    pub fn set_cached_map(mut self, cached_map: CacheMap<String, Bytes>) -> Self {
+    pub fn set_cached_map(mut self, cached_map: HashMap<String, Bytes>) -> Self {
         self.cached_map = Some(cached_map);
         self
     }
@@ -94,19 +122,30 @@ impl<T> FOut<T> {
 
 #[async_trait]
 pub trait BaseProvider {
-    fn get_cache_request_key(&self, function_type: FunctionType, id_map: IdMap) -> Vec<String>;
+    fn get_cache_request_key(&self, function_type: &FunctionType, id_map: &IdMap) -> Vec<String>;
 
     async fn check_app_available(&self, fin: &FIn) -> FOut<bool>;
 
     async fn get_latest_release(&self, fin: &FIn) -> FOut<ReleaseData> {
         let result = self.get_releases(fin).await;
-        let release = if let Some(releases) = result.data {
-            releases.first().cloned()
-        } else {
-            None
+
+        let fout_result = match result.result {
+            Ok(releases) => {
+                let release = releases.first().cloned();
+                if let Some(release) = release {
+                    Ok(release)
+                } else {
+                    Err(
+                        Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "no data"))
+                            as Box<dyn std::error::Error + Send + Sync>,
+                    )
+                }
+            }
+            Err(e) => Err(e),
         };
+
         FOut {
-            data: release,
+            result: fout_result,
             cached_map: result.cached_map,
         }
     }
@@ -122,7 +161,11 @@ mod tests {
 
     #[async_trait]
     impl BaseProvider for MockProvider {
-        fn get_cache_request_key(&self, function_type: FunctionType, id_map: IdMap) -> Vec<String> {
+        fn get_cache_request_key(
+            &self,
+            function_type: &FunctionType,
+            id_map: &IdMap,
+        ) -> Vec<String> {
             let key_name = match function_type {
                 FunctionType::CheckAppAvailable => "check_app_available",
                 FunctionType::GetLatestRelease => "get_latest_release",
@@ -143,7 +186,7 @@ mod tests {
             let id_map = fin.id_map;
             let cache_map = fin.cache_map;
             FOut {
-                data: Some(
+                result: Some(
                     cache_map
                         .get(&id_map["id"])
                         .is_some_and(|x| x.first().is_some_and(|i| i == &1u8)),
@@ -174,73 +217,69 @@ mod tests {
     #[tokio::test]
     async fn test_get_cache_request_key() {
         let mock = MockProvider;
-        let mut id_map = HashMap::new();
-        id_map.insert("id", "123");
+        let mut id_map = IdMap::from([("id", "123")]);
 
-        let key = mock.get_cache_request_key(FunctionType::CheckAppAvailable, &id_map);
+        let key = mock.get_cache_request_key(&FunctionType::CheckAppAvailable, &id_map);
         assert_eq!(key, vec!["check_app_available:id=123"]);
-        let key = mock.get_cache_request_key(FunctionType::GetReleases, &id_map);
+        let key = mock.get_cache_request_key(&FunctionType::GetReleases, &id_map);
         assert_eq!(key, vec!["get_releases:id=123"]);
     }
 
     #[tokio::test]
     async fn test_check_app_available() {
         let mock = MockProvider;
-        let mut id_map = HashMap::new();
-        id_map.insert("id", "123");
+        let mut id_map = IdMap::from([("id", "123")]);
         let mut cache_map = HashMap::new();
         let some_vec = Bytes::from(vec![1u8]);
         cache_map.insert("123", &some_vec);
 
         let fin = FIn {
             id_map: &id_map,
-            cache_map: &CacheMap {
+            cache_map: &CacheMapBuilder {
                 map: Some(cache_map),
             },
         };
 
         let available = mock.check_app_available(&fin).await;
-        assert_eq!(available.data, Some(true));
+        assert_eq!(available.result, Some(true));
     }
 
     #[tokio::test]
     async fn test_get_releases() {
         let mock = MockProvider;
-        let mut id_map = HashMap::new();
-        id_map.insert("id", "123");
+        let mut id_map = IdMap::from([("id", "123")]);
         let mut cache_map = HashMap::new();
         let some_vec = Bytes::from(vec![1u8, 2u8, 3u8]);
         cache_map.insert("123", &some_vec);
 
         let fin = FIn {
             id_map: &id_map,
-            cache_map: &CacheMap {
+            cache_map: &CacheMapBuilder {
                 map: Some(cache_map),
             },
         };
 
         let releases = mock.get_releases(&fin).await;
-        assert_eq!(releases.unwrap().len(), 3);
+        assert_eq!(releases.result.unwrap().len(), 3);
     }
 
     #[tokio::test]
     async fn test_get_latest_release() {
         let mock = MockProvider;
-        let mut id_map = HashMap::new();
-        id_map.insert("id", "123");
+        let mut id_map = IdMap::from([("id", "123")]);
         let mut cache_map = HashMap::new();
         let some_vec = Bytes::from(vec![1u8, 2u8, 3u8]);
         cache_map.insert("123", &some_vec);
 
         let fin = FIn {
             id_map: &id_map,
-            cache_map: &CacheMap {
+            cache_map: &CacheMapBuilder {
                 map: Some(cache_map),
             },
         };
 
         let latest_release = mock.get_latest_release(&fin).await;
-        let latest_version = latest_release.unwrap().version_number;
+        let latest_version = latest_release.result.unwrap().version_number;
         assert_eq!(latest_version, "1");
     }
 }

@@ -30,34 +30,37 @@ fn get_provider(uuid: &str) -> Option<&Arc<dyn BaseProvider + Send + Sync>> {
     PROVIDER_MAP.get(uuid)
 }
 
-pub async fn check_app_available(
+pub fn get_cache_request_key(
     uuid: &str,
-    id_map: &HashMap<&str, &str>,
-) -> Option<bool> {
+    function_type: &FunctionType,
+    id_map: &IdMap,
+) -> Option<Vec<String>> {
     if let Some(provider) = get_provider(uuid) {
-        provider.check_app_available(&FIn::new(id_map)).await.data
+        Some(provider.get_cache_request_key(function_type, id_map))
     } else {
         None
     }
 }
 
-pub async fn get_latest_release(
-    uuid: &str,
-    id_map: &HashMap<&str, &str>,
-) -> Option<ReleaseData> {
+pub async fn check_app_available<'a>(uuid: &str, fin: &FIn<'a>) -> Option<FOut<bool>> {
     if let Some(provider) = get_provider(uuid) {
-        provider.get_latest_release(&FIn::new(id_map)).await.data
+        Some(provider.check_app_available(fin).await)
     } else {
         None
     }
 }
 
-pub async fn get_releases(
-    uuid: &str,
-    id_map: &HashMap<&str, &str>,
-) -> Option<Vec<ReleaseData>> {
+pub async fn get_latest_release<'a>(uuid: &str, fin: &FIn<'a>) -> Option<FOut<ReleaseData>> {
     if let Some(provider) = get_provider(uuid) {
-        provider.get_releases(&FIn::new(id_map)).await.data
+        Some(provider.get_latest_release(fin).await)
+    } else {
+        None
+    }
+}
+
+pub async fn get_releases<'a>(uuid: &str, fin: &FIn<'a>) -> Option<FOut<Vec<ReleaseData>>> {
+    if let Some(provider) = get_provider(uuid) {
+        Some(provider.get_releases(fin).await)
     } else {
         None
     }
