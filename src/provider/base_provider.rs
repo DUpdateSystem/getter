@@ -184,23 +184,17 @@ mod tests {
 
         async fn check_app_available(&self, fin: &FIn) -> FOut<bool> {
             let id_map = fin.id_map;
-            let cache_map = fin.cache_map;
-            FOut {
-                result: Some(
-                    cache_map
-                        .get(&id_map["id"])
-                        .is_some_and(|x| x.first().is_some_and(|i| i == &1u8)),
-                ),
-                cached_map: None,
-            }
+            let cache_map = fin.cache_map.clone();
+            FOut::new(cache_map.unwrap_or_default().get(id_map["id"]).is_some())
         }
 
         async fn get_releases(&self, fin: &FIn) -> FOut<Vec<ReleaseData>> {
             let id_map = fin.id_map;
-            let cache_map = fin.cache_map;
+            let cache_map = fin.cache_map.clone();
             FOut::new(
                 cache_map
-                    .get(&id_map["id"])
+                    .unwrap_or_default()
+                    .get(id_map["id"])
                     .unwrap()
                     .iter()
                     .map(|i| ReleaseData {
@@ -217,7 +211,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_cache_request_key() {
         let mock = MockProvider;
-        let mut id_map = IdMap::from([("id", "123")]);
+        let id_map = IdMap::from([("id", "123")]);
 
         let key = mock.get_cache_request_key(&FunctionType::CheckAppAvailable, &id_map);
         assert_eq!(key, vec!["check_app_available:id=123"]);
@@ -228,35 +222,27 @@ mod tests {
     #[tokio::test]
     async fn test_check_app_available() {
         let mock = MockProvider;
-        let mut id_map = IdMap::from([("id", "123")]);
-        let mut cache_map = HashMap::new();
-        let some_vec = Bytes::from(vec![1u8]);
-        cache_map.insert("123", &some_vec);
+        let id_map = IdMap::from([("id", "123")]);
+        let cache_map = CacheMap::from([("123".to_string(), Bytes::from(vec![1u8]))]);
 
         let fin = FIn {
             id_map: &id_map,
-            cache_map: &CacheMapBuilder {
-                map: Some(cache_map),
-            },
+            cache_map: Some(cache_map),
         };
 
         let available = mock.check_app_available(&fin).await;
-        assert_eq!(available.result, Some(true));
+        assert_eq!(available.result.ok(), Some(true));
     }
 
     #[tokio::test]
     async fn test_get_releases() {
         let mock = MockProvider;
-        let mut id_map = IdMap::from([("id", "123")]);
-        let mut cache_map = HashMap::new();
-        let some_vec = Bytes::from(vec![1u8, 2u8, 3u8]);
-        cache_map.insert("123", &some_vec);
+        let id_map = IdMap::from([("id", "123")]);
+        let cache_map = CacheMap::from([("123".to_string(), Bytes::from(vec![1u8, 2u8, 3u8]))]);
 
         let fin = FIn {
             id_map: &id_map,
-            cache_map: &CacheMapBuilder {
-                map: Some(cache_map),
-            },
+            cache_map: Some(cache_map),
         };
 
         let releases = mock.get_releases(&fin).await;
@@ -266,16 +252,12 @@ mod tests {
     #[tokio::test]
     async fn test_get_latest_release() {
         let mock = MockProvider;
-        let mut id_map = IdMap::from([("id", "123")]);
-        let mut cache_map = HashMap::new();
-        let some_vec = Bytes::from(vec![1u8, 2u8, 3u8]);
-        cache_map.insert("123", &some_vec);
+        let id_map = IdMap::from([("id", "123")]);
+        let cache_map = CacheMap::from([("123".to_string(), Bytes::from(vec![1u8, 2u8, 3u8]))]);
 
         let fin = FIn {
             id_map: &id_map,
-            cache_map: &CacheMapBuilder {
-                map: Some(cache_map),
-            },
+            cache_map: Some(cache_map),
         };
 
         let latest_release = mock.get_latest_release(&fin).await;

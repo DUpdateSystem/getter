@@ -156,7 +156,7 @@ mod tests {
         let github_provider = GithubProvider { url_proxy_map };
 
         assert!(github_provider
-            .check_app_available(&FIn::new(&id_map))
+            .check_app_available(&FIn::new(&id_map, None))
             .await
             .result
             .unwrap());
@@ -183,7 +183,7 @@ mod tests {
         let github_provider = GithubProvider { url_proxy_map };
 
         let releases = github_provider
-            .get_releases(&FIn::new(&id_map))
+            .get_releases(&FIn::new(&id_map, None))
             .await
             .result
             .unwrap();
