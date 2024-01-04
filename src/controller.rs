@@ -1,6 +1,6 @@
 use crate::cache::convert::*;
-use crate::cache::get_cache_manager;
-use crate::cache::GroupType::{API, REPO_INSIDE};
+use crate::get_cache_manager;
+use crate::cache::manager::GroupType::{API, REPO_INSIDE};
 use crate::provider;
 use crate::provider::base_provider::{FIn, FOut, FunctionType, IdMap};
 use bytes::Bytes;
@@ -41,7 +41,7 @@ async fn get_fin<'a>(uuid: &str, id_map: &'a IdMap<'a>, function_type: &Function
     let cache_map = if let Some(cache_key_list) =
         provider::get_cache_request_key(uuid, function_type, id_map)
     {
-        get_cache_manager().get_cache_map(&REPO_INSIDE, &cache_key_list, None)
+        get_cache_manager!().get_cache_map(&REPO_INSIDE, &cache_key_list, None).await
     } else {
         None
     };
@@ -52,7 +52,7 @@ async fn detach_result<R>(fout: Option<FOut<R>>) -> Option<R> {
     if let Some(fout) = fout {
         if let Some(cache_map) = fout.cached_map {
             for (key, value) in cache_map {
-                get_cache_manager().save(REPO_INSIDE, &key, value);
+                get_cache_manager!().save(&REPO_INSIDE, &key, value).await;
             }
         }
         fout.result.ok()
@@ -68,13 +68,13 @@ async fn cache_future_return<T>(
     encoder: fn(&T) -> Result<Bytes, serde_json::Error>,
     decoder: fn(&Bytes) -> Result<T, serde_json::Error>,
 ) -> Option<T> {
-    if let Some(value) = get_cache_manager().get(&API, key, expire_time) {
-        decoder(value).ok()
+    if let Some(value) = get_cache_manager!().get(&API, key, expire_time).await {
+        decoder(&value).ok()
     } else {
         let result = f.await;
         if let Some(result) = result {
             if let Ok(value) = encoder(&result) {
-                get_cache_manager().save(API, key, value);
+                get_cache_manager!().save(&API, key, value);
             }
             Some(result)
         } else {
