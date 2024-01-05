@@ -98,6 +98,11 @@ impl CacheManager {
         let local_cache_item = LocalCacheItem::new(&self.local_cache_path);
         local_cache_item.remove(&local_cache_key).await
     }
+
+    pub async fn clean(&mut self) -> Result<(), std::io::Error> {
+        let local_cache_item = LocalCacheItem::new(&self.local_cache_path);
+        local_cache_item.clean().await
+    }
 }
 
 #[cfg(test)]
@@ -124,20 +129,23 @@ mod tests {
             .remove(&group, key)
             .await
             .expect("remove failed");
+        cache_manager.clean().await.expect("clean failed");
     }
 
     #[tokio::test]
     async fn test_cache_manager_no_exist() {
-        let cache_manager = CacheManager::new("./test_cache_manager");
+        let mut cache_manager = CacheManager::new("./test_cache_manager_no_exist");
         let group = GroupType::REPO_INSIDE;
         let key = "test_key_no_exist";
         let data = cache_manager.get(&group, key, None).await;
         assert_eq!(data, None);
+        let clean_result = cache_manager.clean().await;
+        assert!(clean_result.is_err());
     }
 
     #[tokio::test]
     async fn test_cache_manager_expire() {
-        let mut cache_manager = CacheManager::new("./test_cache_manager");
+        let mut cache_manager = CacheManager::new("./test_cache_manager_expire");
         let group = GroupType::REPO_INSIDE;
         let key = "test_key_expire";
         let value = Bytes::from("test_value_expire");
@@ -159,5 +167,6 @@ mod tests {
             .remove(&group, key)
             .await
             .expect("remove failed");
+        cache_manager.clean().await.expect("clean failed");
     }
 }
