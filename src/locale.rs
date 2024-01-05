@@ -2,7 +2,7 @@ use std::env;
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
 
-#[cfg(all(target_family = "unix", not(target_os = "macos")))]
+#[cfg(all(target_family = "unix", not(target_os = "macos"), not(target_os = "android")))]
 fn cache_dir() -> Result<PathBuf, io::Error> {
     env::var("HOME")
         .map_err(|_| io::Error::new(ErrorKind::NotFound, "HOME not found"))
