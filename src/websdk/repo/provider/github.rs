@@ -1,10 +1,12 @@
-use crate::data::release::*;
-use crate::provider::base_provider::*;
-use crate::utils::http::{get, head, http_status_is_ok};
+use std::collections::HashMap;
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde_json::Value;
-use std::collections::HashMap;
+
+use super::super::data::release::*;
+use super::base_provider::*;
+
+use crate::utils::http::{get, head, http_status_is_ok};
 
 pub struct GithubProvider {
     url_proxy_map: HashMap<String, String>,
@@ -131,7 +133,6 @@ impl BaseProvider for GithubProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::base_provider::BaseProvider;
     use mockito::Server;
     use std::collections::HashMap;
     use std::fs;

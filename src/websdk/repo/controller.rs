@@ -1,12 +1,14 @@
+use bytes::Bytes;
+use std::future::Future;
+
 use crate::cache::convert::{bool_to_bytes, bytes_to_bool};
 use crate::utils::json::{bytes_to_json, json_to_bytes};
 use crate::cache::manager::GroupType::{API, REPO_INSIDE};
-use crate::data::release::ReleaseData;
 use crate::get_cache_manager;
-use crate::provider;
-use crate::provider::base_provider::{FIn, FOut, FunctionType, IdMap};
-use bytes::Bytes;
-use std::future::Future;
+
+use super::data::release::ReleaseData;
+use super::provider;
+use super::provider::base_provider::{FIn, FOut, FunctionType, IdMap};
 
 pub async fn check_app_available<'a>(uuid: &str, id_map: &IdMap<'a>) -> Option<bool> {
     let key = format!("check_app_available_{}_{:?}", &uuid, id_map);
@@ -69,9 +71,14 @@ async fn get_fin<'a>(uuid: &str, id_map: &'a IdMap<'a>, function_type: &Function
     let cache_map = if let Some(cache_key_list) =
         provider::get_cache_request_key(uuid, function_type, id_map)
     {
-        get_cache_manager!()
+        let map = get_cache_manager!()
             .get_cache_map(&REPO_INSIDE, &cache_key_list, None)
-            .await
+            .await;
+        if map.is_empty() {
+            None
+        } else {
+            Some(map)
+        }
     } else {
         None
     };

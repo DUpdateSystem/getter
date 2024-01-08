@@ -5,9 +5,9 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use self::base_provider::*;
+use self::base_provider::{BaseProvider, FunctionType, IdMap, FIn, FOut};
 use self::github::GithubProvider;
-use crate::data::release::ReleaseData;
+use super::data::release::ReleaseData;
 
 static PROVIDER_MAP: Lazy<Arc<HashMap<&'static str, Arc<dyn BaseProvider + Send + Sync>>>> =
     Lazy::new(|| {

@@ -1,7 +1,5 @@
-pub mod api;
+mod websdk;
+mod core;
 mod cache;
-mod controller;
-mod data;
 mod locale;
-mod provider;
 mod utils;

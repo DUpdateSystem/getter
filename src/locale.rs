@@ -2,30 +2,48 @@ use std::env;
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
 
+pub struct DataDir{
+    cache_dir: PathBuf,
+    data_dir: PathBuf,
+}
+
 #[cfg(all(target_family = "unix", not(target_os = "macos"), not(target_os = "android")))]
-fn cache_dir() -> Result<PathBuf, io::Error> {
-    env::var("HOME")
+pub fn data_dir() -> Result<DataDir, io::Error> {
+    let home_dir = env::var("HOME")
         .map_err(|_| io::Error::new(ErrorKind::NotFound, "HOME not found"))
-        .map(|home| PathBuf::from(home).join(".cache/upa/"))
+        .map(|home| PathBuf::from(home))?;
+    let cache_dir = home_dir.join(".cache/upa/");
+    let data_dir = home_dir.join(".local/share/upa/");
+    Ok(DataDir{cache_dir, data_dir})
 }
 
 #[cfg(target_os = "macos")]
-fn cache_dir() -> Result<PathBuf, io::Error> {
-    env::var("HOME")
+pub fn data_dir() -> Result<DataDir, io::Error> {
+    let home_dir = env::var("HOME")
         .map_err(|_| io::Error::new(ErrorKind::NotFound, "HOME not found"))
-        .map(|home| PathBuf::from(home).join("Library/Caches/upa/"))
+        .map(|home| PathBuf::from(home))?;
+    let cache_dir = home_dir.join("Library/Caches/upa/");
+    let data_dir = home_dir.join("Library/Application Support/upa/");
+    Ok(DataDir{cache_dir, data_dir})
 }
 
 #[cfg(target_family = "windows")]
-fn cache_dir() -> Result<PathBuf, io::Error> {
-    env::var("APPDATA")
+pub fn data_dir() -> Result<DataDir, io::Error> {
+    let home_dir = env::var("APPDATA")
         .map_err(|_| io::Error::new(ErrorKind::NotFound, "APPDATA not found"))
-        .map(|app_data| PathBuf::from(app_data).join("upa/cache/"))
+        .map(|home| PathBuf::from(home))?;
+    let cache_dir = home_dir.join("upa/cache/");
+    let data_dir = home_dir.join("upa/data/");
+    Ok(DataDir{cache_dir, data_dir})
 }
 
+
 #[cfg(target_os = "android")]
-fn cache_dir() -> Result<PathBuf, io::Error> {
-    env::var("ANDROID_DATA")
-        .map_err(|_| io::Error::new(ErrorKind::NotFound, "ANDROID_DATA not found"))
-        .map(|data_dir| PathBuf::from(data_dir).join("cache/upa/"))
+pub fn data_dir() -> Result<DataDir, io::Error> {
+    let home_dir = env::var("HOME")
+        .map_err(|_| io::Error::new(ErrorKind::NotFound, "HOME not found"))
+        .map(|home| PathBuf::from(home))?;
+    let cache_dir = home_dir.join(".upa/cache/");
+    let data_dir = home_dir.join(".upa/data/");
+    Ok(DataDir{cache_dir, data_dir})
 }

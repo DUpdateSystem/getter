@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
-use crate::utils::json::json_to_string;
 
+use crate::utils::json::json_to_string;
 use crate::cache::init_cache_manager;
-use crate::controller;
+
+use super::controller;
 
 #[warn(dead_code)]
 pub async fn init_config(local_cache_path: &str) {

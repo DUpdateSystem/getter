@@ -1,7 +1,8 @@
+use std::collections::HashMap;
+
 use bytes::Bytes;
 
 use super::local::LocalCacheItem;
-use crate::provider::base_provider::{CacheMap, CacheMapBuilder};
 use crate::utils::time::get_now_unix;
 
 #[derive(Debug, Eq, Hash, PartialEq)]
@@ -70,14 +71,14 @@ impl CacheManager {
         group: &GroupType,
         key_list: &Vec<String>,
         expire_time: Option<u64>,
-    ) -> Option<CacheMap<String, Bytes>> {
-        let mut builder = CacheMapBuilder::new();
+    ) -> HashMap<String, Bytes> {
+        let mut map = HashMap::new();
         for key in key_list {
             if let Some(value) = self.get(group, key, expire_time).await {
-                builder.set(key.to_string(), value);
+                map.insert(key.to_string(), value);
             }
         }
-        builder.build()
+        map
     }
 
     pub async fn save(
@@ -121,6 +122,30 @@ mod tests {
             .await
             .expect("save failed");
         let data = cache_manager
+            .get(&group, key, None)
+            .await
+            .expect("get failed");
+        assert_eq!(data, value);
+        cache_manager
+            .remove(&group, key)
+            .await
+            .expect("remove failed");
+        cache_manager.clean().await.expect("clean failed");
+    }
+
+    #[tokio::test]
+    async fn test_cache_manager_restart() {
+        let mut cache_manager = CacheManager::new("./test_cache_manager_restart");
+        let group = GroupType::REPO_INSIDE;
+        let key = "test_key";
+        let value = Bytes::from("test_value");
+        let _ = cache_manager.remove(&group, key).await;
+        cache_manager
+            .save(&group, key, value.clone())
+            .await
+            .expect("save failed");
+        let _cache_manager = CacheManager::new("./test_cache_manager_restart");
+        let data = _cache_manager
             .get(&group, key, None)
             .await
             .expect("get failed");
