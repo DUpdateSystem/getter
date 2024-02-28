@@ -18,32 +18,32 @@ pub fn all_dir() -> Result<DataDir, io::Error> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn data_dir() -> Result<DataDir, io::Error> {
+pub fn all_dir() -> Result<DataDir, io::Error> {
     let home_dir = env::var("HOME")
         .map_err(|_| io::Error::new(ErrorKind::NotFound, "HOME not found"))
         .map(|home| PathBuf::from(home))?;
     let cache_dir = home_dir.join("Library/Caches/upa/");
     let data_dir = home_dir.join("Library/Application Support/upa/");
-    Ok(DataDir{cache_dir, all_dir})
+    Ok(DataDir{cache_dir, data_dir})
 }
 
 #[cfg(target_family = "windows")]
-pub fn data_dir() -> Result<DataDir, io::Error> {
+pub fn all_dir() -> Result<DataDir, io::Error> {
     let home_dir = env::var("APPDATA")
         .map_err(|_| io::Error::new(ErrorKind::NotFound, "APPDATA not found"))
         .map(|home| PathBuf::from(home))?;
     let cache_dir = home_dir.join("upa/cache/");
     let data_dir = home_dir.join("upa/data/");
-    Ok(DataDir{cache_dir, all_dir})
+    Ok(DataDir{cache_dir, data_dir})
 }
 
 
 #[cfg(target_os = "android")]
-pub fn data_dir() -> Result<DataDir, io::Error> {
+pub fn all_dir() -> Result<DataDir, io::Error> {
     let home_dir = env::var("HOME")
         .map_err(|_| io::Error::new(ErrorKind::NotFound, "HOME not found"))
         .map(|home| PathBuf::from(home))?;
     let cache_dir = home_dir.join(".upa/cache/");
     let data_dir = home_dir.join(".upa/data/");
-    Ok(DataDir{cache_dir, all_dir})
+    Ok(DataDir{cache_dir, data_dir})
 }
