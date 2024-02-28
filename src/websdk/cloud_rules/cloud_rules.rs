@@ -1,13 +1,13 @@
 use hyper::Uri;
 use std::collections::HashMap;
 
-use super::data::config_list::ConfigList;
+use super::data::config_list::{ConfigList, ConfigListViewer};
 use crate::utils::http::get;
 
 pub struct CloudRules {
     pub api_url: String,
 
-    pub _config_list: Option<ConfigList>,
+    _config_list: Option<ConfigList>,
 }
 
 #[derive(Debug)]
@@ -24,18 +24,17 @@ impl CloudRules {
         }
     }
 
-    pub async fn get_config_list(&mut self) -> Result<&ConfigList, DownloadError> {
-        if self._config_list.is_none() {
-            self._config_list = Some(self.download_config_list(&self.api_url).await?);
-        }
-        if let Some(config_list) = &self._config_list {
-            Ok(config_list)
-        } else {
-            Err(DownloadError {
-                url: self.api_url.parse().unwrap(),
-                error: "No config list".into(),
-            })
-        }
+    pub fn get_config_list(&self) -> ConfigListViewer {
+        self._config_list.as_ref().map_or_else(
+            || ConfigListViewer::default(),
+            |config_list| config_list.viewer(),
+        )
+    }
+
+    pub async fn renew(&mut self) -> Result<(), DownloadError> {
+        let config_list = self.download_config_list(&self.api_url).await?;
+        self._config_list = Some(config_list);
+        Ok(())
     }
 
     async fn download_config_list(&self, url: &str) -> Result<ConfigList, DownloadError> {
@@ -75,7 +74,8 @@ mod tests {
         let url = server.url() + path;
 
         let mut cloud_rules = CloudRules::new(&url);
-        let config_list = cloud_rules.get_config_list().await.unwrap();
+        cloud_rules.renew().await.unwrap();
+        let config_list = cloud_rules.get_config_list();
         assert_eq!(config_list.app_config_list.len(), 219);
         assert_eq!(config_list.app_config_list[0].info.name, "UpgradeAll");
         assert_eq!(
@@ -98,7 +98,7 @@ mod tests {
         let url = server.url() + path;
 
         let mut cloud_rules = CloudRules::new(&url);
-        let result = cloud_rules.get_config_list().await;
+        let result = cloud_rules.renew().await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().url.to_string(), url);
     }

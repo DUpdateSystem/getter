@@ -20,7 +20,7 @@ use std::collections::HashMap;
 /// }
 /// ```
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AppItem {
     #[serde(rename = "base_version")]
     pub base_version: i32,
@@ -38,7 +38,7 @@ pub struct AppItem {
     pub info: AppInfo,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AppInfo {
     #[serde(rename = "name")]
     pub name: String,

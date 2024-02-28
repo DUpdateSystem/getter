@@ -18,7 +18,7 @@ use serde::{Serialize, Deserialize};
 /// }
 /// ```
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HubItem{
     #[serde(rename = "base_version", default)]
     pub base_version: i32,
@@ -42,7 +42,7 @@ pub struct HubItem{
     pub target_check_api: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Info {
     #[serde(rename = "hub_name", default)]
     pub hub_name: String,

@@ -1,35 +1,41 @@
 use std::collections::BTreeMap;
 
-use crate::utils::json::json_to_string;
-use crate::cache::init_cache_manager;
+use super::provider;
+use super::provider::base_provider::FIn;
+use super::data::release::ReleaseData;
 
-use super::controller;
-
-#[warn(dead_code)]
-pub async fn init_config(local_cache_path: &str) {
-    init_cache_manager(local_cache_path);
-}
-
-#[warn(dead_code)]
-pub async fn check_app_available<'a>(uuid: &str, id_map: &BTreeMap<&'a str, &'a str>) -> Option<bool> {
-    return controller::check_app_available(uuid, id_map).await;
-}
-
-#[warn(dead_code)]
-pub async fn get_latest_release<'a>(uuid: &str, id_map: &BTreeMap<&'a str, &'a str>) -> Option<String> {
-    if let Some(data) = controller::get_latest_release(uuid, id_map).await {
-        if let Ok(s) = json_to_string(&data) {
-            return Some(s);
+#[allow(dead_code)]
+pub async fn check_app_available<'a>(
+    uuid: &str,
+    id_map: &BTreeMap<&'a str, &'a str>,
+) -> Option<bool> {
+    let fin = FIn::new(id_map, None);
+    if let Some(fout) = provider::check_app_available(uuid, &fin).await {
+        if let Ok(data) = fout.result {
+            return Some(data);
         }
     }
     None
 }
 
-#[warn(dead_code)]
-pub async fn get_releases<'a>(uuid: &str, id_map: &BTreeMap<&'a str, &'a str>) -> Option<String> {
-    if let Some(data) = controller::get_releases(uuid, id_map).await {
-        if let Ok(s) = json_to_string(&data) {
-            return Some(s);
+#[allow(dead_code)]
+pub async fn get_latest_release<'a>(
+    uuid: &str,
+    id_map: &BTreeMap<&'a str, &'a str>,
+) -> Option<ReleaseData> {
+    if let Some(fout) = provider::get_latest_release(uuid, &FIn::new(id_map, None)).await {
+        if let Ok(data) = fout.result {
+            return Some(data);
+        }
+    }
+    None
+}
+
+#[allow(dead_code)]
+pub async fn get_releases<'a>(uuid: &str, id_map: &BTreeMap<&'a str, &'a str>) -> Option<Vec<ReleaseData>> {
+    if let Some(fout) = provider::get_releases(uuid, &FIn::new(id_map, None)).await {
+        if let Ok(data) = fout.result {
+            return Some(data);
         }
     }
     None

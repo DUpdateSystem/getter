@@ -13,13 +13,29 @@ use super::hub_item::HubItem;
 /// }
 /// ```
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Default)]
+pub struct ConfigListViewer<'a> {
+    pub app_config_list: Vec<&'a AppItem>,
+
+    pub hub_config_list: Vec<&'a HubItem>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ConfigList {
     #[serde(rename = "app_config_list")]
     pub app_config_list: Vec<AppItem>,
 
     #[serde(rename = "hub_config_list")]
     pub hub_config_list: Vec<HubItem>,
+}
+
+impl ConfigList {
+    pub fn viewer(&self) -> ConfigListViewer {
+        ConfigListViewer {
+            app_config_list: self.app_config_list.iter().collect(),
+            hub_config_list: self.hub_config_list.iter().collect(),
+        }
+    }
 }
 
 #[cfg(test)]

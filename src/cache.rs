@@ -1,34 +1,38 @@
-pub mod convert;
-pub mod item;
-pub mod local;
+mod local;
 pub mod manager;
+pub mod convert;
+
+use once_cell::sync::Lazy;
+
+use crate::utils::instance::{InstanceContainer, InstanceGuard};
 
 use self::manager::CacheManager;
-use once_cell::sync::Lazy;
-use std::sync::{Mutex, MutexGuard};
 
-static CACHE_MANAGER: Lazy<Mutex<Option<CacheManager>>> = Lazy::new(|| Mutex::new(None));
+static INSTANCE_CONTAINER: Lazy<InstanceContainer<CacheManager>> = Lazy::new(|| InstanceContainer::new());
 
 pub fn init_cache_manager(local_cache_path: &str) {
-    let mut cache_manager = CACHE_MANAGER.lock().unwrap();
-    *cache_manager = Some(CacheManager::new(local_cache_path));
+    INSTANCE_CONTAINER.init(CacheManager::new(local_cache_path));
 }
 
-pub struct CacheManagerGuard(MutexGuard<'static, Option<CacheManager>>);
-
-impl CacheManagerGuard {
-    pub fn get(&mut self) -> &mut CacheManager {
-        self.0.as_mut().expect("Cache manager is not initialized")
-    }
-}
-
-pub fn _get_cache_manager() -> CacheManagerGuard {
-    CacheManagerGuard(CACHE_MANAGER.lock().unwrap())
+pub fn _get<'a>() -> InstanceGuard<'a ,CacheManager> {
+    INSTANCE_CONTAINER.get()
 }
 
 #[macro_export]
 macro_rules! get_cache_manager {
     () => {{
-        $crate::cache::_get_cache_manager().get()
+        $crate::cache::_get().get().expect("Cache manager is not initialized")
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cache_manager() {
+        let local_cache_path = "./test_cache_manager";
+        init_cache_manager(local_cache_path);
+        let _ = get_cache_manager!();
+    }
 }

@@ -94,12 +94,14 @@ impl CacheManager {
             .await
     }
 
+    #[allow(dead_code)]
     pub async fn remove(&mut self, group: &GroupType, key: &str) -> Result<(), std::io::Error> {
         let local_cache_key = Self::get_local_cache_key(group, key);
         let local_cache_item = LocalCacheItem::new(&self.local_cache_path);
         local_cache_item.remove(&local_cache_key).await
     }
 
+    #[allow(dead_code)]
     pub async fn clean(&mut self) -> Result<(), std::io::Error> {
         let local_cache_item = LocalCacheItem::new(&self.local_cache_path);
         local_cache_item.clean().await

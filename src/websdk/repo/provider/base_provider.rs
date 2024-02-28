@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
     error::Error,
-    hash::Hash,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -11,53 +10,6 @@ use super::super::data::release::*;
 pub type IdMap<'a> = BTreeMap<&'a str, &'a str>;
 
 pub type CacheMap<K, T> = HashMap<K, T>;
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct CacheMapBuilder<K: Eq + Hash + Clone, T: PartialEq + Clone> {
-    map: Option<CacheMap<K, T>>,
-}
-
-impl<K: Eq + Hash + Clone, T: PartialEq + Clone> CacheMapBuilder<K, T> {
-    pub fn new() -> Self {
-        CacheMapBuilder { map: None }
-    }
-
-    pub fn set(&mut self, key: K, value: T) {
-        if let Some(map) = &mut self.map {
-            map.insert(key, value);
-        } else {
-            let mut map = CacheMap::new();
-            map.insert(key, value);
-            self.map = Some(map);
-        }
-    }
-
-    pub fn get(&self, key: K) -> Option<&T> {
-        if let Some(map) = &self.map {
-            if let Some(value) = map.get(&key) {
-                return Some(value);
-            }
-        }
-        None
-    }
-
-    pub fn extend(mut self, other: &Self) -> Self {
-        if let Some(map) = &mut self.map {
-            if let Some(other_map) = &other.map {
-                map.extend(other_map.clone().drain())
-            }
-        } else {
-            if let Some(other_map) = &other.map {
-                self.map = Some(other_map.clone());
-            }
-        }
-        self
-    }
-
-    pub fn build(self) -> Option<CacheMap<K, T>> {
-        self.map
-    }
-}
 
 pub enum FunctionType {
     CheckAppAvailable,
