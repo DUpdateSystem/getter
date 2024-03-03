@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde_json::Value;
+use std::collections::HashMap;
 
 use super::super::data::release::*;
 use super::base_provider::*;
@@ -16,23 +16,30 @@ impl GithubProvider {
     pub fn new(url_proxy_map: HashMap<String, String>) -> GithubProvider {
         GithubProvider { url_proxy_map }
     }
-
-    fn replace_proxy_url(&self, url: &str) -> String {
-        let mut url = url.to_string();
-        for (url_prefix, proxy_url) in &self.url_proxy_map {
-            url = url.replace(url_prefix, proxy_url);
-        }
-        url
-    }
 }
 
 static GITHUB_API_URL: &str = "https://api.github.com";
+static GITHUB_URL: &str = "https://github.com";
+
+impl BaseProviderExt for GithubProvider {
+    fn url_proxy_map(&self) -> &HashMap<String, String> {
+        &self.url_proxy_map
+    }
+}
 
 #[async_trait]
 impl BaseProvider for GithubProvider {
-    fn get_cache_request_key(&self, function_type: &FunctionType, id_map: &IdMap) -> Vec<String> {
+    fn get_cache_request_key(
+        &self,
+        function_type: &FunctionType,
+        data_map: &DataMap,
+    ) -> Vec<String> {
+        let id_map = data_map.app_data;
         match function_type {
-            FunctionType::CheckAppAvailable => vec![],
+            FunctionType::CheckAppAvailable => vec![format!(
+                "{}/{}/{}/HEAD",
+                GITHUB_URL, id_map["owner"], id_map["repo"]
+            )],
             FunctionType::GetLatestRelease | FunctionType::GetReleases => vec![format!(
                 "{}/repos/{}/{}/releases",
                 GITHUB_API_URL, id_map["owner"], id_map["repo"]
@@ -41,8 +48,8 @@ impl BaseProvider for GithubProvider {
     }
 
     async fn check_app_available(&self, fin: &FIn) -> FOut<bool> {
-        let id_map = fin.id_map;
-        let api_url = format!("https://github.com/{}/{}", id_map["owner"], id_map["repo"]);
+        let id_map = fin.data_map.app_data;
+        let api_url = format!("{}/{}/{}", GITHUB_URL, id_map["owner"], id_map["repo"]);
         let api_url = self.replace_proxy_url(&api_url);
 
         if let Ok(parsed_url) = api_url.parse() {
@@ -54,7 +61,7 @@ impl BaseProvider for GithubProvider {
     }
 
     async fn get_releases(&self, fin: &FIn) -> FOut<Vec<ReleaseData>> {
-        let id_map = fin.id_map;
+        let id_map = fin.data_map.app_data;
         let url = format!(
             "https://api.github.com/repos/{}/{}/releases",
             id_map["owner"], id_map["repo"]
@@ -146,18 +153,15 @@ mod tests {
             .create_async()
             .await;
 
-        let id_map = IdMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let id_map = AppDataMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
 
-        let url_proxy_map = {
-            let mut map = HashMap::new();
-            map.insert("https://github.com".to_string(), server.url());
-            map
-        };
-
-        let github_provider = GithubProvider { url_proxy_map };
+        let github_provider = GithubProvider::new(HashMap::from([(
+            "https://github.com".to_string(),
+            server.url(),
+        )]));
 
         assert!(github_provider
-            .check_app_available(&FIn::new(&id_map, None))
+            .check_app_available(&FIn::new(&id_map, &HubDataMap::new(), None))
             .await
             .result
             .unwrap());
@@ -173,18 +177,15 @@ mod tests {
             .with_body(body)
             .create();
 
-        let id_map = IdMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let id_map = AppDataMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
 
-        let url_proxy_map = {
-            let mut map = HashMap::new();
-            map.insert("https://api.github.com".to_string(), server.url());
-            map
-        };
-
-        let github_provider = GithubProvider { url_proxy_map };
+        let github_provider = GithubProvider::new(HashMap::from([(
+            "https://api.github.com".to_string(),
+            server.url(),
+        )]));
 
         let releases = github_provider
-            .get_releases(&FIn::new(&id_map, None))
+            .get_releases(&FIn::new(&id_map, &HubDataMap::new(), None))
             .await
             .result
             .unwrap();

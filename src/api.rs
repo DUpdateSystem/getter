@@ -39,24 +39,30 @@ pub fn init() -> Result<()> {
 #[allow(dead_code)]
 pub async fn check_app_available<'a>(
     uuid: &str,
-    id_map: &BTreeMap<&'a str, &'a str>,
+    app_data: &BTreeMap<&'a str, &'a str>,
+    hub_data: &BTreeMap<&'a str, &'a str>,
 ) -> Option<bool> {
-    api::check_app_available(uuid, id_map).await
+    api::check_app_available(uuid, app_data, hub_data).await
 }
 
 #[allow(dead_code)]
 pub async fn get_latest_release<'a>(
     uuid: &str,
-    id_map: &BTreeMap<&'a str, &'a str>,
+    app_data: &BTreeMap<&'a str, &'a str>,
+    hub_data: &BTreeMap<&'a str, &'a str>,
 ) -> Option<String> {
-    api::get_latest_release(uuid, id_map)
+    api::get_latest_release(uuid, app_data, hub_data)
         .await
         .map(|data| json_to_string(&data).unwrap())
 }
 
 #[allow(dead_code)]
-pub async fn get_releases<'a>(uuid: &str, id_map: &BTreeMap<&'a str, &'a str>) -> Option<String> {
-    api::get_releases(uuid, id_map)
+pub async fn get_releases<'a>(
+    uuid: &str,
+    app_data: &BTreeMap<&'a str, &'a str>,
+    hub_data: &BTreeMap<&'a str, &'a str>,
+) -> Option<String> {
+    api::get_releases(uuid, app_data, hub_data)
         .await
         .map(|data| json_to_string(&data).unwrap())
 }

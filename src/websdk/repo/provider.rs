@@ -1,22 +1,30 @@
 pub mod base_provider;
+pub mod fdroid;
 pub mod github;
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use self::base_provider::{BaseProvider, FunctionType, IdMap, FIn, FOut};
+use self::base_provider::{BaseProvider, DataMap, FIn, FOut, FunctionType};
+use self::fdroid::FDroidProvider;
 use self::github::GithubProvider;
 use super::data::release::ReleaseData;
 
 static PROVIDER_MAP: Lazy<Arc<HashMap<&'static str, Arc<dyn BaseProvider + Send + Sync>>>> =
     Lazy::new(|| {
-        let mut m = HashMap::new();
-        m.insert(
-            "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
-            Arc::new(GithubProvider::new(HashMap::new())) as Arc<dyn BaseProvider + Send + Sync>,
-        );
-        Arc::new(m)
+        Arc::new(HashMap::from([
+            (
+                "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
+                Arc::new(GithubProvider::new(HashMap::new()))
+                    as Arc<dyn BaseProvider + Send + Sync>,
+            ),
+            (
+                "6a6d590b-1809-41bf-8ce3-7e3f6c8da945",
+                Arc::new(FDroidProvider::new(HashMap::new()))
+                    as Arc<dyn BaseProvider + Send + Sync>,
+            ),
+        ]))
     });
 
 fn get_provider(uuid: &str) -> Option<&Arc<dyn BaseProvider + Send + Sync>> {
@@ -26,10 +34,10 @@ fn get_provider(uuid: &str) -> Option<&Arc<dyn BaseProvider + Send + Sync>> {
 pub fn get_cache_request_key(
     uuid: &str,
     function_type: &FunctionType,
-    id_map: &IdMap,
+    data_map: &DataMap,
 ) -> Option<Vec<String>> {
     if let Some(provider) = get_provider(uuid) {
-        Some(provider.get_cache_request_key(function_type, id_map))
+        Some(provider.get_cache_request_key(function_type, data_map))
     } else {
         None
     }
