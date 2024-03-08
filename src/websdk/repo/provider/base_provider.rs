@@ -29,12 +29,23 @@ pub struct FIn<'a> {
 }
 
 impl<'a> FIn<'a> {
-    pub fn new(
+    pub fn new_with_frag(
         app_data: &'a AppDataMap<'a>,
         hub_data: &'a HubDataMap<'a>,
         cache_map: Option<CacheMap<String, Bytes>>,
     ) -> Self {
-        let data_map = DataMap { hub_data, app_data };
+        FIn {
+            data_map: DataMap {
+                app_data,
+                hub_data,
+            },
+            cache_map,
+        }
+    }
+    pub fn new(
+        data_map: DataMap<'a>,
+        cache_map: Option<CacheMap<String, Bytes>>,
+    ) -> Self {
         FIn {
             data_map,
             cache_map,

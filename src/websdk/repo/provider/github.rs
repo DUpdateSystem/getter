@@ -161,7 +161,7 @@ mod tests {
         )]));
 
         assert!(github_provider
-            .check_app_available(&FIn::new(&id_map, &HubDataMap::new(), None))
+            .check_app_available(&FIn::new_with_frag(&id_map, &HubDataMap::new(), None))
             .await
             .result
             .unwrap());
@@ -185,7 +185,7 @@ mod tests {
         )]));
 
         let releases = github_provider
-            .get_releases(&FIn::new(&id_map, &HubDataMap::new(), None))
+            .get_releases(&FIn::new_with_frag(&id_map, &HubDataMap::new(), None))
             .await
             .result
             .unwrap();

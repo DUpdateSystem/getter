@@ -277,7 +277,7 @@ mod tests {
         )]));
         let app_data = AppDataMap::from([(ANDROID_APP_TYPE, package_id)]);
         let hub_data = HubDataMap::new();
-        let fin = FIn::new(&app_data, &hub_data, None);
+        let fin = FIn::new_with_frag(&app_data, &hub_data, None);
         let fout = provider.check_app_available(&fin).await;
         assert!(fout.result.unwrap());
     }
@@ -299,7 +299,7 @@ mod tests {
         let nonexist_package_id = "nonexist";
         let app_data = AppDataMap::from([(ANDROID_APP_TYPE, nonexist_package_id)]);
         let hub_data = HubDataMap::new();
-        let fin = FIn::new(&app_data, &hub_data, None);
+        let fin = FIn::new_with_frag(&app_data, &hub_data, None);
         let fout = provider.check_app_available(&fin).await;
         assert!(!fout.result.unwrap());
     }
@@ -320,7 +320,7 @@ mod tests {
         )]));
         let app_data = AppDataMap::from([(ANDROID_APP_TYPE, package_id)]);
         let hub_data = HubDataMap::new();
-        let fin = FIn::new(&app_data, &hub_data, None);
+        let fin = FIn::new_with_frag(&app_data, &hub_data, None);
         let fout = provider.get_releases(&fin).await;
         let releases = fout.result.unwrap();
         assert!(!releases.is_empty());
@@ -343,7 +343,7 @@ mod tests {
         )]));
         let app_data = AppDataMap::from([(ANDROID_APP_TYPE, package_id)]);
         let hub_data = HubDataMap::new();
-        let fin = FIn::new(&app_data, &hub_data, None);
+        let fin = FIn::new_with_frag(&app_data, &hub_data, None);
         let fout = provider.get_releases(&fin).await;
         let releases = fout.result.unwrap();
         assert!(releases.is_empty());
@@ -365,7 +365,7 @@ mod tests {
         )]));
         let app_data = AppDataMap::from([(ANDROID_APP_TYPE, package_id)]);
         let hub_data = HubDataMap::new();
-        let fin = FIn::new(&app_data, &hub_data, None);
+        let fin = FIn::new_with_frag(&app_data, &hub_data, None);
         let fout = provider.get_releases(&fin).await;
         let releases = fout.result.unwrap();
         assert!(!releases.is_empty());
