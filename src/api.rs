@@ -1,20 +1,17 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::cache::init_cache_manager;
 use crate::core::config::world::{init_world_list, world_list};
 use crate::error::Result;
-use crate::locale::all_dir;
 use crate::websdk::repo::api;
 
 use crate::utils::json::json_to_string;
 
 #[allow(dead_code)]
-pub fn init() -> Result<()> {
-    let dir = all_dir().map_err(|e| {
-        crate::error::GetterError::new("api", "init: get dir path failed", Box::new(e))
-    })?;
+pub fn init(data_dir: &Path, cache_dir: &Path) -> Result<()> {
     // world list
-    let world_list_path = dir.data_dir.join(world_list::WORLD_CONFIG_LIST_NAME);
+    let world_list_path = data_dir.join(world_list::WORLD_CONFIG_LIST_NAME);
     init_world_list(
         world_list_path
             .to_str()
@@ -24,7 +21,7 @@ pub fn init() -> Result<()> {
             ))?,
     )?;
     // cache
-    let local_cache_path = dir.cache_dir.join("local_cache");
+    let local_cache_path = cache_dir.join("local_cache");
     init_cache_manager(
         local_cache_path
             .to_str()
@@ -65,4 +62,23 @@ pub async fn get_releases<'a>(
     api::get_releases(uuid, app_data, hub_data)
         .await
         .map(|data| json_to_string(&data).unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_github_check_app_available() {
+        let temp_dir = tempdir().unwrap();
+        let cache_dir = temp_dir.path().join("cache");
+        let data_dir = temp_dir.path().join("data");
+        init(&data_dir, &cache_dir).unwrap();
+        let uuid = "fd9b2602-62c5-4d55-bd1e-0d6537714ca0";
+        let id_map = BTreeMap::from([("repo", "UpgradeAll"), ("owner", "DUpdateSystem")]);
+        let hub_data = BTreeMap::new();
+        let result = check_app_available(uuid, &id_map, &hub_data).await;
+        assert_eq!(result, Some(true));
+    }
 }
