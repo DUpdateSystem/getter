@@ -10,6 +10,8 @@ use crate::utils::http::{get, head, http_status_is_ok};
 use super::super::data::release::*;
 use super::base_provider::*;
 
+static FDROID_URL: &str = "https://f-droid.org";
+
 pub struct FDroidProvider {
     url_proxy_map: HashMap<String, String>,
 }
@@ -33,8 +35,6 @@ impl FDroidProvider {
         (url.to_string(), api_url)
     }
 }
-
-static FDROID_URL: &str = "https://f-droid.org";
 
 impl BaseProviderExt for FDroidProvider {
     fn url_proxy_map(&self) -> &HashMap<String, String> {
@@ -271,10 +271,7 @@ mod tests {
             .create_async()
             .await;
 
-        let provider = FDroidProvider::new(HashMap::from([(
-            "https://f-droid.org".to_string(),
-            server.url(),
-        )]));
+        let provider = FDroidProvider::new(HashMap::from([(FDROID_URL.to_string(), server.url())]));
         let app_data = AppDataMap::from([(ANDROID_APP_TYPE, package_id)]);
         let hub_data = HubDataMap::new();
         let fin = FIn::new_with_frag(&app_data, &hub_data, None);
@@ -292,10 +289,7 @@ mod tests {
             .create_async()
             .await;
 
-        let provider = FDroidProvider::new(HashMap::from([(
-            "https://f-droid.org".to_string(),
-            server.url(),
-        )]));
+        let provider = FDroidProvider::new(HashMap::from([(FDROID_URL.to_string(), server.url())]));
         let nonexist_package_id = "nonexist";
         let app_data = AppDataMap::from([(ANDROID_APP_TYPE, nonexist_package_id)]);
         let hub_data = HubDataMap::new();
@@ -314,10 +308,7 @@ mod tests {
             .with_body(body)
             .create();
         let package_id = "org.fdroid.fdroid.privileged";
-        let provider = FDroidProvider::new(HashMap::from([(
-            "https://f-droid.org".to_string(),
-            server.url(),
-        )]));
+        let provider = FDroidProvider::new(HashMap::from([(FDROID_URL.to_string(), server.url())]));
         let app_data = AppDataMap::from([(ANDROID_APP_TYPE, package_id)]);
         let hub_data = HubDataMap::new();
         let fin = FIn::new_with_frag(&app_data, &hub_data, None);
@@ -337,10 +328,7 @@ mod tests {
             .with_body(body)
             .create();
         let package_id = "nonexist";
-        let provider = FDroidProvider::new(HashMap::from([(
-            "https://f-droid.org".to_string(),
-            server.url(),
-        )]));
+        let provider = FDroidProvider::new(HashMap::from([(FDROID_URL.to_string(), server.url())]));
         let app_data = AppDataMap::from([(ANDROID_APP_TYPE, package_id)]);
         let hub_data = HubDataMap::new();
         let fin = FIn::new_with_frag(&app_data, &hub_data, None);
@@ -359,10 +347,7 @@ mod tests {
             .with_body(body)
             .create();
         let package_id = "org.fdroid.fdroid.privileged.ota";
-        let provider = FDroidProvider::new(HashMap::from([(
-            "https://f-droid.org".to_string(),
-            server.url(),
-        )]));
+        let provider = FDroidProvider::new(HashMap::from([(FDROID_URL.to_string(), server.url())]));
         let app_data = AppDataMap::from([(ANDROID_APP_TYPE, package_id)]);
         let hub_data = HubDataMap::new();
         let fin = FIn::new_with_frag(&app_data, &hub_data, None);

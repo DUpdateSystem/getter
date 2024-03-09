@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use bytes::Bytes;
 
 use super::local::LocalCacheItem;
@@ -63,22 +61,6 @@ impl CacheManager {
         } else {
             None
         }
-    }
-
-    // get cache map from key list
-    pub async fn get_cache_map(
-        &self,
-        group: &GroupType,
-        key_list: &Vec<String>,
-        expire_time: Option<u64>,
-    ) -> HashMap<String, Bytes> {
-        let mut map = HashMap::new();
-        for key in key_list {
-            if let Some(value) = self.get(group, key, expire_time).await {
-                map.insert(key.to_string(), value);
-            }
-        }
-        map
     }
 
     pub async fn save(

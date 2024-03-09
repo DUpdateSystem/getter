@@ -1,5 +1,8 @@
 use async_trait::async_trait;
+
 use bytes::Bytes;
+use core::fmt;
+use std::hash::{Hash, Hasher, DefaultHasher};
 use std::{
     collections::{BTreeMap, HashMap},
     error::Error,
@@ -10,9 +13,28 @@ use super::super::data::release::*;
 pub type HubDataMap<'a> = BTreeMap<&'a str, &'a str>;
 pub type AppDataMap<'a> = BTreeMap<&'a str, &'a str>;
 
+#[derive(Hash)]
 pub struct DataMap<'a> {
     pub app_data: &'a AppDataMap<'a>,
     pub hub_data: &'a HubDataMap<'a>,
+}
+
+impl fmt::Display for DataMap<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "app_data: {:?}, hub_data: {:?}",
+            self.app_data, self.hub_data
+        )
+    }
+}
+
+impl DataMap<'_> {
+    pub fn get_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 pub type CacheMap<K, T> = HashMap<K, T>;
@@ -35,17 +57,11 @@ impl<'a> FIn<'a> {
         cache_map: Option<CacheMap<String, Bytes>>,
     ) -> Self {
         FIn {
-            data_map: DataMap {
-                app_data,
-                hub_data,
-            },
+            data_map: DataMap { app_data, hub_data },
             cache_map,
         }
     }
-    pub fn new(
-        data_map: DataMap<'a>,
-        cache_map: Option<CacheMap<String, Bytes>>,
-    ) -> Self {
+    pub fn new(data_map: DataMap<'a>, cache_map: Option<CacheMap<String, Bytes>>) -> Self {
         FIn {
             data_map,
             cache_map,

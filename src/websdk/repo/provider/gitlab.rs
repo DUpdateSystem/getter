@@ -8,27 +8,27 @@ use super::base_provider::*;
 
 use crate::utils::http::{get, head, http_status_is_ok};
 
-static GITHUB_API_URL: &str = "https://api.github.com";
-static GITHUB_URL: &str = "https://github.com";
+static GITLAB_URL: &str = "https://gitlab.com";
+static GITLAB_API_URL: &str = "https://gitlab.com/api/v4/projects";
 
-pub struct GitHubProvider {
+pub struct GitLabProvider {
     url_proxy_map: HashMap<String, String>,
 }
 
-impl GitHubProvider {
-    pub fn new(url_proxy_map: HashMap<String, String>) -> GitHubProvider {
-        GitHubProvider { url_proxy_map }
+impl GitLabProvider {
+    pub fn new(url_proxy_map: HashMap<String, String>) -> GitLabProvider {
+        GitLabProvider { url_proxy_map }
     }
 }
 
-impl BaseProviderExt for GitHubProvider {
+impl BaseProviderExt for GitLabProvider {
     fn url_proxy_map(&self) -> &HashMap<String, String> {
         &self.url_proxy_map
     }
 }
 
 #[async_trait]
-impl BaseProvider for GitHubProvider {
+impl BaseProvider for GitLabProvider {
     fn get_cache_request_key(
         &self,
         function_type: &FunctionType,
@@ -38,18 +38,18 @@ impl BaseProvider for GitHubProvider {
         match function_type {
             FunctionType::CheckAppAvailable => vec![format!(
                 "{}/{}/{}/HEAD",
-                GITHUB_URL, id_map["owner"], id_map["repo"]
+                GITLAB_URL, id_map["owner"], id_map["repo"]
             )],
             FunctionType::GetLatestRelease | FunctionType::GetReleases => vec![format!(
-                "{}/repos/{}/{}/releases",
-                GITHUB_API_URL, id_map["owner"], id_map["repo"]
+                "{}/{}/{}/releases",
+                GITLAB_API_URL, id_map["owner"], id_map["repo"]
             )],
         }
     }
 
     async fn check_app_available(&self, fin: &FIn) -> FOut<bool> {
         let id_map = fin.data_map.app_data;
-        let api_url = format!("{}/{}/{}", GITHUB_URL, id_map["owner"], id_map["repo"]);
+        let api_url = format!("{}/{}/{}", GITLAB_URL, id_map["owner"], id_map["repo"]);
         let api_url = self.replace_proxy_url(&api_url);
 
         if let Ok(parsed_url) = api_url.parse() {
@@ -63,8 +63,8 @@ impl BaseProvider for GitHubProvider {
     async fn get_releases(&self, fin: &FIn) -> FOut<Vec<ReleaseData>> {
         let id_map = fin.data_map.app_data;
         let url = format!(
-            "{}/repos/{}/{}/releases",
-            GITHUB_API_URL, id_map["owner"], id_map["repo"]
+            "{}/{}%2F{}/releases",
+            GITLAB_API_URL, id_map["owner"], id_map["repo"]
         );
         let url = self.replace_proxy_url(&url);
         let mut fout = FOut::new_empty();
@@ -78,6 +78,7 @@ impl BaseProvider for GitHubProvider {
                     map
                 };
                 if let Ok(rsp) = get(parsed_url, &header_map).await {
+                    println!("{:?}", rsp);
                     if let Some(content) = rsp.body {
                         rsp_body = Some(content);
                     }
@@ -95,18 +96,18 @@ impl BaseProvider for GitHubProvider {
         }
 
         if let Ok(data) = serde_json::from_slice::<Vec<Value>>(body) {
+            println!("{:?}", data);
             let release_list = data
                 .iter()
                 .filter_map(|json| {
-                    let assets_data = match json.get("assets") {
-                        Some(assets) => assets
+                    let assets_data = match json.get("assets")?.get("links") {
+                        Some(links) => links
                             .as_array()?
                             .iter()
                             .filter_map(|asset| {
                                 let file_name = asset.get("name")?.as_str()?.to_string();
-                                let file_type = asset.get("content_type")?.as_str()?.to_string();
-                                let download_url =
-                                    asset.get("browser_download_url")?.as_str()?.to_string();
+                                let file_type = asset.get("link_type")?.as_str()?.to_string();
+                                let download_url = asset.get("url")?.as_str()?.to_string();
                                 Some(AssetData {
                                     file_name,
                                     file_type,
@@ -117,7 +118,7 @@ impl BaseProvider for GitHubProvider {
                         None => vec![],
                     };
                     let version_number = json.get("name")?.as_str()?.to_string();
-                    let changelog = json.get("body")?.as_str()?.to_string();
+                    let changelog = json.get("description")?.as_str()?.to_string();
                     Some(ReleaseData {
                         version_number,
                         changelog,
@@ -148,15 +149,15 @@ mod tests {
     async fn test_check_app_available() {
         let mut server = Server::new_async().await;
         let _m = server
-            .mock("GET", "/DUpdateSystem/UpgradeAll")
+            .mock("GET", "/fdroid/fdroidclient")
             .with_status(200)
             .create_async()
             .await;
 
-        let id_map = AppDataMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let id_map = AppDataMap::from([("owner", "fdroid"), ("repo", "fdroidclient")]);
 
         let github_provider =
-            GitHubProvider::new(HashMap::from([(GITHUB_URL.to_string(), server.url())]));
+            GitLabProvider::new(HashMap::from([(GITLAB_URL.to_string(), server.url())]));
 
         assert!(github_provider
             .check_app_available(&FIn::new_with_frag(&id_map, &HubDataMap::new(), None))
@@ -167,18 +168,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_releases() {
-        let body = fs::read_to_string("tests/files/web/github_api_release.json").unwrap();
+        let body = fs::read_to_string("tests/files/web/gitlab_api_release.json").unwrap();
         let mut server = Server::new_async().await;
         let _m = server
-            .mock("GET", "/repos/DUpdateSystem/UpgradeAll/releases")
+            .mock("GET", "/fdroid%2Ffdroidclient/releases")
             .with_status(200)
             .with_body(body)
             .create();
 
-        let id_map = AppDataMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let id_map = AppDataMap::from([("owner", "fdroid"), ("repo", "fdroidclient")]);
 
         let github_provider =
-            GitHubProvider::new(HashMap::from([(GITHUB_API_URL.to_string(), server.url())]));
+            GitLabProvider::new(HashMap::from([(GITLAB_API_URL.to_string(), server.url())]));
 
         let releases = github_provider
             .get_releases(&FIn::new_with_frag(&id_map, &HubDataMap::new(), None))
@@ -187,7 +188,7 @@ mod tests {
             .unwrap();
 
         let release_json =
-            fs::read_to_string("tests/files/data/provider_github_release.json").unwrap();
+            fs::read_to_string("tests/files/data/provider_gitlab_release.json").unwrap();
         let releases_saved = serde_json::from_str::<Vec<ReleaseData>>(&release_json).unwrap();
         assert_eq!(releases, releases_saved)
     }

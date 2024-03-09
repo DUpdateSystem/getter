@@ -1,10 +1,13 @@
 use async_fn_traits::AsyncFnOnce2;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use super::data::release::ReleaseData;
 use super::provider;
 use super::provider::base_provider::{AppDataMap, DataMap, FIn, FOut, FunctionType, HubDataMap};
 use crate::cache::manager::GroupType;
 use crate::get_cache_manager;
+use crate::utils::json::{bytes_to_json, json_to_bytes};
 use std::collections::HashMap;
 
 async fn process_data<T, F>(
@@ -15,10 +18,19 @@ async fn process_data<T, F>(
     provider_func: F,
 ) -> Option<T>
 where
-    T: Send,
-    F: for<'a> AsyncFnOnce2<&'a str, &'a FIn<'a>, Output = Option<FOut<T>>>,
+    T: Send + DeserializeOwned + Serialize,
+    F: for<'b> AsyncFnOnce2<&'b str, &'b FIn<'b>, Output = Option<FOut<T>>>,
 {
     let data_map = DataMap { app_data, hub_data };
+    let api_cache_key = data_map.get_hash();
+    if let Some(bytes) = get_cache_manager!()
+        .get(&GroupType::API, &api_cache_key.to_string(), None)
+        .await
+    {
+        if let Ok(value) = bytes_to_json::<T>(&bytes) {
+            return Some(value);
+        }
+    }
     let cache_keys = provider::get_cache_request_key(uuid, &func_type, &data_map);
     let mut cache_map = HashMap::new();
     if let Some(keys) = cache_keys {
@@ -42,6 +54,11 @@ where
             }
         }
         if let Ok(data) = fout.result {
+            if let Ok(value) = json_to_bytes(&data) {
+                let _ = get_cache_manager!()
+                    .save(&GroupType::API, &api_cache_key.to_string(), value)
+                    .await;
+            }
             return Some(data);
         }
     }

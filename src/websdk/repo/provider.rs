@@ -1,6 +1,7 @@
 pub mod base_provider;
 pub mod fdroid;
 pub mod github;
+pub mod gitlab;
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -8,7 +9,8 @@ use std::sync::Arc;
 
 use self::base_provider::{BaseProvider, DataMap, FIn, FOut, FunctionType};
 use self::fdroid::FDroidProvider;
-use self::github::GithubProvider;
+use self::github::GitHubProvider;
+use self::gitlab::GitLabProvider;
 use super::data::release::ReleaseData;
 
 static PROVIDER_MAP: Lazy<Arc<HashMap<&'static str, Arc<dyn BaseProvider + Send + Sync>>>> =
@@ -16,12 +18,17 @@ static PROVIDER_MAP: Lazy<Arc<HashMap<&'static str, Arc<dyn BaseProvider + Send 
         Arc::new(HashMap::from([
             (
                 "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
-                Arc::new(GithubProvider::new(HashMap::new()))
+                Arc::new(GitHubProvider::new(HashMap::new()))
                     as Arc<dyn BaseProvider + Send + Sync>,
             ),
             (
                 "6a6d590b-1809-41bf-8ce3-7e3f6c8da945",
                 Arc::new(FDroidProvider::new(HashMap::new()))
+                    as Arc<dyn BaseProvider + Send + Sync>,
+            ),
+            (
+                "a84e2fbe-1478-4db5-80ae-75d00454c7eb",
+                Arc::new(GitLabProvider::new(HashMap::new()))
                     as Arc<dyn BaseProvider + Send + Sync>,
             ),
         ]))
