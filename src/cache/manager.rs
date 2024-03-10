@@ -12,12 +12,14 @@ pub enum GroupType {
 
 pub struct CacheManager {
     local_cache_path: String,
+    global_expire_time: Option<u64>,
 }
 
 impl CacheManager {
-    pub fn new(local_cache_path: &str) -> Self {
+    pub fn new(local_cache_path: &str, global_expire_time: Option<u64>) -> Self {
         Self {
             local_cache_path: local_cache_path.to_string(),
+            global_expire_time,
         }
     }
 
@@ -34,7 +36,7 @@ impl CacheManager {
         let local_cache_key = Self::get_local_cache_key(group, key);
         let local_cache_item = LocalCacheItem::new(&self.local_cache_path);
         if let Ok(time) = local_cache_item.get_cache_time(&local_cache_key).await {
-            if let Some(expire_time) = expire_time {
+            if let Some(expire_time) = expire_time.or(self.global_expire_time) {
                 if time + expire_time < get_now_unix() {
                     return None;
                 }
