@@ -1,7 +1,10 @@
-use bytes::Bytes;
-use hyper::client::HttpConnector;
-use hyper::{Client, StatusCode, Uri};
-use hyper_rustls::HttpsConnector;
+use bytes::{Bytes, BytesMut};
+use http_body_util::{BodyExt, Empty};
+use hyper::{StatusCode, Uri};
+use hyper_util::{
+    client::legacy::{connect::HttpConnector, Client},
+    rt::TokioExecutor,
+};
 use std::{collections::HashMap, fmt};
 
 // Custom http response Error
@@ -66,14 +69,15 @@ async fn _http_get(
     header_map: &HashMap<String, String>,
     only_status: bool,
 ) -> Result<ResponseData, Box<dyn std::error::Error + Send + Sync>> {
-    let client = Client::new();
+    let http = HttpConnector::new();
+    let client = Client::builder(TokioExecutor::new()).build(http);
 
     let mut req = hyper::Request::builder().method("GET").uri(url.clone());
     for (key, value) in header_map {
         req = req.header(key, value);
     }
-    let req = req.body(hyper::Body::empty())?;
-    let res = client.request(req).await?;
+    let req = req.body(Empty::<Bytes>::new())?;
+    let mut res = client.request(req).await?;
     let status = res.status();
     if only_status {
         Ok(ResponseData {
@@ -81,10 +85,16 @@ async fn _http_get(
             body: None,
         })
     } else {
-        let body = hyper::body::to_bytes(res.into_body()).await?;
+        let mut body = BytesMut::new();
+        while let Some(next) = res.frame().await {
+            let frame = next?;
+            if let Some(chunk) = frame.data_ref() {
+                body.extend_from_slice(chunk);
+            }
+        }
         Ok(ResponseData {
             status: status.as_u16(),
-            body: Some(body),
+            body: Some(body.freeze()),
         })
     }
 }
@@ -103,7 +113,7 @@ pub async fn https_head(
     _https_get(url, header_map, true).await
 }
 
-fn https_config() -> HttpsConnector<HttpConnector> {
+fn https_config() -> hyper_rustls::HttpsConnector<HttpConnector> {
     #[cfg(feature = "webpki-roots")]
     {
         return hyper_rustls::HttpsConnectorBuilder::new()
@@ -117,6 +127,7 @@ fn https_config() -> HttpsConnector<HttpConnector> {
     {
         return hyper_rustls::HttpsConnectorBuilder::new()
             .with_native_roots()
+            .expect("no native root CA certificates found")
             .https_only()
             .enable_http1()
             .enable_http2()
@@ -131,15 +142,15 @@ async fn _https_get(
 ) -> Result<ResponseData, Box<dyn std::error::Error + Send + Sync>> {
     let https = https_config();
 
-    let client: Client<_, hyper::Body> = Client::builder().build(https);
+    let client = Client::builder(TokioExecutor::new()).build(https);
 
     let mut req = hyper::Request::builder().method("GET").uri(url.clone());
     for (key, value) in header_map {
         req = req.header(key, value);
     }
-    let req = req.body(hyper::Body::empty())?;
+    let req = req.body(Empty::<Bytes>::new())?;
 
-    let res = client.request(req).await?;
+    let mut res = client.request(req).await?;
     let status = res.status();
     if only_status {
         Ok(ResponseData {
@@ -147,10 +158,16 @@ async fn _https_get(
             body: None,
         })
     } else {
-        let body = hyper::body::to_bytes(res.into_body()).await?;
+        let mut body = BytesMut::new();
+        while let Some(next) = res.frame().await {
+            let frame = next?;
+            if let Some(chunk) = frame.data_ref() {
+                body.extend_from_slice(chunk);
+            }
+        }
         Ok(ResponseData {
             status: status.as_u16(),
-            body: Some(body),
+            body: Some(body.freeze()),
         })
     }
 }
