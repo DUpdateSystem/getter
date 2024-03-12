@@ -36,9 +36,9 @@ macro_rules! get_cache_manager {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_cache_manager() {
-        let local_cache_path = "./test_cache_manager";
+    #[tokio::test]
+    async fn test_init_cache_manager() {
+        let local_cache_path = "./test_init_cache_manager";
         init_cache_manager(local_cache_path);
         let _ = get_cache_manager!();
     }
