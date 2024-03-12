@@ -1,0 +1,10 @@
+{
+    "labels": [
+      "dependencies"
+    ],
+    "extends": [
+      "config:base",
+      ":gitSignOff"
+    ],
+    "groupName": "all"
+  }
