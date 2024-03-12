@@ -67,6 +67,8 @@ pub async fn get_releases<'a>(
 
 #[cfg(test)]
 mod tests {
+    use crate::get_cache_manager;
+
     use super::*;
     use tempfile::tempdir;
 
@@ -75,7 +77,8 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let cache_dir = temp_dir.path().join("cache");
         let data_dir = temp_dir.path().join("data");
-        init(&data_dir, &cache_dir).unwrap();
+        init(&data_dir, &cache_dir, 100).unwrap();
+        get_cache_manager!();
         let uuid = "fd9b2602-62c5-4d55-bd1e-0d6537714ca0";
         let id_map = BTreeMap::from([("repo", "UpgradeAll"), ("owner", "DUpdateSystem")]);
         let hub_data = BTreeMap::new();

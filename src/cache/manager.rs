@@ -98,7 +98,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_manager() {
-        let mut cache_manager = CacheManager::new("./test_cache_manager");
+        let mut cache_manager = CacheManager::new("./test_cache_manager", None);
         let group = GroupType::REPO_INSIDE;
         let key = "test_key";
         let value = Bytes::from("test_value");
@@ -121,7 +121,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_manager_restart() {
-        let mut cache_manager = CacheManager::new("./test_cache_manager_restart");
+        let mut cache_manager = CacheManager::new("./test_cache_manager_restart", None);
         let group = GroupType::REPO_INSIDE;
         let key = "test_key";
         let value = Bytes::from("test_value");
@@ -130,7 +130,7 @@ mod tests {
             .save(&group, key, value.clone())
             .await
             .expect("save failed");
-        let _cache_manager = CacheManager::new("./test_cache_manager_restart");
+        let _cache_manager = CacheManager::new("./test_cache_manager_restart", None);
         let data = _cache_manager
             .get(&group, key, None)
             .await
@@ -145,7 +145,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_manager_no_exist() {
-        let mut cache_manager = CacheManager::new("./test_cache_manager_no_exist");
+        let mut cache_manager = CacheManager::new("./test_cache_manager_no_exist", None);
         let group = GroupType::REPO_INSIDE;
         let key = "test_key_no_exist";
         let data = cache_manager.get(&group, key, None).await;
@@ -155,8 +155,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cache_manager_expire() {
-        let mut cache_manager = CacheManager::new("./test_cache_manager_expire");
+    async fn test_cache_manager_expire_non_global() {
+        let mut cache_manager = CacheManager::new("./test_cache_manager_expire_non_global", None);
         let group = GroupType::REPO_INSIDE;
         let key = "test_key_expire";
         let value = Bytes::from("test_value_expire");
@@ -168,6 +168,65 @@ mod tests {
         // sleep 1 second
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         let data = cache_manager.get(&group, key, Some(0)).await;
+        assert_eq!(data, None);
+        let data = cache_manager
+            .get(&group, key, Some(100))
+            .await
+            .expect("get failed");
+        assert_eq!(data, value);
+        cache_manager
+            .remove(&group, key)
+            .await
+            .expect("remove failed");
+        cache_manager.clean().await.expect("clean failed");
+    }
+
+    #[tokio::test]
+    async fn test_cache_manager_expire_non_expire() {
+        let mut cache_manager = CacheManager::new("./test_cache_manager_non_expire", None);
+        let group = GroupType::REPO_INSIDE;
+        let key = "test_key_expire";
+        let value = Bytes::from("test_value_expire");
+        let _ = cache_manager.remove(&group, key).await;
+        cache_manager
+            .save(&group, key, value.clone())
+            .await
+            .expect("save failed");
+        // sleep 1 second
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        let data = cache_manager.get(&group, key, Some(0)).await;
+        assert_eq!(data, None);
+        let data = cache_manager
+            .get(&group, key, None)
+            .await
+            .expect("get failed");
+        assert_eq!(data, value);
+        cache_manager
+            .remove(&group, key)
+            .await
+            .expect("remove failed");
+        cache_manager.clean().await.expect("clean failed");
+    }
+
+
+    #[tokio::test]
+    async fn test_cache_manager_global_expire() {
+        let mut cache_manager = CacheManager::new("./test_cache_manager_global_expire", Some(1));
+        let group = GroupType::REPO_INSIDE;
+        let key = "test_key_expire";
+        let value = Bytes::from("test_value_expire");
+        let _ = cache_manager.remove(&group, key).await;
+        cache_manager
+            .save(&group, key, value.clone())
+            .await
+            .expect("save failed");
+        // sleep 1 second
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        let data = cache_manager.get(&group, key, Some(0)).await;
+        assert_eq!(data, None);
+        let data = cache_manager
+            .get(&group, key, None)
+            .await;
         assert_eq!(data, None);
         let data = cache_manager
             .get(&group, key, Some(100))

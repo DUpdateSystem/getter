@@ -20,6 +20,8 @@ serde_json = "1.0.108"
 moka = { version = "0.12.2", features = ["future"] }
 quick-xml = { version = "0.31.0", features = ["encoding", "async-tokio"] }
 async_fn_traits = "0.1.1"
+version-compare = "0.1.1"
+regex = "1.10.3"
 
 [dev-dependencies]
 mockito = "1.2.0"

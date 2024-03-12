@@ -6,10 +6,16 @@ use std::collections::HashMap;
 use super::super::data::release::*;
 use super::base_provider::*;
 
-use crate::utils::http::{get, head, http_status_is_ok};
+use crate::utils::{
+    http::{get, head, http_status_is_ok},
+    versioning::Version,
+};
 
 static GITHUB_API_URL: &str = "https://api.github.com";
 static GITHUB_URL: &str = "https://github.com";
+
+static VERSION_NUMBER_KEY: &str = "version_number_key";
+static VERSION_CODE_KEY: &str = "version_code_key";
 
 pub struct GitHubProvider {
     url_proxy_map: HashMap<String, String>,
@@ -116,13 +122,33 @@ impl BaseProvider for GitHubProvider {
                             .collect(),
                         None => vec![],
                     };
-                    let version_number = json.get("name")?.as_str()?.to_string();
+                    let mut keys_to_try = vec!["name", "tag_name"];
+                    if let Some(tag) = fin.data_map.hub_data.get(VERSION_NUMBER_KEY) {
+                        keys_to_try.insert(0, tag);
+                    }
+                    let mut version_number: Option<String> = None;
+
+                    for key in keys_to_try.iter() {
+                        if let Some(value) = json.get(key).and_then(|v| v.as_str()) {
+                            if Version::new(value.to_string()).is_valid() {
+                                version_number = Some(value.to_string());
+                                break;
+                            }
+                        }
+                    }
                     let changelog = json.get("body")?.as_str()?.to_string();
+
+                    let mut extra = None;
+                    if let Some(tag) = fin.data_map.hub_data.get(VERSION_CODE_KEY) {
+                        if let Some(value) = json.get(tag) {
+                            extra = Some(HashMap::from([(tag.to_string(), value.to_string())]));
+                        }
+                    }
                     Some(ReleaseData {
-                        version_number,
+                        version_number: version_number?.to_string(),
                         changelog,
                         assets: assets_data,
-                        extra: None,
+                        extra,
                     })
                 })
                 .collect::<Vec<ReleaseData>>();
