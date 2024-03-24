@@ -10,7 +10,7 @@ webpki-roots = ["hyper-rustls/webpki-roots"]
 
 [dependencies]
 once_cell = "1.19.0"
-async-trait = "0.1.78"
+async-trait = "0.1.79"
 hyper = { version = "1.2", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 hyper-rustls = { version = "0.26.0", features = ["http2"] }
