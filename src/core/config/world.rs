@@ -1,42 +1,35 @@
-pub mod world_list;
 pub mod local_repo;
 pub mod world_config_wrapper;
+pub mod world_list;
 
 use once_cell::sync::Lazy;
+use std::{path::Path, sync::Arc};
+use tokio::sync::Mutex;
 
-use crate::{utils::instance::{InstanceContainer, InstanceGuard}, error::Result};
+use crate::{error::Result, utils::instance::InstanceContainer};
 
 use self::world_list::WorldList;
 
 static INSTANCE_CONTAINER: Lazy<InstanceContainer<WorldList>> =
-    Lazy::new(|| InstanceContainer::new());
+    Lazy::new(|| InstanceContainer::new(WorldList::new()));
 
-pub fn init_world_list(world_list_path: &str) -> Result<()> {
-    INSTANCE_CONTAINER.init(WorldList::load(world_list_path)?);
+pub async fn init_world_list(world_list_path: &Path) -> Result<()> {
+    get_world_list().await.lock().await.load(world_list_path)?;
     Ok(())
 }
 
-pub fn _get<'a>() -> InstanceGuard<'a, WorldList> {
-    INSTANCE_CONTAINER.get()
-}
-
-#[macro_export]
-macro_rules! get_world_list {
-    () => {{
-        $crate::core::config::world::_get()
-            .get()
-            .expect("World list is not initialized")
-    }};
+pub async fn get_world_list<'a>() -> Arc<Mutex<WorldList>> {
+    INSTANCE_CONTAINER.get().await.clone()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_get_world_list_micro() {
-        let world_list_path = "./test_get_world_list_micro";
-        init_world_list(world_list_path).unwrap();
-        let _ = get_world_list!();
+    #[tokio::test]
+    async fn test_get_world_list_micro() {
+        let world_list_path = Path::new("./test_get_world_list_micro");
+        init_world_list(world_list_path).await.unwrap();
+        let _ = get_world_list();
     }
 }

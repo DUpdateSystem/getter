@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use bytes::Bytes;
 use core::fmt;
-use std::hash::{Hash, Hasher, DefaultHasher};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::{
     collections::{BTreeMap, HashMap},
     error::Error,
@@ -151,11 +151,27 @@ pub trait BaseProvider {
 }
 
 pub trait BaseProviderExt: BaseProvider {
-    fn url_proxy_map(&self) -> &HashMap<String, String>;
+    fn url_proxy_map(&self, fin: &FIn) -> HashMap<String, String> {
+        let hub_data = fin.data_map.hub_data;
+        if let Some(proxy_map) = hub_data.get(REVERSE_PROXY) {
+            proxy_map
+                .lines()
+                .map(|line| {
+                    let mut parts = line.splitn(2, "->");
+                    let url_prefix = parts.next().unwrap_or_default().trim();
+                    let proxy_url = parts.next().unwrap_or_default().trim();
+                    (url_prefix.to_string(), proxy_url.to_string())
+                })
+                .filter(|v| !v.0.is_empty() && !v.1.is_empty())
+                .collect::<HashMap<String, String>>()
+        } else {
+            return HashMap::new();
+        }
+    }
 
-    fn replace_proxy_url(&self, url: &str) -> String {
+    fn replace_proxy_url(&self, fin: &FIn, url: &str) -> String {
         let mut url = url.to_string();
-        for (url_prefix, proxy_url) in self.url_proxy_map() {
+        for (url_prefix, proxy_url) in self.url_proxy_map(fin).iter() {
             url = url.replace(url_prefix, proxy_url);
         }
         url
@@ -170,19 +186,17 @@ pub const ANDROID_CUSTOM_SHELL_ROOT: &str = "android_custom_shell_root";
 pub const KEY_REPO_URL: &str = "repo_url";
 pub const KEY_REPO_API_URL: &str = "repo_api_url";
 
+pub const REVERSE_PROXY: &str = "reverse_proxy";
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    pub struct MockProvider {
-        url_proxy_map: HashMap<String, String>,
-    }
+    pub struct MockProvider;
 
     impl MockProvider {
         pub fn new() -> MockProvider {
-            MockProvider {
-                url_proxy_map: HashMap::new(),
-            }
+            MockProvider {}
         }
     }
 
@@ -236,11 +250,7 @@ mod tests {
         }
     }
 
-    impl BaseProviderExt for MockProvider {
-        fn url_proxy_map(&self) -> &HashMap<String, String> {
-            &self.url_proxy_map
-        }
-    }
+    impl BaseProviderExt for MockProvider {}
 
     #[tokio::test]
     async fn test_get_cache_request_key() {
@@ -310,12 +320,15 @@ mod tests {
     }
 
     fn test_replace_proxy_url() {
-        let mut mock = MockProvider::new();
+        let mock = MockProvider::new();
         let url = "https://github.com";
         let url_r = "https://github.com.proxy";
-        mock.url_proxy_map
-            .insert(url.to_string(), url_r.to_string());
-        let result = mock.replace_proxy_url(url);
+        let proxy_url = format!("{} -> {}", url, url_r);
+        let data_map = HubDataMap::from([("reverse_proxy", proxy_url.as_str())]);
+        let result = mock.replace_proxy_url(
+            &FIn::new_with_frag(&AppDataMap::new(), &data_map, None),
+            url,
+        );
         assert_eq!(result, url_r);
     }
 }

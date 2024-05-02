@@ -16,21 +16,15 @@ static GITLAB_API_URL: &str = "https://gitlab.com/api/v4/projects";
 
 static VERSION_NUMBER_KEY: &str = "version_number_key";
 
-pub struct GitLabProvider {
-    url_proxy_map: HashMap<String, String>,
-}
+pub struct GitLabProvider;
 
 impl GitLabProvider {
-    pub fn new(url_proxy_map: HashMap<String, String>) -> GitLabProvider {
-        GitLabProvider { url_proxy_map }
+    pub fn new() -> GitLabProvider {
+        GitLabProvider {}
     }
 }
 
-impl BaseProviderExt for GitLabProvider {
-    fn url_proxy_map(&self) -> &HashMap<String, String> {
-        &self.url_proxy_map
-    }
-}
+impl BaseProviderExt for GitLabProvider {}
 
 #[async_trait]
 impl BaseProvider for GitLabProvider {
@@ -55,7 +49,7 @@ impl BaseProvider for GitLabProvider {
     async fn check_app_available(&self, fin: &FIn) -> FOut<bool> {
         let id_map = fin.data_map.app_data;
         let api_url = format!("{}/{}/{}", GITLAB_URL, id_map["owner"], id_map["repo"]);
-        let api_url = self.replace_proxy_url(&api_url);
+        let api_url = self.replace_proxy_url(fin, &api_url);
 
         if let Ok(parsed_url) = api_url.parse() {
             if let Ok(rsp) = head(parsed_url, &HashMap::new()).await {
@@ -71,7 +65,7 @@ impl BaseProvider for GitLabProvider {
             "{}/{}%2F{}/releases",
             GITLAB_API_URL, id_map["owner"], id_map["repo"]
         );
-        let url = self.replace_proxy_url(&url);
+        let url = self.replace_proxy_url(fin, &url);
         let mut fout = FOut::new_empty();
         let cache_body = fin.get_cache(&url);
         let mut rsp_body = None;
@@ -160,7 +154,6 @@ impl BaseProvider for GitLabProvider {
 mod tests {
     use super::*;
     use mockito::Server;
-    use std::collections::HashMap;
     use std::fs;
 
     #[tokio::test]
@@ -173,12 +166,12 @@ mod tests {
             .await;
 
         let id_map = AppDataMap::from([("owner", "fdroid"), ("repo", "fdroidclient")]);
+        let proxy_url = format!("{} -> {}", GITLAB_URL, server.url());
+        let hub_data = HubDataMap::from([(REVERSE_PROXY, proxy_url.as_str())]);
 
-        let github_provider =
-            GitLabProvider::new(HashMap::from([(GITLAB_URL.to_string(), server.url())]));
-
+        let github_provider = GitLabProvider::new();
         assert!(github_provider
-            .check_app_available(&FIn::new_with_frag(&id_map, &HubDataMap::new(), None))
+            .check_app_available(&FIn::new_with_frag(&id_map, &hub_data, None))
             .await
             .result
             .unwrap());
@@ -195,12 +188,12 @@ mod tests {
             .create();
 
         let id_map = AppDataMap::from([("owner", "fdroid"), ("repo", "fdroidclient")]);
+        let proxy_url = format!("{} -> {}", GITLAB_API_URL, server.url());
+        let hub_data = HubDataMap::from([(REVERSE_PROXY, proxy_url.as_str())]);
 
-        let github_provider =
-            GitLabProvider::new(HashMap::from([(GITLAB_API_URL.to_string(), server.url())]));
-
+        let github_provider = GitLabProvider::new();
         let releases = github_provider
-            .get_releases(&FIn::new_with_frag(&id_map, &HubDataMap::new(), None))
+            .get_releases(&FIn::new_with_frag(&id_map, &hub_data, None))
             .await
             .result
             .unwrap();

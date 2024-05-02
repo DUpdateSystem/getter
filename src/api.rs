@@ -9,28 +9,16 @@ use crate::websdk::repo::api;
 use crate::utils::json::json_to_string;
 
 #[allow(dead_code)]
-pub fn init(data_dir: &Path, cache_dir: &Path, global_expire_time: u64) -> Result<()> {
+pub async fn init(data_dir: &Path, cache_dir: &Path, global_expire_time: u64) -> Result<()> {
     // world list
     let world_list_path = data_dir.join(world_list::WORLD_CONFIG_LIST_NAME);
-    init_world_list(
-        world_list_path
-            .to_str()
-            .ok_or(crate::error::GetterError::new_nobase(
-                "api",
-                "init: world_list_path to_str failed",
-            ))?,
-    )?;
+    init_world_list(&world_list_path).await?;
     // cache
     let local_cache_path = cache_dir.join("local_cache");
     init_cache_manager_with_expire(
-        local_cache_path
-            .to_str()
-            .ok_or(crate::error::GetterError::new_nobase(
-                "api",
-                "init: local_cache_path to_str failed",
-            ))?,
+        local_cache_path.as_path(),
         global_expire_time,
-    );
+    ).await;
     Ok(())
 }
 
@@ -67,7 +55,7 @@ pub async fn get_releases<'a>(
 
 #[cfg(test)]
 mod tests {
-    use crate::get_cache_manager;
+    use crate::cache::get_cache_manager;
 
     use super::*;
     use tempfile::tempdir;
@@ -77,8 +65,8 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let cache_dir = temp_dir.path().join("cache");
         let data_dir = temp_dir.path().join("data");
-        init(&data_dir, &cache_dir, 100).unwrap();
-        get_cache_manager!();
+        init(&data_dir, &cache_dir, 100).await.unwrap();
+        let _ = get_cache_manager().await;
         let uuid = "fd9b2602-62c5-4d55-bd1e-0d6537714ca0";
         let id_map = BTreeMap::from([("repo", "UpgradeAll"), ("owner", "DUpdateSystem")]);
         let hub_data = BTreeMap::new();

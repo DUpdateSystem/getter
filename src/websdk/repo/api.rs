@@ -5,8 +5,8 @@ use serde::Serialize;
 use super::data::release::ReleaseData;
 use super::provider;
 use super::provider::base_provider::{AppDataMap, DataMap, FIn, FOut, FunctionType, HubDataMap};
+use crate::cache::get_cache_manager;
 use crate::cache::manager::GroupType;
-use crate::get_cache_manager;
 use crate::utils::json::{bytes_to_json, json_to_bytes};
 use std::collections::HashMap;
 
@@ -21,9 +21,12 @@ where
     T: Send + DeserializeOwned + Serialize,
     F: for<'b> AsyncFnOnce2<&'b str, &'b FIn<'b>, Output = Option<FOut<T>>>,
 {
+    let cache_manager = get_cache_manager().await;
     let data_map = DataMap { app_data, hub_data };
     let api_cache_key = data_map.get_hash();
-    if let Some(bytes) = get_cache_manager!()
+    if let Some(bytes) = cache_manager
+        .lock()
+        .await
         .get(&GroupType::API, &api_cache_key.to_string(), None)
         .await
     {
@@ -35,7 +38,9 @@ where
     let mut cache_map = HashMap::new();
     if let Some(keys) = cache_keys {
         for key in keys {
-            if let Some(value) = get_cache_manager!()
+            if let Some(value) = cache_manager
+                .lock()
+                .await
                 .get(&GroupType::REPO_INSIDE, &key, None)
                 .await
             {
@@ -48,14 +53,18 @@ where
     if let Some(fout) = provider_func(uuid, &fin).await {
         if let Some(cached_map) = fout.cached_map {
             for (key, value) in cached_map {
-                let _ = get_cache_manager!()
+                let _ = cache_manager
+                    .lock()
+                    .await
                     .save(&GroupType::REPO_INSIDE, &key, value)
                     .await;
             }
         }
         if let Ok(data) = fout.result {
             if let Ok(value) = json_to_bytes(&data) {
-                let _ = get_cache_manager!()
+                let _ = cache_manager
+                    .lock()
+                    .await
                     .save(&GroupType::API, &api_cache_key.to_string(), value)
                     .await;
             }

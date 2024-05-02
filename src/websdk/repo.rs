@@ -1,3 +1,3 @@
 pub mod api;
-mod data;
+pub mod data;
 mod provider;

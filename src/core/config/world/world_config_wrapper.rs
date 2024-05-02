@@ -1,11 +1,13 @@
-use crate::error::{Result, GetterError};
-use crate::utils::json::{string_to_json, json_to_string};
+use std::path::Path;
+
+use crate::error::{GetterError, Result};
+use crate::utils::json::{json_to_string, string_to_json};
+use crate::websdk::cloud_rules::cloud_rules_wrapper::CloudRules;
 use crate::websdk::cloud_rules::data::app_item::AppItem;
 use crate::websdk::cloud_rules::data::hub_item::HubItem;
-use crate::websdk::cloud_rules::cloud_rules_wrapper::CloudRules;
 
-use super::world_list::WorldList;
 use super::local_repo::LocalRepo;
+use super::world_list::WorldList;
 
 pub struct WorldConfigWrapper {
     pub world_list: WorldList,
@@ -13,8 +15,9 @@ pub struct WorldConfigWrapper {
 }
 
 impl WorldConfigWrapper {
-    pub fn new(world_config_path: &str, local_repo_path: &str) -> Result<Self> {
-        let world_list = WorldList::load(world_config_path)?;
+    pub fn new(world_config_path: &Path, local_repo_path: &str) -> Result<Self> {
+        let mut world_list = WorldList::new();
+        world_list.load(world_config_path)?;
         let local_repo = LocalRepo::new(local_repo_path);
         Ok(WorldConfigWrapper {
             world_list,
@@ -42,14 +45,18 @@ impl WorldConfigWrapper {
 
     pub fn download_app_rule(&self, app_name: &str, cloud_rules: &mut CloudRules) -> Result<()> {
         let app_item = cloud_rules.get_cloud_app_rules(|x| x.info.name == app_name);
-        let content = json_to_string(&app_item).map_err(|e| GetterError::new("WorldConfigWrapper", "download_app_rule", Box::new(e)))?;
+        let content = json_to_string(&app_item).map_err(|e| {
+            GetterError::new("WorldConfigWrapper", "download_app_rule", Box::new(e))
+        })?;
         self.local_repo.save(app_name, &content)?;
         Ok(())
     }
 
     pub fn download_hub_rule(&self, hub_name: &str, cloud_rules: &mut CloudRules) -> Result<()> {
         let hub_item = cloud_rules.get_cloud_hub_rules(|x| x.info.hub_name == hub_name);
-        let content = json_to_string(&hub_item).map_err(|e| GetterError::new("WorldConfigWrapper", "download_hub_rule", Box::new(e)))?;
+        let content = json_to_string(&hub_item).map_err(|e| {
+            GetterError::new("WorldConfigWrapper", "download_hub_rule", Box::new(e))
+        })?;
         self.local_repo.save(hub_name, &content)?;
         Ok(())
     }

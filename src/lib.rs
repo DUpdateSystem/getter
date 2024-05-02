@@ -1,8 +1,8 @@
-mod error;
-mod websdk;
-mod core;
-mod cache;
-mod locale;
-mod utils;
-
 pub mod api;
+mod cache;
+mod core;
+mod error;
+mod locale;
+pub mod rpc;
+mod utils;
+mod websdk;
