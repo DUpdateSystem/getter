@@ -21,8 +21,7 @@ pub struct GitHubProvider;
 
 impl GitHubProvider {
     pub fn new() -> Self {
-        GitHubProvider {
-        }
+        GitHubProvider {}
     }
 }
 

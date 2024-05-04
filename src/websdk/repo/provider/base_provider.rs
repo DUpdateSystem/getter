@@ -2,6 +2,7 @@ use async_trait::async_trait;
 
 use bytes::Bytes;
 use core::fmt;
+use regex::Regex;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -170,11 +171,19 @@ pub trait BaseProviderExt: BaseProvider {
     }
 
     fn replace_proxy_url(&self, fin: &FIn, url: &str) -> String {
-        let mut url = url.to_string();
+        let mut result_url = url.to_string();
         for (url_prefix, proxy_url) in self.url_proxy_map(fin).iter() {
-            url = url.replace(url_prefix, proxy_url);
+            let regex_prefix = "regex:";
+            if url_prefix.starts_with(regex_prefix) {
+                let url_prefix = &url_prefix[regex_prefix.len()..].trim();
+                if let Ok(re) = Regex::new(&url_prefix) {
+                    result_url = re.replace_all(&result_url, proxy_url.clone()).to_string();
+                }
+            } else {
+                result_url = result_url.replace(url_prefix, proxy_url);
+            }
         }
-        url
+        result_url
     }
 }
 
@@ -319,12 +328,79 @@ mod tests {
         assert_eq!(latest_version, "1");
     }
 
+    #[test]
     fn test_replace_proxy_url() {
         let mock = MockProvider::new();
         let url = "https://github.com";
         let url_r = "https://github.com.proxy";
         let proxy_url = format!("{} -> {}", url, url_r);
         let data_map = HubDataMap::from([("reverse_proxy", proxy_url.as_str())]);
+        let result = mock.replace_proxy_url(
+            &FIn::new_with_frag(&AppDataMap::new(), &data_map, None),
+            url,
+        );
+        assert_eq!(result, url_r);
+
+        let proxy_url = format!("{}->{}", url, url_r);
+        let data_map = HubDataMap::from([("reverse_proxy", proxy_url.as_str())]);
+        let result = mock.replace_proxy_url(
+            &FIn::new_with_frag(&AppDataMap::new(), &data_map, None),
+            url,
+        );
+        assert_eq!(result, url_r);
+
+        let url_r = format!("{} -> proxy", url);
+        let proxy_url = format!(" {}  ->{} ", url, url_r);
+        let data_map = HubDataMap::from([("reverse_proxy", proxy_url.as_str())]);
+        let result = mock.replace_proxy_url(
+            &FIn::new_with_frag(&AppDataMap::new(), &data_map, None),
+            url,
+        );
+        assert_eq!(result, url_r);
+    }
+
+    #[test]
+    fn test_replace_proxy_url_with_regex() {
+        let mock = MockProvider::new();
+
+        let regex_url = "regex:^https:.*/";
+        let url_r = "https://github-proxy.com/";
+
+        let proxy_url = format!("{} -> {}", regex_url, url_r);
+        let data_map = HubDataMap::from([("reverse_proxy", proxy_url.as_str())]);
+
+        let url = "https://github.com/GitHub";
+        let expected_url = "https://github-proxy.com/GitHub";
+
+        let result = mock.replace_proxy_url(
+            &FIn::new_with_frag(&AppDataMap::new(), &data_map, None),
+            url,
+        );
+
+        assert_eq!(
+            result, expected_url,
+            "URL should be rewritten to use the proxy domain."
+        );
+
+        let non_matching_url = "http://example.com";
+        let result = mock.replace_proxy_url(
+            &FIn::new_with_frag(&AppDataMap::new(), &data_map, None),
+            non_matching_url,
+        );
+
+        assert_eq!(
+            result, non_matching_url,
+            "Non-matching URL should not be rewritten."
+        );
+    }
+
+    #[test]
+    fn test_replace_proxy_url_multiple() {
+        let mock = MockProvider::new();
+        let url = "https://github.com";
+        let proxy_url = "https -> http\ngithub -> github-proxy";
+        let url_r = "http://github-proxy.com";
+        let data_map = HubDataMap::from([("reverse_proxy", proxy_url)]);
         let result = mock.replace_proxy_url(
             &FIn::new_with_frag(&AppDataMap::new(), &data_map, None),
             url,
