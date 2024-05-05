@@ -25,4 +25,19 @@ impl GetterError {
     }
 }
 
+impl std::fmt::Display for GetterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}: {}", self.tag, self.message)
+    }
+}
+
+impl std::error::Error for GetterError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.err {
+            Some(err) => Some(err.as_ref()),
+            None => None,
+        }
+    }
+}
+
 pub type Result<T> = result::Result<T, GetterError>;

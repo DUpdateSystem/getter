@@ -1,4 +1,5 @@
 use crate::websdk::repo::api;
+use crate::api as api_root;
 use jsonrpsee::core::traits::ToRpcParams;
 use jsonrpsee::server::{RpcModule, Server, ServerHandle};
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
@@ -6,6 +7,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::to_raw_value;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::path::Path;
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcInitRequest<'a> {
+    pub data_dir: &'a str,
+    pub cache_dir: &'a str,
+    pub global_expire_time: u64,
+}
+
+impl ToRpcParams for RpcInitRequest<'_> {
+    fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
+        to_raw_value(&self).map(Some)
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RpcAppRequest<'a> {
@@ -24,6 +39,18 @@ pub async fn run_serser(addr: &str) -> Result<(String, ServerHandle), Box<dyn st
     let addr = if addr.is_empty() { "127.0.0.1:0" } else { addr };
     let server = Server::builder().build(addr.parse::<SocketAddr>()?).await?;
     let mut module = RpcModule::new(());
+    module.register_async_method("init", |params, _| async move {
+        let request = params.parse::<RpcInitRequest>()?;
+        let data_dir = Path::new(request.data_dir);
+        let cache_dir = Path::new(request.cache_dir);
+        api_root::init(data_dir, cache_dir, request.global_expire_time).await.map_err(|e| {
+            ErrorObjectOwned::owned(
+                ErrorCode::InternalError.code(),
+                "Internal error",
+                Some(e.to_string()),
+            )
+        })
+    })?;
     module.register_async_method("check_app_available", |params, _context| async move {
         let request = params.parse::<RpcAppRequest>()?;
         if let Some(result) =
