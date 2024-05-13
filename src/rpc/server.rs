@@ -24,7 +24,7 @@ impl ToRpcParams for RpcInitRequest<'_> {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RpcAppRequest<'a> {
-    pub uuid: &'a str,
+    pub hub_uuid: &'a str,
     pub app_data: BTreeMap<&'a str, &'a str>,
     pub hub_data: BTreeMap<&'a str, &'a str>,
 }
@@ -57,7 +57,7 @@ pub async fn run_server(addr: &str) -> Result<(String, ServerHandle), Box<dyn st
     module.register_async_method("check_app_available", |params, _context| async move {
         let request = params.parse::<RpcAppRequest>()?;
         if let Some(result) =
-            api::check_app_available(&request.uuid, &request.app_data, &request.hub_data).await
+            api::check_app_available(&request.hub_uuid, &request.app_data, &request.hub_data).await
         {
             Ok(result)
         } else {
@@ -71,7 +71,7 @@ pub async fn run_server(addr: &str) -> Result<(String, ServerHandle), Box<dyn st
     module.register_async_method("get_latest_release", |params, _context| async move {
         if let Ok(request) = params.parse::<RpcAppRequest>() {
             if let Some(result) =
-                api::get_latest_release(&request.uuid, &request.app_data, &request.hub_data).await
+                api::get_latest_release(&request.hub_uuid, &request.app_data, &request.hub_data).await
             {
                 Ok(result)
             } else {
@@ -92,7 +92,7 @@ pub async fn run_server(addr: &str) -> Result<(String, ServerHandle), Box<dyn st
     module.register_async_method("get_releases", |params, _context| async move {
         if let Ok(request) = params.parse::<RpcAppRequest>() {
             if let Some(result) =
-                api::get_releases(&request.uuid, &request.app_data, &request.hub_data).await
+                api::get_releases(&request.hub_uuid, &request.app_data, &request.hub_data).await
             {
                 Ok(result)
             } else {
@@ -181,7 +181,7 @@ mod tests {
         println!("Server started at {}", url);
         let client = HttpClientBuilder::default().build(url).unwrap();
         let params = RpcAppRequest {
-            uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
+            hub_uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
             app_data: id_map,
             hub_data,
         };
@@ -209,7 +209,7 @@ mod tests {
         println!("Server started at {}", url);
         let client = HttpClientBuilder::default().build(url).unwrap();
         let params = RpcAppRequest {
-            uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
+            hub_uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
             app_data: id_map,
             hub_data,
         };
@@ -238,7 +238,7 @@ mod tests {
         println!("Server started at {}", url);
         let client = HttpClientBuilder::default().build(url).unwrap();
         let params = RpcAppRequest {
-            uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
+            hub_uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
             app_data: id_map,
             hub_data,
         };
