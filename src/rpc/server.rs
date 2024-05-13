@@ -11,8 +11,8 @@ use std::path::Path;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RpcInitRequest<'a> {
-    pub data_dir: &'a str,
-    pub cache_dir: &'a str,
+    pub data_path: &'a str,
+    pub cache_path: &'a str,
     pub global_expire_time: u64,
 }
 
@@ -41,8 +41,8 @@ pub async fn run_server(addr: &str) -> Result<(String, ServerHandle), Box<dyn st
     let mut module = RpcModule::new(());
     module.register_async_method("init", |params, _| async move {
         let request = params.parse::<RpcInitRequest>()?;
-        let data_dir = Path::new(request.data_dir);
-        let cache_dir = Path::new(request.cache_dir);
+        let data_dir = Path::new(request.data_path);
+        let cache_dir = Path::new(request.cache_path);
         api_root::init(data_dir, cache_dir, request.global_expire_time)
             .await
             .map(|_| true)
@@ -155,8 +155,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let temp_dir_path = temp_dir.path().to_str().unwrap();
         let params = RpcInitRequest {
-            data_dir: &format!("{}/data", temp_dir_path),
-            cache_dir: &format!("{}/cache", temp_dir_path),
+            data_path: &format!("{}/data", temp_dir_path),
+            cache_path: &format!("{}/cache", temp_dir_path),
             global_expire_time: 3600,
         };
         println!("{:?}", params);
