@@ -1,5 +1,5 @@
-use crate::websdk::repo::api;
 use crate::api as api_root;
+use crate::websdk::repo::api;
 use jsonrpsee::core::traits::ToRpcParams;
 use jsonrpsee::server::{RpcModule, Server, ServerHandle};
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
@@ -35,7 +35,7 @@ impl ToRpcParams for RpcAppRequest<'_> {
     }
 }
 
-pub async fn run_serser(addr: &str) -> Result<(String, ServerHandle), Box<dyn std::error::Error>> {
+pub async fn run_server(addr: &str) -> Result<(String, ServerHandle), Box<dyn std::error::Error>> {
     let addr = if addr.is_empty() { "127.0.0.1:0" } else { addr };
     let server = Server::builder().build(addr.parse::<SocketAddr>()?).await?;
     let mut module = RpcModule::new(());
@@ -43,13 +43,16 @@ pub async fn run_serser(addr: &str) -> Result<(String, ServerHandle), Box<dyn st
         let request = params.parse::<RpcInitRequest>()?;
         let data_dir = Path::new(request.data_dir);
         let cache_dir = Path::new(request.cache_dir);
-        api_root::init(data_dir, cache_dir, request.global_expire_time).await.map_err(|e| {
-            ErrorObjectOwned::owned(
-                ErrorCode::InternalError.code(),
-                "Internal error",
-                Some(e.to_string()),
-            )
-        })
+        api_root::init(data_dir, cache_dir, request.global_expire_time)
+            .await
+            .map(|_| true)
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    ErrorCode::InternalError.code(),
+                    "Internal error",
+                    Some(e.to_string()),
+                )
+            })
     })?;
     module.register_async_method("check_app_available", |params, _context| async move {
         let request = params.parse::<RpcAppRequest>()?;
@@ -123,20 +126,44 @@ mod tests {
 
     #[tokio::test]
     async fn test_server_start() {
-        let (url, handle) = run_serser("").await.unwrap();
+        let (url, handle) = run_server("").await.unwrap();
         println!("Server started at {}", url);
         assert!(url.starts_with("http://"));
         assert!(url.split(":").last().unwrap().parse::<u16>().unwrap() > 0);
         handle.stop().unwrap();
         let port = 33333;
         let addr = format!("127.0.0.1:{}", port);
-        let (url, handle) = run_serser(&addr).await.unwrap();
+        let (url, handle) = run_server(&addr).await.unwrap();
         println!("Server started at {}", url);
         assert!(url.starts_with("http://"));
         assert!(url.split(":").last().unwrap().parse::<u16>().unwrap() == port);
         handle.stop().unwrap();
     }
 
+    #[tokio::test]
+    async fn test_init() {
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/DUpdateSystem/UpgradeAll")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let (url, handle) = run_server("").await.unwrap();
+        println!("Server started at {}", url);
+        let client = HttpClientBuilder::default().build(url).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir_path = temp_dir.path().to_str().unwrap();
+        let params = RpcInitRequest {
+            data_dir: &format!("{}/data", temp_dir_path),
+            cache_dir: &format!("{}/cache", temp_dir_path),
+            global_expire_time: 3600,
+        };
+        println!("{:?}", params);
+        let response: Result<bool, _> = client.request("init", params).await;
+        assert_eq!(response.unwrap(), true);
+        handle.stop().unwrap();
+    }
     #[tokio::test]
     async fn test_check_app_available() {
         let mut server = Server::new_async().await;
@@ -150,10 +177,8 @@ mod tests {
         let proxy_url = format!("{} -> {}", "https://github.com", server.url());
         let hub_data = BTreeMap::from([("reverse_proxy", proxy_url.as_str())]);
 
-        let (url, handle) = run_serser("").await.unwrap();
+        let (url, handle) = run_server("").await.unwrap();
         println!("Server started at {}", url);
-        assert!(url.starts_with("http://"));
-        assert!(url.split(":").last().unwrap().parse::<u16>().unwrap() > 0);
         let client = HttpClientBuilder::default().build(url).unwrap();
         let params = RpcAppRequest {
             uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
@@ -180,10 +205,8 @@ mod tests {
         let proxy_url = format!("{} -> {}", "https://github.com", server.url());
         let hub_data = BTreeMap::from([("reverse_proxy", proxy_url.as_str())]);
 
-        let (url, handle) = run_serser("").await.unwrap();
+        let (url, handle) = run_server("").await.unwrap();
         println!("Server started at {}", url);
-        assert!(url.starts_with("http://"));
-        assert!(url.split(":").last().unwrap().parse::<u16>().unwrap() > 0);
         let client = HttpClientBuilder::default().build(url).unwrap();
         let params = RpcAppRequest {
             uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
@@ -211,10 +234,8 @@ mod tests {
         let proxy_url = format!("{} -> {}", "https://github.com", server.url());
         let hub_data = BTreeMap::from([("reverse_proxy", proxy_url.as_str())]);
 
-        let (url, handle) = run_serser("").await.unwrap();
+        let (url, handle) = run_server("").await.unwrap();
         println!("Server started at {}", url);
-        assert!(url.starts_with("http://"));
-        assert!(url.split(":").last().unwrap().parse::<u16>().unwrap() > 0);
         let client = HttpClientBuilder::default().build(url).unwrap();
         let params = RpcAppRequest {
             uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
