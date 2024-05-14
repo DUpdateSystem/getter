@@ -132,10 +132,10 @@ pub async fn run_server(
 }
 
 #[allow(dead_code)]
-pub async fn run_server_hanging(
+pub async fn run_server_hanging<T>(
     addr: &str,
-    callback: fn(&str) -> (),
-) -> Result<(), Box<dyn std::error::Error>> {
+    callback: impl Fn(&str) -> Result<T, Box<dyn std::error::Error>>,
+) -> Result<T, Box<dyn std::error::Error>> {
     let is_running = Arc::new(AtomicBool::new(true));
     let (url, handle) = match run_server(addr, is_running.clone()).await {
         Ok((url, handle)) => (url, handle),
@@ -144,12 +144,12 @@ pub async fn run_server_hanging(
             return Err(e);
         }
     };
-    callback(&url);
+    let result = callback(&url)?;
     while is_running.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     handle.stop()?;
-    Ok(())
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -306,6 +306,7 @@ mod tests {
             // This should run the server and wait for the shutdown command
             run_server_hanging(addr, |url| {
                 println!("Server started at {}", url);
+                Ok(())
             })
             .await
             .expect("Server failed to run");
