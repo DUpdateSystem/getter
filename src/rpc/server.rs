@@ -8,6 +8,9 @@ use serde_json::value::to_raw_value;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RpcInitRequest<'a> {
@@ -35,10 +38,21 @@ impl ToRpcParams for RpcAppRequest<'_> {
     }
 }
 
-pub async fn run_server(addr: &str) -> Result<(String, ServerHandle), Box<dyn std::error::Error>> {
+pub async fn run_server(
+    addr: &str,
+    is_running: Arc<AtomicBool>,
+) -> Result<(String, ServerHandle), Box<dyn std::error::Error>> {
     let addr = if addr.is_empty() { "127.0.0.1:0" } else { addr };
     let server = Server::builder().build(addr.parse::<SocketAddr>()?).await?;
     let mut module = RpcModule::new(());
+    // Register the shutdown method
+    let run_flag = is_running.clone();
+    module.register_async_method("shutdown", move |_, _| {
+        let flag = run_flag.clone();
+        async move {
+            flag.store(false, Ordering::SeqCst);
+        }
+    })?;
     module.register_async_method("init", |params, _| async move {
         let request = params.parse::<RpcInitRequest>()?;
         let data_dir = Path::new(request.data_path);
@@ -71,7 +85,8 @@ pub async fn run_server(addr: &str) -> Result<(String, ServerHandle), Box<dyn st
     module.register_async_method("get_latest_release", |params, _context| async move {
         if let Ok(request) = params.parse::<RpcAppRequest>() {
             if let Some(result) =
-                api::get_latest_release(&request.hub_uuid, &request.app_data, &request.hub_data).await
+                api::get_latest_release(&request.hub_uuid, &request.app_data, &request.hub_data)
+                    .await
             {
                 Ok(result)
             } else {
@@ -112,7 +127,29 @@ pub async fn run_server(addr: &str) -> Result<(String, ServerHandle), Box<dyn st
     })?;
     let addr = server.local_addr()?;
     let handle = server.start(module);
+    tokio::spawn(handle.clone().stopped());
     Ok((format!("http://{}", addr), handle))
+}
+
+#[allow(dead_code)]
+pub async fn run_server_hanging(
+    addr: &str,
+    callback: fn(&str) -> (),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let is_running = Arc::new(AtomicBool::new(true));
+    let (url, handle) = match run_server(addr, is_running.clone()).await {
+        Ok((url, handle)) => (url, handle),
+        Err(e) => {
+            eprintln!("Failed to start server: {}", e);
+            return Err(e);
+        }
+    };
+    callback(&url);
+    while is_running.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    handle.stop()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -120,20 +157,25 @@ mod tests {
     use crate::websdk::repo::data::release::ReleaseData;
 
     use super::*;
-    use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
+    use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use mockito::Server;
     use std::fs;
+    use tokio::time::timeout;
 
     #[tokio::test]
     async fn test_server_start() {
-        let (url, handle) = run_server("").await.unwrap();
+        let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
+            .await
+            .unwrap();
         println!("Server started at {}", url);
         assert!(url.starts_with("http://"));
         assert!(url.split(":").last().unwrap().parse::<u16>().unwrap() > 0);
         handle.stop().unwrap();
         let port = 33333;
         let addr = format!("127.0.0.1:{}", port);
-        let (url, handle) = run_server(&addr).await.unwrap();
+        let (url, handle) = run_server(&addr, Arc::new(AtomicBool::new(true)))
+            .await
+            .unwrap();
         println!("Server started at {}", url);
         assert!(url.starts_with("http://"));
         assert!(url.split(":").last().unwrap().parse::<u16>().unwrap() == port);
@@ -149,7 +191,9 @@ mod tests {
             .create_async()
             .await;
 
-        let (url, handle) = run_server("").await.unwrap();
+        let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
+            .await
+            .unwrap();
         println!("Server started at {}", url);
         let client = HttpClientBuilder::default().build(url).unwrap();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -174,10 +218,12 @@ mod tests {
             .await;
 
         let id_map = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
-        let proxy_url = format!("{} -> {}", "https://github.com", server.url());
+        let proxy_url = format!("{} -> {}", "https://api.github.com", server.url());
         let hub_data = BTreeMap::from([("reverse_proxy", proxy_url.as_str())]);
 
-        let (url, handle) = run_server("").await.unwrap();
+        let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
+            .await
+            .unwrap();
         println!("Server started at {}", url);
         let client = HttpClientBuilder::default().build(url).unwrap();
         let params = RpcAppRequest {
@@ -202,10 +248,12 @@ mod tests {
             .create();
 
         let id_map = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
-        let proxy_url = format!("{} -> {}", "https://github.com", server.url());
+        let proxy_url = format!("{} -> {}", "https://api.github.com", server.url());
         let hub_data = BTreeMap::from([("reverse_proxy", proxy_url.as_str())]);
 
-        let (url, handle) = run_server("").await.unwrap();
+        let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
+            .await
+            .unwrap();
         println!("Server started at {}", url);
         let client = HttpClientBuilder::default().build(url).unwrap();
         let params = RpcAppRequest {
@@ -234,7 +282,9 @@ mod tests {
         let proxy_url = format!("{} -> {}", "https://github.com", server.url());
         let hub_data = BTreeMap::from([("reverse_proxy", proxy_url.as_str())]);
 
-        let (url, handle) = run_server("").await.unwrap();
+        let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
+            .await
+            .unwrap();
         println!("Server started at {}", url);
         let client = HttpClientBuilder::default().build(url).unwrap();
         let params = RpcAppRequest {
@@ -247,5 +297,42 @@ mod tests {
         let releases = response.unwrap();
         assert!(!releases.is_empty());
         handle.stop().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_server_hanging() {
+        let addr = "127.0.0.1:33334";
+        let server_task = tokio::spawn(async move {
+            // This should run the server and wait for the shutdown command
+            run_server_hanging(addr, |url| {
+                println!("Server started at {}", url);
+            })
+            .await
+            .expect("Server failed to run");
+        });
+
+        // Allow some time for the server to start up
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // The callback should print the URL, but since we cannot capture that output easily in a test,
+        // we assume the server starts correctly if no error happens till now.
+        // Here, manually create a client and send a shutdown request
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{}", addr))
+            .expect("Failed to build client");
+
+        let response: Result<(), _> = client.request("shutdown", rpc_params![]).await;
+        assert!(response.is_ok(), "Failed to shutdown server");
+
+        // Allow some time for the server to shut down
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Check if the shutdown was successful by confirming the server task is done
+        if timeout(Duration::from_secs(1), server_task).await.is_err() {
+            panic!("The server did not shut down within the expected time");
+        }
+
+        let response: Result<(), _> = client.request("shutdown", rpc_params![]).await;
+        assert!(response.is_err(), "Server should not be running");
     }
 }
