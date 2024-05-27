@@ -53,6 +53,7 @@ pub async fn run_server(
             flag.store(false, Ordering::SeqCst);
         }
     })?;
+    module.register_method("ping", |_, _| "pong")?;
     module.register_async_method("init", |params, _| async move {
         let request = params.parse::<RpcInitRequest>()?;
         let data_dir = Path::new(request.data_path);
@@ -179,6 +180,18 @@ mod tests {
         println!("Server started at {}", url);
         assert!(url.starts_with("http://"));
         assert!(url.split(":").last().unwrap().parse::<u16>().unwrap() == port);
+        handle.stop().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_ping() {
+        let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
+            .await
+            .unwrap();
+        println!("Server started at {}", url);
+        let client = HttpClientBuilder::default().build(url).unwrap();
+        let response: Result<String, _> = client.request("ping", rpc_params![]).await;
+        assert_eq!(response.unwrap(), "pong");
         handle.stop().unwrap();
     }
 
