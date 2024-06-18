@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use super::app_item::AppItem;
 use super::hub_item::HubItem;
@@ -13,10 +13,12 @@ use super::hub_item::HubItem;
 /// }
 /// ```
 
-#[derive(Default)]
+#[derive(Default, Serialize, Debug, Clone)]
 pub struct ConfigListViewer<'a> {
+    #[serde(rename = "app_config_list")]
     pub app_config_list: Vec<&'a AppItem>,
 
+    #[serde(rename = "hub_config_list")]
     pub hub_config_list: Vec<&'a HubItem>,
 }
 
@@ -38,11 +40,20 @@ impl ConfigList {
     }
 }
 
+impl ConfigListViewer<'_> {
+    pub fn to_owned(&self) -> ConfigList {
+        ConfigList {
+            app_config_list: self.app_config_list.iter().map(|&x| x.clone()).collect(),
+            hub_config_list: self.hub_config_list.iter().map(|&x| x.clone()).collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use super::*;
     use serde_json;
+    use std::fs;
 
     #[test]
     fn test_config_list() {
@@ -54,10 +65,16 @@ mod tests {
         // check app_config_list
         assert_eq!(config_list.app_config_list.len(), 219);
         assert_eq!(config_list.app_config_list[0].info.name, "UpgradeAll");
-        assert_eq!(config_list.app_config_list.last().unwrap().info.name, "黑阈");
+        assert_eq!(
+            config_list.app_config_list.last().unwrap().info.name,
+            "黑阈"
+        );
         // check hub_config_list
         assert_eq!(config_list.hub_config_list.len(), 11);
         assert_eq!(config_list.hub_config_list[0].info.hub_name, "GitHub");
-        assert_eq!(config_list.hub_config_list.last().unwrap().info.hub_name, "Xposed Module Repository");
+        assert_eq!(
+            config_list.hub_config_list.last().unwrap().info.hub_name,
+            "Xposed Module Repository"
+        );
     }
 }

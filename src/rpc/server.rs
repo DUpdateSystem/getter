@@ -1,4 +1,5 @@
 use crate::api as api_root;
+use crate::websdk::cloud_rules::cloud_rules::CloudRules;
 use crate::websdk::repo::api;
 use jsonrpsee::core::traits::ToRpcParams;
 use jsonrpsee::server::{RpcModule, Server, ServerHandle};
@@ -33,6 +34,17 @@ pub struct RpcAppRequest<'a> {
 }
 
 impl ToRpcParams for RpcAppRequest<'_> {
+    fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
+        to_raw_value(&self).map(Some)
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcCloudConfigRequest<'a> {
+    pub api_url: &'a str,
+}
+
+impl ToRpcParams for RpcCloudConfigRequest<'_> {
     fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
         to_raw_value(&self).map(Some)
     }
@@ -126,6 +138,26 @@ pub async fn run_server(
             ))
         }
     })?;
+
+    module.register_async_method("get_cloud_config", |params, _context| async move {
+        if let Ok(request) = params.parse::<RpcCloudConfigRequest>() {
+            let mut cloud_rules = CloudRules::new(request.api_url);
+            if let Err(e) = cloud_rules.renew().await {
+                return Err(ErrorObjectOwned::owned(
+                    ErrorCode::InternalError.code(),
+                    "Download cloud config failed",
+                    Some(e.to_string()),
+                ));
+            }
+            Ok(cloud_rules.get_config_list().to_owned())
+        } else {
+            Err(ErrorObjectOwned::owned(
+                ErrorCode::ParseError.code(),
+                "Parse params error",
+                Some(params.as_str().unwrap_or("None").to_string()),
+            ))
+        }
+    })?;
     let addr = server.local_addr()?;
     let handle = server.start(module);
     tokio::spawn(handle.clone().stopped());
@@ -155,7 +187,7 @@ pub async fn run_server_hanging<T>(
 
 #[cfg(test)]
 mod tests {
-    use crate::websdk::repo::data::release::ReleaseData;
+    use crate::websdk::{cloud_rules::data::config_list::ConfigList, repo::data::release::ReleaseData};
 
     use super::*;
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
@@ -348,5 +380,31 @@ mod tests {
 
         let response: Result<(), _> = client.request("shutdown", rpc_params![]).await;
         assert!(response.is_err(), "Server should not be running");
+    }
+
+    #[tokio::test]
+    async fn test_get_cloud_config() {
+        let body = fs::read_to_string("tests/files/web/cloud_config.json").unwrap();
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/cloud_config.json")
+            .with_status(200)
+            .with_body(body)
+            .create();
+
+        let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
+            .await
+            .unwrap();
+        println!("Server started at {}", url);
+        let client = HttpClientBuilder::default().build(url).unwrap();
+        let url = server.url() + "/cloud_config.json";
+        let params = RpcCloudConfigRequest { api_url: &url };
+        println!("{:?}", params);
+        let response: Result<ConfigList, _> =
+            client.request("get_cloud_config", params).await;
+        let config = response.unwrap();
+        assert!(!config.app_config_list.is_empty());
+        assert!(!config.hub_config_list.is_empty());
+        handle.stop().unwrap();
     }
 }

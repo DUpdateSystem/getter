@@ -16,6 +16,12 @@ pub struct DownloadError {
     pub error: Box<dyn std::error::Error + Send + Sync>,
 }
 
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "DownloadError: {} ({})", self.error, self.url)
+    }
+}
+
 impl CloudRules {
     pub fn new(api_url: &str) -> CloudRules {
         CloudRules {
