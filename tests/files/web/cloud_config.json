@@ -100,7 +100,7 @@
         "name": "Aegis",
         "url": "https://github.com/beemdevelopment/Aegis",
         "extra_map": {
-          "null": "com.beemdevelopment.aegis"
+          "android_app_package": "com.beemdevelopment.aegis"
         }
       }
     },
@@ -347,7 +347,7 @@
         "name": "Bangumi",
         "url": "https://github.com/czy0729/Bangumi",
         "extra_map": {
-          "null": "com.czy0729.bangumi"
+          "android_app_package": "com.czy0729.bangumi"
         }
       }
     },
@@ -854,7 +854,7 @@
         "name": "EhviewerMD",
         "url": "https://github.com/Ehviewer-Overhauled/Ehviewer",
         "extra_map": {
-          "null": "moe.tarsin.ehviewer"
+          "android_app_package": "moe.tarsin.ehviewer"
         }
       }
     },
@@ -1426,7 +1426,7 @@
         "name": "Lesspass",
         "url": "https://play.google.com/store/apps/details?id=com.lesspass.android",
         "extra_map": {
-          "null": "com.lesspass.android"
+          "android_app_package": "com.lesspass.android"
         }
       }
     },
@@ -1452,7 +1452,7 @@
         "name": "LibreTube",
         "url": "https://github.com/libre-tube/LibreTube",
         "extra_map": {
-          "null": "com.github.libretube"
+          "android_app_package": "com.github.libretube"
         }
       }
     },
@@ -1491,7 +1491,7 @@
         "name": "LinkHub",
         "url": "https://github.com/AmrDeveloper/LinkHub",
         "extra_map": {
-          "null": "com.amrdeveloper.linkhub"
+          "android_app_package": "com.amrdeveloper.linkhub"
         }
       }
     },
@@ -1530,7 +1530,7 @@
         "name": "Local Send",
         "url": "https://github.com/localsend/localsend",
         "extra_map": {
-          "null": "org.localsend.localsend_app"
+          "android_app_package": "org.localsend.localsend_app"
         }
       }
     },
@@ -1608,7 +1608,7 @@
         "name": "Master Password",
         "url": "https://play.google.com/store/apps/details?id=de.devland.masterpassword",
         "extra_map": {
-          "null": "de.devland.masterpassword"
+          "android_app_package": "de.devland.masterpassword"
         }
       }
     },
@@ -2050,7 +2050,7 @@
         "name": "NewPipe x SponsorBlock (javulticat)",
         "url": "https://github.com/javulticat/newpipe",
         "extra_map": {
-          "null": "com.javulticat.newpipe"
+          "android_app_package": "com.javulticat.newpipe"
         }
       }
     },
@@ -2090,19 +2090,6 @@
         "url": "https://coolapk.com/apk/rikka.nopeeking",
         "extra_map": {
           "android_app_package": "rikka.nopeeking"
-        }
-      }
-    },
-    {
-      "base_version": 2,
-      "config_version": 4,
-      "uuid": "01e4b852-8d6b-403e-9f3a-228526b3aa27",
-      "base_hub_uuid": "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
-      "info": {
-        "name": "NoWakeLock",
-        "url": "https://github.com/Jasper-1024/NoWakeLock",
-        "extra_map": {
-          "android_app_package": "com.js.nowakelock"
         }
       }
     },
@@ -4495,6 +4482,19 @@
         "url": "https://m.shouji.com.cn/down/33532.html",
         "extra_map": {
           "android_app_package": "me.piebridge.brevent"
+        }
+      }
+    },
+    {
+      "base_version": 2,
+      "config_version": 4,
+      "uuid": "01e4b852-8d6b-403e-9f3a-228526b3aa27",
+      "base_hub_uuid": "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
+      "info": {
+        "name": "NoWakeLock",
+        "url": "https://github.com/Jasper-1024/NoWakeLock",
+        "extra_map": {
+          "android_app_package": "com.js.nowakelock"
         }
       }
     }
