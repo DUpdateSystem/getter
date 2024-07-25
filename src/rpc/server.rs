@@ -1,54 +1,14 @@
+use super::data::*;
 use crate::api as api_root;
 use crate::websdk::cloud_rules::cloud_rules::CloudRules;
 use crate::websdk::repo::api;
-use jsonrpsee::core::traits::ToRpcParams;
 use jsonrpsee::server::{RpcModule, Server, ServerHandle};
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
-use serde::{Deserialize, Serialize};
-use serde_json::value::to_raw_value;
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RpcInitRequest<'a> {
-    pub data_path: &'a str,
-    pub cache_path: &'a str,
-    pub global_expire_time: u64,
-}
-
-impl ToRpcParams for RpcInitRequest<'_> {
-    fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
-        to_raw_value(&self).map(Some)
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RpcAppRequest<'a> {
-    pub hub_uuid: &'a str,
-    pub app_data: BTreeMap<&'a str, &'a str>,
-    pub hub_data: BTreeMap<&'a str, &'a str>,
-}
-
-impl ToRpcParams for RpcAppRequest<'_> {
-    fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
-        to_raw_value(&self).map(Some)
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RpcCloudConfigRequest<'a> {
-    pub api_url: &'a str,
-}
-
-impl ToRpcParams for RpcCloudConfigRequest<'_> {
-    fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
-        to_raw_value(&self).map(Some)
-    }
-}
 
 pub async fn run_server(
     addr: &str,
@@ -59,14 +19,14 @@ pub async fn run_server(
     let mut module = RpcModule::new(());
     // Register the shutdown method
     let run_flag = is_running.clone();
-    module.register_async_method("shutdown", move |_, _| {
+    module.register_async_method("shutdown", move |_, _, _| {
         let flag = run_flag.clone();
         async move {
             flag.store(false, Ordering::SeqCst);
         }
     })?;
-    module.register_method("ping", |_, _| "pong")?;
-    module.register_async_method("init", |params, _| async move {
+    module.register_method("ping", |_, _, _| "pong")?;
+    module.register_async_method("init", |params, _, _| async move {
         let request = params.parse::<RpcInitRequest>()?;
         let data_dir = Path::new(request.data_path);
         let cache_dir = Path::new(request.cache_path);
@@ -81,7 +41,7 @@ pub async fn run_server(
                 )
             })
     })?;
-    module.register_async_method("check_app_available", |params, _context| async move {
+    module.register_async_method("check_app_available", |params, _context, _extensions| async move {
         let request = params.parse::<RpcAppRequest>()?;
         if let Some(result) =
             api::check_app_available(&request.hub_uuid, &request.app_data, &request.hub_data).await
@@ -95,7 +55,7 @@ pub async fn run_server(
             ))
         }
     })?;
-    module.register_async_method("get_latest_release", |params, _context| async move {
+    module.register_async_method("get_latest_release", |params, _context, _extensions| async move {
         if let Ok(request) = params.parse::<RpcAppRequest>() {
             if let Some(result) =
                 api::get_latest_release(&request.hub_uuid, &request.app_data, &request.hub_data)
@@ -117,7 +77,7 @@ pub async fn run_server(
             ))
         }
     })?;
-    module.register_async_method("get_releases", |params, _context| async move {
+    module.register_async_method("get_releases", |params, _context, _extensions| async move {
         if let Ok(request) = params.parse::<RpcAppRequest>() {
             if let Some(result) =
                 api::get_releases(&request.hub_uuid, &request.app_data, &request.hub_data).await
@@ -139,7 +99,7 @@ pub async fn run_server(
         }
     })?;
 
-    module.register_async_method("get_cloud_config", |params, _context| async move {
+    module.register_async_method("get_cloud_config", |params, _context, _extensions| async move {
         if let Ok(request) = params.parse::<RpcCloudConfigRequest>() {
             let mut cloud_rules = CloudRules::new(request.api_url);
             if let Err(e) = cloud_rules.renew().await {
@@ -187,12 +147,15 @@ pub async fn run_server_hanging<T>(
 
 #[cfg(test)]
 mod tests {
-    use crate::websdk::{cloud_rules::data::config_list::ConfigList, repo::data::release::ReleaseData};
+    use crate::websdk::{
+        cloud_rules::data::config_list::ConfigList, repo::data::release::ReleaseData,
+    };
 
     use super::*;
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use mockito::Server;
     use std::fs;
+    use std::collections::BTreeMap;
     use tokio::time::timeout;
 
     #[tokio::test]
@@ -400,8 +363,7 @@ mod tests {
         let url = server.url() + "/cloud_config.json";
         let params = RpcCloudConfigRequest { api_url: &url };
         println!("{:?}", params);
-        let response: Result<ConfigList, _> =
-            client.request("get_cloud_config", params).await;
+        let response: Result<ConfigList, _> = client.request("get_cloud_config", params).await;
         let config = response.unwrap();
         assert!(!config.app_config_list.is_empty());
         assert!(!config.hub_config_list.is_empty());

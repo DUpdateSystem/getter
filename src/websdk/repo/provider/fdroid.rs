@@ -97,8 +97,7 @@ impl BaseProvider for FDroidProvider {
         }
         let mut releases_fout = Vec::new();
         if let Ok(content) = std::str::from_utf8(&index.unwrap()) {
-            let mut reader = Reader::from_str(content);
-            reader.trim_text(true);
+            let mut reader = Reader::from_str(content.trim());
             loop {
                 let (xml_package_id, releases) =
                     FDroidProvider::get_releases_from_xml(&mut reader, &url)
