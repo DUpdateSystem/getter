@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-webpki-roots = []
+webpki-roots = ["hyper-rustls/webpki-roots"]
 
 [dependencies]
 once_cell = "1.19.0"
