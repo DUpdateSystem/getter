@@ -1,7 +1,7 @@
 use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Empty};
 use hyper::{StatusCode, Uri};
-use hyper_rustls::HttpsConnectorBuilder;
+use hyper_rustls::ConfigBuilderExt;
 use hyper_util::{
     client::legacy::{connect::HttpConnector, Client},
     rt::TokioExecutor,
@@ -114,25 +114,34 @@ pub async fn https_head(
     _https_get(url, header_map, true).await
 }
 
-fn https_config() -> hyper_rustls::HttpsConnector<HttpConnector> {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    let builder = hyper_rustls::HttpsConnectorBuilder::new();
-    let config: HttpsConnectorBuilder<_>;
-    #[cfg(feature = "webpki-roots")]
+fn https_config() -> std::io::Result<hyper_rustls::HttpsConnector<HttpConnector>> {
+    let _provider = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let tls: rustls::ClientConfig;
+    #[cfg(feature = "rustls-platform-verifier")]
     {
-        config = builder.with_webpki_roots();
+        tls = rustls_platform_verifier::tls_config();
     }
-    #[cfg(not(feature = "webpki-roots"))]
+    #[cfg(all(feature = "webpki-roots", not(feature = "rustls-platform-verifier")))]
     {
-        config = builder
-            .with_native_roots()
-            .expect("no native root CA certificates found");
+        tls = rustls::ClientConfig::builder()
+            .with_webpki_roots()
+            .with_no_client_auth();
     }
-    return config
-        .https_only()
+    #[cfg(all(
+        not(feature = "webpki-roots"),
+        not(feature = "rustls-platform-verifier")
+    ))]
+    {
+        tls = rustls::ClientConfig::builder()
+            .with_native_roots()?
+            .with_no_client_auth();
+    }
+    Ok(hyper_rustls::HttpsConnectorBuilder::new()
+        .with_tls_config(tls)
+        .https_or_http()
         .enable_http1()
         .enable_http2()
-        .build();
+        .build())
 }
 
 async fn _https_get(
@@ -140,10 +149,8 @@ async fn _https_get(
     header_map: &HashMap<String, String>,
     only_status: bool,
 ) -> Result<ResponseData, Box<dyn std::error::Error + Send + Sync>> {
-    let https = https_config();
-
+    let https = https_config()?;
     let client = Client::builder(TokioExecutor::new()).build(https);
-
     let mut req = hyper::Request::builder().method("GET").uri(url.clone());
     for (key, value) in header_map {
         req = req.header(key, value);

@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
+default = ["rustls-platform-verifier"]
+rustls-platform-verifier = ["hyper-rustls/rustls-platform-verifier", "dep:rustls-platform-verifier"]
 webpki-roots = ["hyper-rustls/webpki-roots"]
 
 [dependencies]
@@ -23,6 +25,7 @@ http-body-util = "0.1.1"
 jsonrpsee = { version = "0.24.0", features = ["server", "client"] }
 hyper-rustls = { version = "0.27.2", features = ["http2"] }
 rustls = "0.23.12"
+rustls-platform-verifier = { version = "0.3.2", optional = true }
 
 [dev-dependencies]
 mockito = "1.4.0"
