@@ -3,20 +3,36 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::data::release::ReleaseData;
-use super::provider;
 use super::provider::base_provider::{AppDataMap, DataMap, FIn, FOut, FunctionType, HubDataMap};
+use super::provider::outside_rpc::OutsideProvider;
+use super::provider::{self, add_provider};
 use crate::cache::get_cache_manager;
 use crate::cache::manager::GroupType;
 use crate::utils::json::{bytes_to_json, json_to_bytes};
 use std::collections::HashMap;
 
-async fn process_data<T, F>(
+#[derive(Debug, Clone)]
+struct ErrorProviderNotFound;
+
+impl std::fmt::Display for ErrorProviderNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Provider not found for this request.")
+    }
+}
+
+impl std::error::Error for ErrorProviderNotFound {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+
+async fn call_func<T, F>(
     uuid: &str,
     app_data: &AppDataMap<'_>,
     hub_data: &HubDataMap<'_>,
     func_type: FunctionType,
     provider_func: F,
-) -> Option<T>
+) -> Result<Option<T>, ErrorProviderNotFound>
 where
     T: Send + DeserializeOwned + Serialize,
     F: for<'b> AsyncFnOnce2<&'b str, &'b FIn<'b>, Output = Option<FOut<T>>>,
@@ -31,7 +47,7 @@ where
         .await
     {
         if let Ok(value) = bytes_to_json::<T>(&bytes) {
-            return Some(value);
+            return Ok(Some(value));
         }
     }
     let cache_keys = provider::get_cache_request_key(uuid, &func_type, &data_map);
@@ -68,10 +84,13 @@ where
                     .save(&GroupType::API, &api_cache_key.to_string(), value)
                     .await;
             }
-            return Some(data);
+            return Ok(Some(data));
+        } else {
+            return Ok(None);
         }
+    } else {
+        return Err(ErrorProviderNotFound);
     }
-    None
 }
 
 pub async fn check_app_available<'a>(
@@ -79,7 +98,7 @@ pub async fn check_app_available<'a>(
     app_data: &AppDataMap<'a>,
     hub_data: &HubDataMap<'a>,
 ) -> Option<bool> {
-    process_data(
+    call_func(
         uuid,
         app_data,
         hub_data,
@@ -87,6 +106,7 @@ pub async fn check_app_available<'a>(
         provider::check_app_available,
     )
     .await
+    .unwrap_or(None)
 }
 
 pub async fn get_latest_release<'a>(
@@ -94,7 +114,7 @@ pub async fn get_latest_release<'a>(
     app_data: &AppDataMap<'a>,
     hub_data: &HubDataMap<'a>,
 ) -> Option<ReleaseData> {
-    process_data(
+    call_func(
         uuid,
         app_data,
         hub_data,
@@ -102,6 +122,7 @@ pub async fn get_latest_release<'a>(
         provider::get_latest_release,
     )
     .await
+    .unwrap_or(None)
 }
 
 pub async fn get_releases<'a>(
@@ -109,7 +130,7 @@ pub async fn get_releases<'a>(
     app_data: &AppDataMap<'a>,
     hub_data: &HubDataMap<'a>,
 ) -> Option<Vec<ReleaseData>> {
-    process_data(
+    call_func(
         uuid,
         app_data,
         hub_data,
@@ -117,4 +138,13 @@ pub async fn get_releases<'a>(
         provider::get_releases,
     )
     .await
+    .unwrap_or(None)
+}
+
+pub fn add_outside_provider(uuid: &str, url: &str) {
+    let provider = OutsideProvider {
+        uuid: uuid.to_string(),
+        url: url.to_string(),
+    };
+    add_provider(uuid, provider);
 }

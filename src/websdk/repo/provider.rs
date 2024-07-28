@@ -2,10 +2,11 @@ pub mod base_provider;
 pub mod fdroid;
 pub mod github;
 pub mod gitlab;
+pub mod outside_rpc;
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use self::base_provider::{BaseProvider, DataMap, FIn, FOut, FunctionType};
 use self::fdroid::FDroidProvider;
@@ -13,29 +14,33 @@ use self::github::GitHubProvider;
 use self::gitlab::GitLabProvider;
 use super::data::release::ReleaseData;
 
-static PROVIDER_MAP: Lazy<Arc<HashMap<&'static str, Arc<dyn BaseProvider + Send + Sync>>>> =
+static PROVIDER_MAP: Lazy<Arc<RwLock<HashMap<&'static str, Arc<dyn BaseProvider + Send + Sync>>>>> =
     Lazy::new(|| {
-        Arc::new(HashMap::from([
+        Arc::new(RwLock::new(HashMap::from([
             (
                 "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
-                Arc::new(GitHubProvider::new())
-                    as Arc<dyn BaseProvider + Send + Sync>,
+                Arc::new(GitHubProvider::new()) as Arc<dyn BaseProvider + Send + Sync>,
             ),
             (
                 "6a6d590b-1809-41bf-8ce3-7e3f6c8da945",
-                Arc::new(FDroidProvider::new())
-                    as Arc<dyn BaseProvider + Send + Sync>,
+                Arc::new(FDroidProvider::new()) as Arc<dyn BaseProvider + Send + Sync>,
             ),
             (
                 "a84e2fbe-1478-4db5-80ae-75d00454c7eb",
-                Arc::new(GitLabProvider::new())
-                    as Arc<dyn BaseProvider + Send + Sync>,
+                Arc::new(GitLabProvider::new()) as Arc<dyn BaseProvider + Send + Sync>,
             ),
-        ]))
+        ])))
     });
 
-fn get_provider(uuid: &str) -> Option<&Arc<dyn BaseProvider + Send + Sync>> {
-    PROVIDER_MAP.get(uuid)
+fn get_provider(uuid: &str) -> Option<Arc<dyn BaseProvider + Send + Sync>> {
+    let map = PROVIDER_MAP.read().unwrap();
+    map.get(uuid).cloned()
+}
+
+pub fn add_provider(uuid: &str, provider: impl BaseProvider + Send + Sync + 'static) {
+    let mut map = PROVIDER_MAP.write().unwrap();
+    let uuid: &'static str = Box::leak(Box::new(uuid.to_string()));
+    map.insert(uuid, Arc::new(provider) as Arc<dyn BaseProvider + Send + Sync>);
 }
 
 pub fn get_cache_request_key(

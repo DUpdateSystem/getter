@@ -195,7 +195,7 @@ mod tests {
             .create();
 
         let id_map = AppDataMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
-        let proxy_url = format!("{} -> {}", GITHUB_URL, server.url());
+        let proxy_url = format!("{} -> {}", GITHUB_API_URL, server.url());
         let hub_data = HubDataMap::from([(REVERSE_PROXY, proxy_url.as_str())]);
 
         let github_provider = GitHubProvider::new();

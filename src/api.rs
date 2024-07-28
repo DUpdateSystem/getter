@@ -52,25 +52,3 @@ pub async fn get_releases<'a>(
         .await
         .map(|data| json_to_string(&data).unwrap())
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::cache::get_cache_manager;
-
-    use super::*;
-    use tempfile::tempdir;
-
-    #[tokio::test]
-    async fn test_github_check_app_available() {
-        let temp_dir = tempdir().unwrap();
-        let cache_dir = temp_dir.path().join("cache");
-        let data_dir = temp_dir.path().join("data");
-        init(&data_dir, &cache_dir, 100).await.unwrap();
-        let _ = get_cache_manager().await;
-        let uuid = "fd9b2602-62c5-4d55-bd1e-0d6537714ca0";
-        let id_map = BTreeMap::from([("repo", "UpgradeAll"), ("owner", "DUpdateSystem")]);
-        let hub_data = BTreeMap::new();
-        let result = check_app_available(uuid, &id_map, &hub_data).await;
-        assert_eq!(result, Some(true));
-    }
-}

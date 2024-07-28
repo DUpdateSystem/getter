@@ -1,6 +1,7 @@
 use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Empty};
 use hyper::{StatusCode, Uri};
+use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::{
     client::legacy::{connect::HttpConnector, Client},
     rt::TokioExecutor,
@@ -114,25 +115,24 @@ pub async fn https_head(
 }
 
 fn https_config() -> hyper_rustls::HttpsConnector<HttpConnector> {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let builder = hyper_rustls::HttpsConnectorBuilder::new();
+    let config: HttpsConnectorBuilder<_>;
     #[cfg(feature = "webpki-roots")]
     {
-        return hyper_rustls::HttpsConnectorBuilder::new()
-            .with_webpki_roots()
-            .https_only()
-            .enable_http1()
-            .enable_http2()
-            .build();
+        config = builder.with_webpki_roots();
     }
     #[cfg(not(feature = "webpki-roots"))]
     {
-        return hyper_rustls::HttpsConnectorBuilder::new()
+        config = builder
             .with_native_roots()
-            .expect("no native root CA certificates found")
-            .https_only()
-            .enable_http1()
-            .enable_http2()
-            .build();
+            .expect("no native root CA certificates found");
     }
+    return config
+        .https_only()
+        .enable_http1()
+        .enable_http2()
+        .build();
 }
 
 async fn _https_get(

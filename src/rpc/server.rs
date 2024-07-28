@@ -41,42 +41,49 @@ pub async fn run_server(
                 )
             })
     })?;
-    module.register_async_method("check_app_available", |params, _context, _extensions| async move {
-        let request = params.parse::<RpcAppRequest>()?;
-        if let Some(result) =
-            api::check_app_available(&request.hub_uuid, &request.app_data, &request.hub_data).await
-        {
-            Ok(result)
-        } else {
-            Err(ErrorObjectOwned::owned(
-                ErrorCode::ParseError.code(),
-                "Parse params error",
-                Some(params.as_str().unwrap_or("None").to_string()),
-            ))
-        }
-    })?;
-    module.register_async_method("get_latest_release", |params, _context, _extensions| async move {
-        if let Ok(request) = params.parse::<RpcAppRequest>() {
+    module.register_async_method(
+        "check_app_available",
+        |params, _context, _extensions| async move {
+            let request = params.parse::<RpcAppRequest>()?;
             if let Some(result) =
-                api::get_latest_release(&request.hub_uuid, &request.app_data, &request.hub_data)
+                api::check_app_available(&request.hub_uuid, &request.app_data, &request.hub_data)
                     .await
             {
                 Ok(result)
             } else {
-                Err(ErrorObjectOwned::borrowed(
-                    ErrorCode::InvalidParams.code(),
-                    "Invalid params",
-                    None,
+                Err(ErrorObjectOwned::owned(
+                    ErrorCode::ParseError.code(),
+                    "Parse params error",
+                    Some(params.as_str().unwrap_or("None").to_string()),
                 ))
             }
-        } else {
-            Err(ErrorObjectOwned::owned(
-                ErrorCode::ParseError.code(),
-                "Parse params error",
-                Some(params.as_str().unwrap_or("None").to_string()),
-            ))
-        }
-    })?;
+        },
+    )?;
+    module.register_async_method(
+        "get_latest_release",
+        |params, _context, _extensions| async move {
+            if let Ok(request) = params.parse::<RpcAppRequest>() {
+                if let Some(result) =
+                    api::get_latest_release(&request.hub_uuid, &request.app_data, &request.hub_data)
+                        .await
+                {
+                    Ok(result)
+                } else {
+                    Err(ErrorObjectOwned::borrowed(
+                        ErrorCode::InvalidParams.code(),
+                        "Invalid params",
+                        None,
+                    ))
+                }
+            } else {
+                Err(ErrorObjectOwned::owned(
+                    ErrorCode::ParseError.code(),
+                    "Parse params error",
+                    Some(params.as_str().unwrap_or("None").to_string()),
+                ))
+            }
+        },
+    )?;
     module.register_async_method("get_releases", |params, _context, _extensions| async move {
         if let Ok(request) = params.parse::<RpcAppRequest>() {
             if let Some(result) =
@@ -99,25 +106,28 @@ pub async fn run_server(
         }
     })?;
 
-    module.register_async_method("get_cloud_config", |params, _context, _extensions| async move {
-        if let Ok(request) = params.parse::<RpcCloudConfigRequest>() {
-            let mut cloud_rules = CloudRules::new(request.api_url);
-            if let Err(e) = cloud_rules.renew().await {
-                return Err(ErrorObjectOwned::owned(
-                    ErrorCode::InternalError.code(),
-                    "Download cloud config failed",
-                    Some(e.to_string()),
-                ));
+    module.register_async_method(
+        "get_cloud_config",
+        |params, _context, _extensions| async move {
+            if let Ok(request) = params.parse::<RpcCloudConfigRequest>() {
+                let mut cloud_rules = CloudRules::new(request.api_url);
+                if let Err(e) = cloud_rules.renew().await {
+                    return Err(ErrorObjectOwned::owned(
+                        ErrorCode::InternalError.code(),
+                        "Download cloud config failed",
+                        Some(e.to_string()),
+                    ));
+                }
+                Ok(cloud_rules.get_config_list().to_owned())
+            } else {
+                Err(ErrorObjectOwned::owned(
+                    ErrorCode::ParseError.code(),
+                    "Parse params error",
+                    Some(params.as_str().unwrap_or("None").to_string()),
+                ))
             }
-            Ok(cloud_rules.get_config_list().to_owned())
-        } else {
-            Err(ErrorObjectOwned::owned(
-                ErrorCode::ParseError.code(),
-                "Parse params error",
-                Some(params.as_str().unwrap_or("None").to_string()),
-            ))
-        }
-    })?;
+        },
+    )?;
     let addr = server.local_addr()?;
     let handle = server.start(module);
     tokio::spawn(handle.clone().stopped());
@@ -147,6 +157,7 @@ pub async fn run_server_hanging<T>(
 
 #[cfg(test)]
 mod tests {
+    use crate::rpc::client::Client;
     use crate::websdk::{
         cloud_rules::data::config_list::ConfigList, repo::data::release::ReleaseData,
     };
@@ -154,8 +165,8 @@ mod tests {
     use super::*;
     use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder, rpc_params};
     use mockito::Server;
-    use std::fs;
     use std::collections::BTreeMap;
+    use std::fs;
     use tokio::time::timeout;
 
     #[tokio::test]
@@ -226,21 +237,23 @@ mod tests {
             .await;
 
         let id_map = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
-        let proxy_url = format!("{} -> {}", "https://api.github.com", server.url());
+        let proxy_url = format!("{} -> {}", "https://github.com", server.url());
         let hub_data = BTreeMap::from([("reverse_proxy", proxy_url.as_str())]);
 
         let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
             .await
             .unwrap();
         println!("Server started at {}", url);
-        let client = HttpClientBuilder::default().build(url).unwrap();
         let params = RpcAppRequest {
             hub_uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
             app_data: id_map,
             hub_data,
         };
         println!("{:?}", params);
-        let response: Result<bool, _> = client.request("check_app_available", params).await;
+        let client = Client::new(url).unwrap();
+        let response: Result<bool, _> = client
+            .check_app_available(params.hub_uuid, params.app_data, params.hub_data)
+            .await;
         assert_eq!(response.unwrap(), true);
         handle.stop().unwrap();
     }
@@ -263,14 +276,16 @@ mod tests {
             .await
             .unwrap();
         println!("Server started at {}", url);
-        let client = HttpClientBuilder::default().build(url).unwrap();
         let params = RpcAppRequest {
             hub_uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
             app_data: id_map,
             hub_data,
         };
         println!("{:?}", params);
-        let response: Result<ReleaseData, _> = client.request("get_latest_release", params).await;
+        let client = Client::new(url).unwrap();
+        let response: Result<ReleaseData, _> = client
+            .get_latest_release(params.hub_uuid, params.app_data, params.hub_data)
+            .await;
         let release = response.unwrap();
         assert!(!release.version_number.is_empty());
         handle.stop().unwrap();
@@ -287,21 +302,23 @@ mod tests {
             .create();
 
         let id_map = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
-        let proxy_url = format!("{} -> {}", "https://github.com", server.url());
+        let proxy_url = format!("{} -> {}", "https://api.github.com", server.url());
         let hub_data = BTreeMap::from([("reverse_proxy", proxy_url.as_str())]);
 
         let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
             .await
             .unwrap();
         println!("Server started at {}", url);
-        let client = HttpClientBuilder::default().build(url).unwrap();
         let params = RpcAppRequest {
             hub_uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
             app_data: id_map,
             hub_data,
         };
         println!("{:?}", params);
-        let response: Result<Vec<ReleaseData>, _> = client.request("get_releases", params).await;
+        let client = Client::new(url).unwrap();
+        let response: Result<Vec<ReleaseData>, _> = client
+            .get_releases(params.hub_uuid, params.app_data, params.hub_data)
+            .await;
         let releases = response.unwrap();
         assert!(!releases.is_empty());
         handle.stop().unwrap();

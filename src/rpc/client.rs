@@ -4,6 +4,7 @@ use super::data::*;
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::core::client::Error;
 use jsonrpsee::http_client::HttpClient;
+use jsonrpsee::http_client::HttpClientBuilder;
 use std::collections::BTreeMap;
 
 pub struct Client {
@@ -11,8 +12,8 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(url: &str) -> Result<Self, Error> {
-        let client = HttpClient::builder().build(url)?;
+    pub fn new(url: impl AsRef<str>) -> Result<Self, Error> {
+        let client = HttpClientBuilder::default().build(url)?;
         Ok(Self { client })
     }
 
@@ -21,7 +22,7 @@ impl Client {
         hub_uuid: &str,
         app_data: BTreeMap<&str, &str>,
         hub_data: BTreeMap<&str, &str>,
-    ) -> Result<Option<bool>, Error> {
+    ) -> Result<bool, Error> {
         let data = RpcAppRequest {
             hub_uuid,
             app_data,
@@ -36,7 +37,7 @@ impl Client {
         hub_uuid: &str,
         app_data: BTreeMap<&str, &str>,
         hub_data: BTreeMap<&str, &str>,
-    ) -> Result<Option<ReleaseData>, Error> {
+    ) -> Result<ReleaseData, Error> {
         let data = RpcAppRequest {
             hub_uuid,
             app_data,
@@ -51,7 +52,7 @@ impl Client {
         hub_uuid: &str,
         app_data: BTreeMap<&str, &str>,
         hub_data: BTreeMap<&str, &str>,
-    ) -> Result<Option<Vec<ReleaseData>>, Error> {
+    ) -> Result<Vec<ReleaseData>, Error> {
         let data = RpcAppRequest {
             hub_uuid,
             app_data,
