@@ -31,7 +31,7 @@ jobs:
       run: |
         for feature in "rustls-platform-verifier" "webpki-roots"; do
           echo "Building with feature: $feature"
-          cargo build --verbose --features "$feature"
+          cargo build --verbose --no-default-features --features "$feature"
         done
       shell: bash
 
@@ -39,7 +39,7 @@ jobs:
       run: |
         for feature in "rustls-platform-verifier" "webpki-roots"; do
           echo "Testing with feature: $feature"
-          cargo test --verbose --features "$feature"
+          cargo test --verbose --no-default-features --features "$feature"
         done
       shell: bash
 
