@@ -1,11 +1,11 @@
 use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Empty};
 use hyper::{StatusCode, Uri};
-use hyper_rustls::ConfigBuilderExt;
 use hyper_util::{
     client::legacy::{connect::HttpConnector, Client},
     rt::TokioExecutor,
 };
+use once_cell::sync::Lazy;
 use std::{collections::HashMap, fmt};
 
 // Custom http response Error
@@ -114,12 +114,37 @@ pub async fn https_head(
     _https_get(url, header_map, true).await
 }
 
-fn https_config() -> std::io::Result<hyper_rustls::HttpsConnector<HttpConnector>> {
-    let _provider = rustls::crypto::aws_lc_rs::default_provider().install_default();
+// Global https provider with lazy initialization
+static PROVIDER: Lazy<std::sync::Arc<rustls::crypto::CryptoProvider>> =
+    Lazy::new(|| std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
+
+// Https config error wrapper error
+struct HttpsConfigError {
+    error: Box<dyn std::error::Error + Send + Sync>,
+}
+impl fmt::Display for HttpsConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "HttpsConfigError: {}", self.error)
+    }
+}
+impl fmt::Debug for HttpsConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "HttpsConfigError: {:?}", self.error)
+    }
+}
+impl std::error::Error for HttpsConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+
+fn https_config() -> Result<hyper_rustls::HttpsConnector<HttpConnector>, HttpsConfigError> {
+    let arc_crypto_provider = PROVIDER.clone();
     let tls: rustls::ClientConfig;
     #[cfg(feature = "rustls-platform-verifier")]
     {
-        tls = rustls_platform_verifier::tls_config();
+        tls = rustls_platform_verifier::tls_config_with_provider(arc_crypto_provider)
+            .map_err(|e| HttpsConfigError { error: Box::new(e) })?;
     }
     #[cfg(all(feature = "webpki-roots", not(feature = "rustls-platform-verifier")))]
     {
