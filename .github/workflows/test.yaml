@@ -15,36 +15,5 @@ jobs:
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Build project
-      run: cargo build --verbose
-
-    - name: Run tests
-      run: cargo test --verbose
-
-    - name: Build project (no default features)
-      run: cargo build --verbose --no-default-features
-
-    - name: Run tests (no default features)
-      run: cargo test --verbose --no-default-features
-
-    - name: Build project (each feature)
-      run: |
-        for feature in "rustls-platform-verifier" "webpki-roots"; do
-          echo "Building with feature: $feature"
-          cargo build --verbose --no-default-features --features "$feature"
-        done
-      shell: bash
-
-    - name: Run tests (each feature)
-      run: |
-        for feature in "rustls-platform-verifier" "webpki-roots"; do
-          echo "Testing with feature: $feature"
-          cargo test --verbose --no-default-features --features "$feature"
-        done
-      shell: bash
-
-    - name: Build project (all features)
-      run: cargo build --verbose --all-features
-
-    - name: Run tests (all features)
-      run: cargo test --verbose --all-features
+    - name: Run test script
+      run: ./tests/script/cargo_test.sh

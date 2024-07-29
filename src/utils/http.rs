@@ -1,6 +1,8 @@
 use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Empty};
 use hyper::{StatusCode, Uri};
+#[cfg(not(feature = "rustls-platform-verifier"))]
+use hyper_rustls::ConfigBuilderExt;
 use hyper_util::{
     client::legacy::{connect::HttpConnector, Client},
     rt::TokioExecutor,
@@ -139,27 +141,41 @@ impl std::error::Error for HttpsConfigError {
 }
 
 fn https_config() -> Result<hyper_rustls::HttpsConnector<HttpConnector>, HttpsConfigError> {
-    let arc_crypto_provider = PROVIDER.clone();
+    let provider = PROVIDER.clone();
     let tls: rustls::ClientConfig;
     #[cfg(feature = "rustls-platform-verifier")]
     {
-        tls = rustls_platform_verifier::tls_config_with_provider(arc_crypto_provider)
+        tls = rustls_platform_verifier::tls_config_with_provider(provider)
             .map_err(|e| HttpsConfigError { error: Box::new(e) })?;
     }
     #[cfg(all(feature = "webpki-roots", not(feature = "rustls-platform-verifier")))]
     {
-        tls = rustls::ClientConfig::builder()
+        tls = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| HttpsConfigError { error: Box::new(e) })?
             .with_webpki_roots()
             .with_no_client_auth();
     }
     #[cfg(all(
+        feature = "native-tokio",
         not(feature = "webpki-roots"),
         not(feature = "rustls-platform-verifier")
     ))]
     {
-        tls = rustls::ClientConfig::builder()
-            .with_native_roots()?
+        tls = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| HttpsConfigError { error: Box::new(e) })?
+            .with_native_roots()
+            .map_err(|e| HttpsConfigError { error: Box::new(e) })?
             .with_no_client_auth();
+    }
+    #[cfg(all(
+        not(feature = "native-tokio"),
+        not(feature = "webpki-roots"),
+        not(feature = "rustls-platform-verifier")
+    ))]
+    {
+        compile_error!("No TLS backend enabled");
     }
     Ok(hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(tls)
