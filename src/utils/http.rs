@@ -249,9 +249,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_https_get_status() {
-        let url = "https://httpbin.org/status/404".parse().unwrap();
+        let url = "https://httpstat.us/418".parse().unwrap();
         let result = https_get(url, &HashMap::new()).await;
-        assert_eq!(result.unwrap().status, 404);
+        assert_eq!(result.unwrap().status, 418);
     }
 
     #[tokio::test]
