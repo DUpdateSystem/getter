@@ -2,6 +2,7 @@ pub mod base_provider;
 pub mod fdroid;
 pub mod github;
 pub mod gitlab;
+pub mod lsposed_repo;
 pub mod outside_rpc;
 
 use once_cell::sync::Lazy;
@@ -12,6 +13,7 @@ use self::base_provider::{BaseProvider, DataMap, FIn, FOut, FunctionType};
 use self::fdroid::FDroidProvider;
 use self::github::GitHubProvider;
 use self::gitlab::GitLabProvider;
+use self::lsposed_repo::LsposedRepoProvider;
 use super::data::release::ReleaseData;
 
 static PROVIDER_MAP: Lazy<Arc<RwLock<HashMap<&'static str, Arc<dyn BaseProvider + Send + Sync>>>>> =
@@ -28,6 +30,10 @@ static PROVIDER_MAP: Lazy<Arc<RwLock<HashMap<&'static str, Arc<dyn BaseProvider 
             (
                 "a84e2fbe-1478-4db5-80ae-75d00454c7eb",
                 Arc::new(GitLabProvider::new()) as Arc<dyn BaseProvider + Send + Sync>,
+            ),
+            (
+                "401e6259-2eab-46f0-8e8a-d2bfafedf5bf",
+                Arc::new(LsposedRepoProvider::new()) as Arc<dyn BaseProvider + Send + Sync>,
             ),
         ])))
     });

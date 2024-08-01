@@ -8,6 +8,12 @@ pub struct OutsideProvider {
     pub url: String,
 }
 
+impl OutsideProvider {
+    pub fn new(uuid: String, url: String) -> Self {
+        OutsideProvider { uuid, url }
+    }
+}
+
 #[async_trait]
 impl BaseProvider for OutsideProvider {
     fn get_cache_request_key(

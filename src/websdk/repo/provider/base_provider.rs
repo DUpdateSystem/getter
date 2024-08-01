@@ -103,6 +103,17 @@ impl<T> FOut<T> {
         }
     }
 
+    pub fn set_cache(mut self, key: &str, value: Bytes) -> Self {
+        let cache_map = self.cached_map.get_or_insert_with(HashMap::new);
+        cache_map.insert(key.to_string(), value);
+        self
+    }
+
+    pub fn set_error(mut self, error: Box<dyn Error + Send + Sync>) -> Self {
+        self.result = Err(error);
+        self
+    }
+
     pub fn set_data(mut self, data: T) -> Self {
         self.result = Ok(data);
         self
