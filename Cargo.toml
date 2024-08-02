@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = ["rustls-platform-verifier"]
 rustls-platform-verifier = ["hyper-rustls/rustls-platform-verifier", "dep:rustls-platform-verifier"]
+rustls-platform-verifier-android = ["rustls-platform-verifier", "rustls-platform-verifier/jni"]
 webpki-roots = ["hyper-rustls/webpki-roots"]
 native-tokio = ["hyper-rustls/native-tokio"]
 
