@@ -118,7 +118,7 @@ pub async fn https_head(
 
 // Global https provider with lazy initialization
 static PROVIDER: Lazy<std::sync::Arc<rustls::crypto::CryptoProvider>> =
-    Lazy::new(|| std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
+    Lazy::new(|| std::sync::Arc::new(rustls::crypto::ring::default_provider()));
 
 // Https config error wrapper error
 struct HttpsConfigError {

@@ -24,9 +24,9 @@ regex = "1.10.4"
 hyper-util = { version = "0.1.6", features = ["client", "tokio", "http1"] }
 http-body-util = "0.1.1"
 jsonrpsee = { version = "0.24.0", features = ["server", "client"] }
-hyper-rustls = { version = "0.27.2", features = ["http2", "native-tokio"] }
-rustls = "0.23.12"
+hyper-rustls = { version = "0.27.2", features = ["http1", "http2", "native-tokio", "ring", "tls12"], default-features = false }
 rustls-platform-verifier = { version = "0.3.2", optional = true }
+rustls = { version = "0.23.12", default-features = false }
 
 [dev-dependencies]
 mockito = "1.4.0"
