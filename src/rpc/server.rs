@@ -1,7 +1,7 @@
 use super::data::*;
 use crate::api as api_root;
 use crate::websdk::cloud_rules::cloud_rules::CloudRules;
-use crate::websdk::repo::api;
+use crate::websdk::repo::{api, provider::github};
 use jsonrpsee::server::{RpcModule, Server, ServerHandle};
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
 use std::net::SocketAddr;
@@ -237,7 +237,7 @@ mod tests {
             .await;
 
         let id_map = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
-        let proxy_url = format!("{} -> {}", "https://github.com", server.url());
+        let proxy_url = format!("{} -> {}", github::GITHUB_API_URL, server.url());
         let hub_data = BTreeMap::from([("reverse_proxy", proxy_url.as_str())]);
 
         let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
@@ -269,7 +269,7 @@ mod tests {
             .create();
 
         let id_map = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
-        let proxy_url = format!("{} -> {}", "https://api.github.com", server.url());
+        let proxy_url = format!("{} -> {}", github::GITHUB_API_URL, server.url());
         let hub_data = BTreeMap::from([("reverse_proxy", proxy_url.as_str())]);
 
         let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
@@ -302,7 +302,7 @@ mod tests {
             .create();
 
         let id_map = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
-        let proxy_url = format!("{} -> {}", "https://api.github.com", server.url());
+        let proxy_url = format!("{} -> {}", github::GITHUB_API_URL, server.url());
         let hub_data = BTreeMap::from([("reverse_proxy", proxy_url.as_str())]);
 
         let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
@@ -377,7 +377,7 @@ mod tests {
             .unwrap();
         println!("Server started at {}", url);
         let client = HttpClientBuilder::default().build(url).unwrap();
-        let url = server.url() + "/cloud_config.json";
+        let url = format!("{}/cloud_config.json", server.url());
         let params = RpcCloudConfigRequest { api_url: &url };
         println!("{:?}", params);
         let response: Result<ConfigList, _> = client.request("get_cloud_config", params).await;

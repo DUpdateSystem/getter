@@ -11,7 +11,7 @@ use crate::utils::{
     versioning::Version,
 };
 
-const GITHUB_API_URL: &str = "https://api.github.com";
+pub const GITHUB_API_URL: &str = "https://api.github.com";
 const GITHUB_URL: &str = "https://github.com";
 
 const VERSION_NUMBER_KEY: &str = "version_number_key";
