@@ -10,7 +10,7 @@ use crate::{error::Result, utils::instance::InstanceContainer};
 
 use self::world_list::WorldList;
 
-static INSTANCE_CONTAINER: Lazy<InstanceContainer<WorldList>> =
+const INSTANCE_CONTAINER: Lazy<InstanceContainer<WorldList>> =
     Lazy::new(|| InstanceContainer::new(WorldList::new()));
 
 pub async fn init_world_list(world_list_path: &Path) -> Result<()> {

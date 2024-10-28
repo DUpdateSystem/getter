@@ -10,7 +10,7 @@ use crate::utils::versioning::Version;
 use super::super::data::release::*;
 use super::base_provider::*;
 
-static LSPOSED_REPO_API_URL: &str = "https://modules.lsposed.org/modules.json";
+const LSPOSED_REPO_API_URL: &str = "https://modules.lsposed.org/modules.json";
 
 pub struct LsposedRepoProvider;
 

@@ -11,10 +11,10 @@ use crate::utils::{
     versioning::Version,
 };
 
-static GITLAB_URL: &str = "https://gitlab.com";
-static GITLAB_API_URL: &str = "https://gitlab.com/api/v4/projects";
+const GITLAB_URL: &str = "https://gitlab.com";
+const GITLAB_API_URL: &str = "https://gitlab.com/api/v4/projects";
 
-static VERSION_NUMBER_KEY: &str = "version_number_key";
+const VERSION_NUMBER_KEY: &str = "version_number_key";
 
 pub struct GitLabProvider;
 

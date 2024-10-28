@@ -11,11 +11,11 @@ use crate::utils::{
     versioning::Version,
 };
 
-static GITHUB_API_URL: &str = "https://api.github.com";
-static GITHUB_URL: &str = "https://github.com";
+const GITHUB_API_URL: &str = "https://api.github.com";
+const GITHUB_URL: &str = "https://github.com";
 
-static VERSION_NUMBER_KEY: &str = "version_number_key";
-static VERSION_CODE_KEY: &str = "version_code_key";
+const VERSION_NUMBER_KEY: &str = "version_number_key";
+const VERSION_CODE_KEY: &str = "version_code_key";
 
 pub struct GitHubProvider;
 
