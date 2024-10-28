@@ -20,7 +20,7 @@ impl FDroidProvider {
     }
 
     pub fn get_api_url(url: &str) -> String {
-        format!("{}/{}", url, "repo/index.xml")
+        format!("{}/repo/index.xml", url)
     }
 
     fn get_urls(data_map: &DataMap) -> (String, String) {
