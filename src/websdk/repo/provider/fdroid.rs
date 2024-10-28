@@ -10,7 +10,7 @@ use crate::utils::http::{get, head, http_status_is_ok};
 use super::super::data::release::*;
 use super::base_provider::*;
 
-static FDROID_URL: &str = "https://f-droid.org";
+const FDROID_URL: &str = "https://f-droid.org";
 
 pub struct FDroidProvider;
 

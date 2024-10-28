@@ -2,7 +2,7 @@ use crate::error::{GetterError, Result};
 use std::fs;
 use std::path::PathBuf;
 
-static LOCAL_REPO_DIR: &str = "local_repo";
+const LOCAL_REPO_DIR: &str = "local_repo";
 
 pub struct LocalRepo {
     path: PathBuf,
