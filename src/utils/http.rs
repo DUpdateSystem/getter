@@ -264,7 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_https_get_header() {
-        let url = "https://httpbin.org/headers".parse().unwrap();
+        let url = "https://postman-echo.com/get".parse().unwrap();
         let header_map = {
             let mut map = HashMap::new();
             map.insert("X-Test".to_string(), "test000".to_string());
@@ -276,6 +276,9 @@ mod tests {
         let body = result.unwrap().body.expect("Response body was empty");
         let json: serde_json::Value = serde_json::from_slice(&body).expect("Failed to parse JSON");
         for (key, value) in header_map {
+            // key to lowercase, for fix podman-echo
+            // Due https://stackoverflow.com/questions/5258977/are-http-headers-case-sensitive
+            let key = key.to_lowercase();
             assert_eq!(json["headers"][key], value);
         }
     }
@@ -298,7 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_get_header() {
-        let url = "http://httpbin.org/headers".parse().unwrap();
+        let url = "http://postman-echo.com/get".parse().unwrap();
         let header_map = {
             let mut map = HashMap::new();
             map.insert("X-Test".to_string(), "test000".to_string());
@@ -310,6 +313,7 @@ mod tests {
         let body = result.unwrap().body.expect("Response body was empty");
         let json: serde_json::Value = serde_json::from_slice(&body).expect("Failed to parse JSON");
         for (key, value) in header_map {
+            let key = key.to_lowercase();
             assert_eq!(json["headers"][key], value);
         }
     }
