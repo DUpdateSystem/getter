@@ -5,10 +5,10 @@ use version_compare;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-const VERSION_NUMBER_STRICT_MATCH_REGEX: Lazy<Regex> =
+static VERSION_NUMBER_STRICT_MATCH_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\d+(\.\d+)+([.|\-|+|_| ]*[A-Za-z0-9]+)*").unwrap());
 
-const VERSION_NUMBER_MATCH_REGEX: Lazy<Regex> =
+static VERSION_NUMBER_MATCH_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\d+(\.\d+)*([.|\-|+|_| ]*[A-Za-z0-9]+)*").unwrap());
 
 #[derive(Debug, Clone)]
