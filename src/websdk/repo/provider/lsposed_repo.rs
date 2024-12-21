@@ -132,7 +132,7 @@ impl BaseProvider for LsposedRepoProvider {
                                             .collect();
                                     let mut version_number: Option<String> = None;
 
-                                    for key in vec!["name", "tagName"].iter() {
+                                    for key in &["name", "tagName"] {
                                         if let Some(value) = json.get(key).and_then(|v| v.as_str())
                                         {
                                             if Version::new(value.to_string()).is_valid() {

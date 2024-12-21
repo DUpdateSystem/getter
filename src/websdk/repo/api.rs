@@ -43,7 +43,7 @@ where
     if let Some(bytes) = cache_manager
         .lock()
         .await
-        .get(&GroupType::API, &api_cache_key.to_string(), None)
+        .get(&GroupType::Api, &api_cache_key.to_string(), None)
         .await
     {
         if let Ok(value) = bytes_to_json::<T>(&bytes) {
@@ -57,7 +57,7 @@ where
             if let Some(value) = cache_manager
                 .lock()
                 .await
-                .get(&GroupType::REPO_INSIDE, &key, None)
+                .get(&GroupType::RepoInside, &key, None)
                 .await
             {
                 cache_map.insert(key, value);
@@ -72,7 +72,7 @@ where
                 let _ = cache_manager
                     .lock()
                     .await
-                    .save(&GroupType::REPO_INSIDE, &key, value)
+                    .save(&GroupType::RepoInside, &key, value)
                     .await;
             }
         }
@@ -81,15 +81,15 @@ where
                 let _ = cache_manager
                     .lock()
                     .await
-                    .save(&GroupType::API, &api_cache_key.to_string(), value)
+                    .save(&GroupType::Api, &api_cache_key.to_string(), value)
                     .await;
             }
-            return Ok(Some(data));
+            Ok(Some(data))
         } else {
-            return Ok(None);
+            Ok(None)
         }
     } else {
-        return Err(ErrorProviderNotFound);
+        Err(ErrorProviderNotFound)
     }
 }
 

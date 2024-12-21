@@ -12,7 +12,7 @@ where
     btree_map
 }
 
-pub fn convert_btreemap<'a>(original: &'a BTreeMap<String, String>) -> BTreeMap<&'a str, &'a str> {
+pub fn convert_btreemap(original: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
     let mut new_map: BTreeMap<&str, &str> = BTreeMap::new();
     for (key, value) in original.iter() {
         new_map.insert(key.as_str(), value.as_str());

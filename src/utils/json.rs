@@ -6,7 +6,7 @@ pub fn json_to_bytes<T>(json: &T) -> Result<Bytes, serde_json::Error>
 where
     T: ?Sized + Serialize,
 {
-    serde_json::to_vec(json).map(|v| Bytes::from(v))
+    serde_json::to_vec(json).map(Bytes::from)
 }
 
 pub fn bytes_to_json<'a, T>(bytes: &'a Bytes) -> Result<T, serde_json::Error>

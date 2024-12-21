@@ -7,9 +7,8 @@ use crate::utils::time::get_now_unix;
 
 #[derive(Debug, Eq, Hash, PartialEq)]
 pub enum GroupType {
-    #[allow(non_camel_case_types)]
-    REPO_INSIDE,
-    API,
+    RepoInside,
+    Api,
 }
 
 pub struct CacheManager {
@@ -52,7 +51,7 @@ impl CacheManager {
                     return None;
                 }
             }
-            if let Some(data) = local_cache_item.get(|data| data).await.ok() {
+            if let Ok(data) = local_cache_item.get(|data| data).await {
                 return Some(Bytes::from(data));
             }
         }
@@ -65,11 +64,7 @@ impl CacheManager {
         key: &str,
         expire_time: Option<u64>,
     ) -> Option<Bytes> {
-        if let Some(data) = self.get_local(group, key, expire_time).await {
-            return Some(data);
-        } else {
-            None
-        }
+        self.get_local(group, key, expire_time).await
     }
 
     pub async fn save(
@@ -122,7 +117,7 @@ mod tests {
     async fn test_cache_manager() {
         let mut cache_manager = CacheManager::new();
         cache_manager.set_local_cache_dir(Path::new("./test_cache_manager"));
-        let group = GroupType::REPO_INSIDE;
+        let group = GroupType::RepoInside;
         let key = "test_key";
         let value = Bytes::from("test_value");
         let _ = cache_manager.remove(&group, key).await;
@@ -146,7 +141,7 @@ mod tests {
     async fn test_cache_manager_restart() {
         let mut cache_manager = CacheManager::new();
         cache_manager.set_local_cache_dir(Path::new("./test_cache_manager_restart"));
-        let group = GroupType::REPO_INSIDE;
+        let group = GroupType::RepoInside;
         let key = "test_key";
         let value = Bytes::from("test_value");
         let _ = cache_manager.remove(&group, key).await;
@@ -172,7 +167,7 @@ mod tests {
     async fn test_cache_manager_no_exist() {
         let mut cache_manager = CacheManager::new();
         cache_manager.set_local_cache_dir(Path::new("./test_cache_manager_no_exist"));
-        let group = GroupType::REPO_INSIDE;
+        let group = GroupType::RepoInside;
         let key = "test_key_no_exist";
         let data = cache_manager.get(&group, key, None).await;
         assert_eq!(data, None);
@@ -184,7 +179,7 @@ mod tests {
     async fn test_cache_manager_expire_non_global() {
         let mut cache_manager = CacheManager::new();
         cache_manager.set_local_cache_dir(Path::new("./test_cache_manager_expire_non_global"));
-        let group = GroupType::REPO_INSIDE;
+        let group = GroupType::RepoInside;
         let key = "test_key_expire";
         let value = Bytes::from("test_value_expire");
         let _ = cache_manager.remove(&group, key).await;
@@ -212,7 +207,7 @@ mod tests {
     async fn test_cache_manager_expire_non_expire() {
         let mut cache_manager = CacheManager::new();
         cache_manager.set_local_cache_dir(Path::new("./test_cache_manager_non_expire"));
-        let group = GroupType::REPO_INSIDE;
+        let group = GroupType::RepoInside;
         let key = "test_key_expire";
         let value = Bytes::from("test_value_expire");
         let _ = cache_manager.remove(&group, key).await;
@@ -242,7 +237,7 @@ mod tests {
         cache_manager
             .set_local_cache_dir(Path::new("./test_cache_manager_global_expire"))
             .set_global_expire_time(1);
-        let group = GroupType::REPO_INSIDE;
+        let group = GroupType::RepoInside;
         let key = "test_key_expire";
         let value = Bytes::from("test_value_expire");
         let _ = cache_manager.remove(&group, key).await;

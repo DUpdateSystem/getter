@@ -8,6 +8,9 @@ use hyper_util::{
     rt::TokioExecutor,
 };
 use once_cell::sync::Lazy;
+use rustls::ClientConfig;
+#[cfg(feature = "rustls-platform-verifier")]
+use rustls_platform_verifier::BuilderVerifierExt;
 use std::{collections::HashMap, fmt};
 
 // Custom http response Error
@@ -145,8 +148,11 @@ fn https_config() -> Result<hyper_rustls::HttpsConnector<HttpConnector>, HttpsCo
     let tls: rustls::ClientConfig;
     #[cfg(feature = "rustls-platform-verifier")]
     {
-        tls = rustls_platform_verifier::tls_config_with_provider(provider)
-            .map_err(|e| HttpsConfigError { error: Box::new(e) })?;
+        tls = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| HttpsConfigError { error: Box::new(e) })?
+            .with_platform_verifier()
+            .with_no_client_auth();
     }
     #[cfg(all(feature = "webpki-roots", not(feature = "rustls-platform-verifier")))]
     {

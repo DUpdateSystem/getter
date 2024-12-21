@@ -11,7 +11,7 @@ pub struct DataDir{
 pub fn all_dir() -> Result<DataDir, io::Error> {
     let home_dir = env::var("HOME")
         .map_err(|_| io::Error::new(ErrorKind::NotFound, "HOME not found"))
-        .map(|home| PathBuf::from(home))?;
+        .map(PathBuf::from)?;
     let cache_dir = home_dir.join(".cache/upa/");
     let data_dir = home_dir.join(".local/share/upa/");
     Ok(DataDir{cache_dir, data_dir})

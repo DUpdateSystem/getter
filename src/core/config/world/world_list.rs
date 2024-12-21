@@ -22,11 +22,10 @@ impl WorldList {
     }
 
     pub fn load(&mut self, config_path: &Path) -> Result<&mut Self> {
-        let rule_list = if let Ok(file) = File::open(&config_path) {
+        let rule_list = if let Ok(file) = File::open(config_path) {
             let reader = BufReader::new(file);
-            let rule_list = serde_json::from_reader(reader)
-                .map_err(|e| GetterError::new("WorldList", "load", Box::new(e)))?;
-            rule_list
+            serde_json::from_reader(reader)
+                .map_err(|e| GetterError::new("WorldList", "load", Box::new(e)))?
         } else {
             RuleList::new()
         };

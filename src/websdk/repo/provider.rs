@@ -16,7 +16,9 @@ use self::gitlab::GitLabProvider;
 use self::lsposed_repo::LsposedRepoProvider;
 use super::data::release::ReleaseData;
 
-static PROVIDER_MAP: Lazy<Arc<RwLock<HashMap<&'static str, Arc<dyn BaseProvider + Send + Sync>>>>> =
+type ProviderMap = HashMap<&'static str, Arc<dyn BaseProvider + Send + Sync>>;
+
+static PROVIDER_MAP: Lazy<Arc<RwLock<ProviderMap>>> =
     Lazy::new(|| {
         Arc::new(RwLock::new(HashMap::from([
             (
@@ -46,7 +48,10 @@ fn get_provider(uuid: &str) -> Option<Arc<dyn BaseProvider + Send + Sync>> {
 pub fn add_provider(uuid: &str, provider: impl BaseProvider + Send + Sync + 'static) {
     let mut map = PROVIDER_MAP.write().unwrap();
     let uuid: &'static str = Box::leak(Box::new(uuid.to_string()));
-    map.insert(uuid, Arc::new(provider) as Arc<dyn BaseProvider + Send + Sync>);
+    map.insert(
+        uuid,
+        Arc::new(provider) as Arc<dyn BaseProvider + Send + Sync>,
+    );
 }
 
 pub fn get_cache_request_key(
@@ -54,11 +59,7 @@ pub fn get_cache_request_key(
     function_type: &FunctionType,
     data_map: &DataMap,
 ) -> Option<Vec<String>> {
-    if let Some(provider) = get_provider(uuid) {
-        Some(provider.get_cache_request_key(function_type, data_map))
-    } else {
-        None
-    }
+    get_provider(uuid).map(|provider| provider.get_cache_request_key(function_type, data_map))
 }
 
 pub async fn check_app_available<'a>(uuid: &str, fin: &FIn<'a>) -> Option<FOut<bool>> {

@@ -28,8 +28,7 @@ impl Client {
             app_data,
             hub_data,
         };
-        let response = self.client.request("check_app_available", data).await;
-        Ok(response?)
+        self.client.request("check_app_available", data).await
     }
 
     pub async fn get_latest_release(
@@ -43,8 +42,7 @@ impl Client {
             app_data,
             hub_data,
         };
-        let response = self.client.request("get_latest_release", data).await;
-        Ok(response?)
+        self.client.request("get_latest_release", data).await
     }
 
     pub async fn get_releases(
@@ -58,7 +56,6 @@ impl Client {
             app_data,
             hub_data,
         };
-        let response = self.client.request("get_releases", data).await;
-        Ok(response?)
+        self.client.request("get_releases", data).await
     }
 }

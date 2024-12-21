@@ -5,7 +5,7 @@ use crate::locale::all_dir;
 
 pub fn get_data_path(sub: &str) -> String {
     let data_dir = env::var("DATA_DIR")
-        .map(|s| PathBuf::from(s))
+        .map(PathBuf::from)
         .unwrap_or_else(|_| {
             all_dir()
                 .expect("Non-support OS, you should set DATA_DIR env arg")

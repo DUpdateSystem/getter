@@ -177,7 +177,7 @@ pub trait BaseProviderExt: BaseProvider {
                 .filter(|v| !v.0.is_empty() && !v.1.is_empty())
                 .collect::<HashMap<String, String>>()
         } else {
-            return HashMap::new();
+            HashMap::new()
         }
     }
 
@@ -185,9 +185,9 @@ pub trait BaseProviderExt: BaseProvider {
         let mut result_url = url.to_string();
         for (url_prefix, proxy_url) in self.url_proxy_map(fin).iter() {
             let regex_prefix = "regex:";
-            if url_prefix.starts_with(regex_prefix) {
-                let url_prefix = &url_prefix[regex_prefix.len()..].trim();
-                if let Ok(re) = Regex::new(&url_prefix) {
+            if let Some(stripped) = url_prefix.strip_prefix(regex_prefix) {
+                let url_prefix = &stripped.trim();
+                if let Ok(re) = Regex::new(url_prefix) {
                     result_url = re.replace_all(&result_url, proxy_url.clone()).to_string();
                 }
             } else {

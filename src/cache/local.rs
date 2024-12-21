@@ -17,7 +17,7 @@ impl LocalCacheItem {
     }
 
     pub async fn get<T>(&self, decoder: fn(Vec<u8>) -> T) -> Result<T> {
-        read(&self.cache_path).await.map(|data| decoder(data))
+        read(&self.cache_path).await.map(decoder)
     }
 
     pub async fn save<T>(&self, data: T, encoder: fn(T) -> Vec<u8>) -> Result<()> {

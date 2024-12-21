@@ -84,12 +84,10 @@ impl BaseProvider for FDroidProvider {
         let mut index: Option<Bytes> = None;
         if let Some(i) = index_cache {
             index = Some(i.clone());
-        } else {
-            if let Ok(parsed_url) = api_url.parse() {
-                if let Ok(rsp) = get(parsed_url, &HashMap::new()).await {
-                    index = rsp.body;
-                    cache_map_fout.insert(cache_key.to_string(), index.clone().unwrap());
-                }
+        } else if let Ok(parsed_url) = api_url.parse() {
+            if let Ok(rsp) = get(parsed_url, &HashMap::new()).await {
+                index = rsp.body;
+                cache_map_fout.insert(cache_key.to_string(), index.clone().unwrap());
             }
         };
         if index.is_none() {
@@ -203,9 +201,8 @@ impl FDroidProvider {
                 Ok(Event::Text(e)) => {
                     if let Ok(e) = e.unescape() {
                         let text = e.into_owned();
-                        match current_tag.as_str() {
-                            "changelog" => changelog += &text,
-                            _ => (),
+                        if current_tag.as_str() == "changelog" {
+                            changelog += &text
                         }
                     }
                 }

@@ -1,7 +1,7 @@
 use super::data::*;
 use crate::api as api_root;
-use crate::websdk::cloud_rules::cloud_rules::CloudRules;
-use crate::websdk::repo::{api, provider::github};
+use crate::websdk::cloud_rules::cloud_rules_manager::CloudRules;
+use crate::websdk::repo::api;
 use jsonrpsee::server::{RpcModule, Server, ServerHandle};
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
 use std::net::SocketAddr;
@@ -46,7 +46,7 @@ pub async fn run_server(
         |params, _context, _extensions| async move {
             let request = params.parse::<RpcAppRequest>()?;
             if let Some(result) =
-                api::check_app_available(&request.hub_uuid, &request.app_data, &request.hub_data)
+                api::check_app_available(request.hub_uuid, &request.app_data, &request.hub_data)
                     .await
             {
                 Ok(result)
@@ -64,7 +64,7 @@ pub async fn run_server(
         |params, _context, _extensions| async move {
             if let Ok(request) = params.parse::<RpcAppRequest>() {
                 if let Some(result) =
-                    api::get_latest_release(&request.hub_uuid, &request.app_data, &request.hub_data)
+                    api::get_latest_release(request.hub_uuid, &request.app_data, &request.hub_data)
                         .await
                 {
                     Ok(result)
@@ -87,7 +87,7 @@ pub async fn run_server(
     module.register_async_method("get_releases", |params, _context, _extensions| async move {
         if let Ok(request) = params.parse::<RpcAppRequest>() {
             if let Some(result) =
-                api::get_releases(&request.hub_uuid, &request.app_data, &request.hub_data).await
+                api::get_releases(request.hub_uuid, &request.app_data, &request.hub_data).await
             {
                 Ok(result)
             } else {
@@ -158,6 +158,7 @@ pub async fn run_server_hanging<T>(
 #[cfg(test)]
 mod tests {
     use crate::rpc::client::Client;
+    use crate::websdk::repo::provider::github;
     use crate::websdk::{
         cloud_rules::data::config_list::ConfigList, repo::data::release::ReleaseData,
     };

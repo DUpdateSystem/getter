@@ -1,4 +1,4 @@
-pub use super::cloud_rules::CloudRules;
+pub use super::cloud_rules_manager::CloudRules;
 use super::data::app_item::AppItem;
 use super::data::hub_item::HubItem;
 
@@ -25,7 +25,7 @@ impl CloudRules {
     {
         let mut list = Vec::new();
         for config in self.get_config_list().app_config_list {
-            if filter(&config) {
+            if filter(config) {
                 list.push(config.to_owned());
                 if only_first {
                     break;
@@ -40,7 +40,7 @@ impl CloudRules {
         F: Fn(&HubItem) -> bool,
     {
         for config in self.get_config_list().hub_config_list {
-            if filter(&config) {
+            if filter(config) {
                 return Some(config.to_owned());
             }
         }
@@ -80,20 +80,14 @@ mod tests {
 
         let mut cloud_rules = CloudRules::new(&url);
         cloud_rules.renew().await.unwrap();
-        let list = cloud_rules
-            .get_cloud_app_rules_list(|x| x.info.name == "UpgradeAll");
+        let list = cloud_rules.get_cloud_app_rules_list(|x| x.info.name == "UpgradeAll");
         assert_eq!(list.len(), 1);
-        let list = cloud_rules
-            .get_cloud_app_rules_list(|x| x.info.name == "");
+        let list = cloud_rules.get_cloud_app_rules_list(|x| x.info.name == "");
         assert_eq!(list.len(), 0);
-        let list = cloud_rules
-            .get_cloud_app_rules_list(|x| x.info.name != "");
+        let list = cloud_rules.get_cloud_app_rules_list(|x| x.info.name != "");
         assert_eq!(
             list.len(),
-            cloud_rules
-                .get_config_list()
-                .app_config_list
-                .len()
+            cloud_rules.get_config_list().app_config_list.len()
         );
     }
 
@@ -107,11 +101,9 @@ mod tests {
 
         let mut cloud_rules = CloudRules::new(&url);
         cloud_rules.renew().await.unwrap();
-        let list = cloud_rules
-            .get_cloud_hub_rules(|x| x.info.hub_name == "GitHub");
+        let list = cloud_rules.get_cloud_hub_rules(|x| x.info.hub_name == "GitHub");
         assert!(list.is_some());
-        let list = cloud_rules
-            .get_cloud_hub_rules(|x| x.info.hub_name == "");
+        let list = cloud_rules.get_cloud_hub_rules(|x| x.info.hub_name == "");
         assert!(list.is_none());
     }
 }
