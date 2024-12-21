@@ -14,6 +14,8 @@ jobs:
 
     - name: Lints checks by Clippy
       uses: giraffate/clippy-action@v1
+      with:
+        clippy_flags: -- -Dwarnings
 
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
