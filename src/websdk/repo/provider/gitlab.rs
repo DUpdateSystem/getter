@@ -191,15 +191,14 @@ impl BaseProvider for GitLabProvider {
                     }
                     let changelog = json.get("description")?.as_str()?.to_string();
                     let extra_download_url = self.try_get_download_url_from_changelog(&changelog);
-                    let assets_data = assets_data.into_iter().chain(
-                        extra_download_url
-                            .into_iter()
-                            .map(|(k, v)| AssetData {
-                                file_name: k,
-                                file_type: "".to_string(),
-                                download_url: v,
-                            })
-                    ).collect();
+                    let assets_data = assets_data
+                        .into_iter()
+                        .chain(extra_download_url.into_iter().map(|(k, v)| AssetData {
+                            file_name: k,
+                            file_type: "".to_string(),
+                            download_url: v,
+                        }))
+                        .collect();
                     Some(ReleaseData {
                         version_number: version_number?.to_string(),
                         changelog,

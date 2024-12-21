@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// HubConfig
 ///
@@ -19,7 +19,7 @@ use serde::{Serialize, Deserialize};
 /// ```
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct HubItem{
+pub struct HubItem {
     #[serde(rename = "base_version", default)]
     pub base_version: i32,
 
@@ -85,6 +85,9 @@ mod tests {
         assert_eq!(hub_item.info.hub_icon_url, Some("".to_string()));
         assert_eq!(hub_item.target_check_api, Some("".to_string()));
         assert_eq!(hub_item.api_keywords, ["owner", "repo"]);
-        assert_eq!(hub_item.app_url_templates[0], "https://github.com/%owner/%repo/");
+        assert_eq!(
+            hub_item.app_url_templates[0],
+            "https://github.com/%owner/%repo/"
+        );
     }
 }

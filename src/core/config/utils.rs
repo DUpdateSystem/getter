@@ -2,22 +2,18 @@ use std::{env, path::PathBuf};
 
 use crate::locale::all_dir;
 
-
 pub fn get_data_path(sub: &str) -> String {
-    let data_dir = env::var("DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            all_dir()
-                .expect("Non-support OS, you should set DATA_DIR env arg")
-                .data_dir
-        });
+    let data_dir = env::var("DATA_DIR").map(PathBuf::from).unwrap_or_else(|_| {
+        all_dir()
+            .expect("Non-support OS, you should set DATA_DIR env arg")
+            .data_dir
+    });
     data_dir
         .join(sub)
         .to_str()
         .expect("Invalid config path")
         .to_string()
 }
-
 
 #[cfg(test)]
 mod tests {

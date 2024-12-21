@@ -15,10 +15,7 @@ pub async fn init(data_dir: &Path, cache_dir: &Path, global_expire_time: u64) ->
     init_world_list(&world_list_path).await?;
     // cache
     let local_cache_path = cache_dir.join("local_cache");
-    init_cache_manager_with_expire(
-        local_cache_path.as_path(),
-        global_expire_time,
-    ).await;
+    init_cache_manager_with_expire(local_cache_path.as_path(), global_expire_time).await;
     Ok(())
 }
 

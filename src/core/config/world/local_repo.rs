@@ -24,7 +24,8 @@ impl LocalRepo {
     pub fn save(&self, rule_path: &str, content: &str) -> Result<()> {
         let path = PathBuf::from(&self.path).join(rule_path);
         let _ = fs::create_dir_all(path.parent().unwrap());
-        fs::write(&path, content).map_err(|e| GetterError::new("LocalRepo", "save", Box::new(e)))?;
+        fs::write(&path, content)
+            .map_err(|e| GetterError::new("LocalRepo", "save", Box::new(e)))?;
         Ok(())
     }
 }

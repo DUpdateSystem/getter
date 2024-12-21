@@ -5,33 +5,45 @@ on:
   pull_request:
 
 jobs:
-  clippy:
+  clippy-sarif:
     runs-on: ubuntu-latest
     if: ${{ github.ref == 'refs/heads/master' }}
     steps:
       - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
           components: clippy, rustfmt
-          override: true
       - run: cargo install clippy-sarif sarif-fmt
-      - run: RUSTFLAGS="-A unused" cargo clippy --all-targets --all-features --message-format=json -- -Dwarnings |
+      - run:
+          RUSTFLAGS="-A unused" cargo clippy --all-targets --all-features --message-format=json -- -Dwarnings |
           clippy-sarif | tee results.sarif | sarif-fmt
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@v1
         with:
           sarif_file: results.sarif
 
+  static-code-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check lints
+        run: RUSTFLAGS="-A unused" cargo clippy --all-targets --all-features -- -Dwarnings
+
   test:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Set up Rust
-      uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
-    - name: Run test script
-      run: ./tests/script/cargo_test.sh
+      - name: Run test script
+        run: ./tests/script/cargo_test.sh
