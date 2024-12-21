@@ -95,6 +95,6 @@ mod tests {
         let path = PathBuf::from(path_base).join(WORLD_CONFIG_LIST_NAME);
 
         let _ = WorldList::new().load(&path);
-        assert_eq!(path.try_exists().is_ok_and(|x| x == false), true);
+        assert!(path.try_exists().is_ok_and(|x| !x));
     }
 }

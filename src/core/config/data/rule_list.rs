@@ -77,7 +77,7 @@ mod tests {
   "hub_list": ["GitHub"]
 }"#;
 
-        let config_list: RuleList = serde_json::from_str(&json).unwrap();
+        let config_list: RuleList = serde_json::from_str(json).unwrap();
 
         // check app_config_list
         assert_eq!(config_list.app_list.len(), 2);

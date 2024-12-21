@@ -30,6 +30,6 @@ mod tests {
     async fn test_get_world_list_micro() {
         let world_list_path = Path::new("./test_get_world_list_micro");
         init_world_list(world_list_path).await.unwrap();
-        let _ = get_world_list();
+        let _ = get_world_list().await;
     }
 }

@@ -247,7 +247,7 @@ mod tests {
         async fn check_app_available(&self, fin: &FIn) -> FOut<bool> {
             let id_map = fin.data_map.app_data;
             let cache_map = fin.cache_map.clone();
-            FOut::new(cache_map.unwrap_or_default().get(id_map["id"]).is_some())
+            FOut::new(cache_map.unwrap_or_default().contains_key(id_map["id"]))
         }
 
         async fn get_releases(&self, fin: &FIn) -> FOut<Vec<ReleaseData>> {

@@ -61,19 +61,19 @@ mod tests {
         let version = Version {
             string: "1.0.0".to_string(),
         };
-        assert_eq!(version.is_valid(), true);
+        assert!(version.is_valid());
         let version = Version {
             string: "1.0.0-alpha".to_string(),
         };
-        assert_eq!(version.is_valid(), true);
+        assert!(version.is_valid());
         let version = Version {
             string: "版本1.0.0".to_string(),
         };
-        assert_eq!(version.is_valid(), true);
+        assert!(version.is_valid());
         let chinese_suffix_version = Version {
             string: "版本1.0.0 天行健".to_string(),
         };
-        assert_eq!(chinese_suffix_version.is_valid(), true);
+        assert!(chinese_suffix_version.is_valid());
     }
 
     #[test]
@@ -81,7 +81,7 @@ mod tests {
         let version = Version {
             string: "xxx".to_string(),
         };
-        assert_eq!(version.is_valid(), false);
+        assert!(!version.is_valid());
     }
 
     #[test]
@@ -119,7 +119,7 @@ mod tests {
         let other_version = Version {
             string: "1.0.1".to_string(),
         };
-        assert_eq!(version < other_version, true);
+        assert!(version < other_version);
     }
 
     #[test]
@@ -130,7 +130,7 @@ mod tests {
         let other_version = Version {
             string: "1.0.1-alpha".to_string(),
         };
-        assert_eq!(version > other_version, true);
+        assert!(version > other_version);
     }
 
     #[test]

@@ -243,7 +243,7 @@ mod tests {
         let url = "https://example.com".parse().unwrap();
         let result = https_get(url, &HashMap::new()).await;
         assert!(result.is_ok());
-        assert!(result.unwrap().body.unwrap().len() > 0);
+        assert!(!result.unwrap().body.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -294,7 +294,7 @@ mod tests {
         let url = "http://example.com".parse().unwrap();
         let result = http_get(url, &HashMap::new()).await;
         assert!(result.is_ok());
-        assert!(result.unwrap().body.unwrap().len() > 0);
+        assert!(!result.unwrap().body.unwrap().is_empty());
     }
 
     #[tokio::test]

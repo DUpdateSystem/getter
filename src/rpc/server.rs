@@ -225,7 +225,7 @@ mod tests {
         };
         println!("{:?}", params);
         let response: Result<bool, _> = client.request("init", params).await;
-        assert_eq!(response.unwrap(), true);
+        assert!(response.unwrap());
         handle.stop().unwrap();
     }
     #[tokio::test]
@@ -255,7 +255,7 @@ mod tests {
         let response: Result<bool, _> = client
             .check_app_available(params.hub_uuid, params.app_data, params.hub_data)
             .await;
-        assert_eq!(response.unwrap(), true);
+        assert!(response.unwrap());
         handle.stop().unwrap();
     }
 
