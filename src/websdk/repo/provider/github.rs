@@ -23,6 +23,21 @@ impl GitHubProvider {
     pub fn new() -> Self {
         GitHubProvider {}
     }
+
+    fn get_token_header(&self, fin: &FIn) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        // check if token is empty or blank
+        let token = fin
+            .data_map
+            .hub_data
+            .get("token")
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| fin.data_map.app_data.get("token"));
+        if let Some(token) = token {
+            map.insert("Authorization".to_string(), format!("Bearer {}", token));
+        }
+        return map;
+    }
 }
 
 impl BaseProviderExt for GitHubProvider {}
@@ -74,7 +89,9 @@ impl BaseProvider for GitHubProvider {
             if let Ok(parsed_url) = url.parse() {
                 let header_map = {
                     let mut map = HashMap::new();
-                    map.insert("User-Agent".to_string(), "Awesome-Octocat-App".to_string());
+                    map.insert("User-Agent".to_string(), "UpgradeAll-App".to_string());
+                    let token_map = self.get_token_header(fin);
+                    map.extend(token_map);
                     map
                 };
                 if let Ok(rsp) = get(parsed_url, &header_map).await {
@@ -209,5 +226,36 @@ mod tests {
             fs::read_to_string("tests/files/data/provider_github_release.json").unwrap();
         let releases_saved = serde_json::from_str::<Vec<ReleaseData>>(&release_json).unwrap();
         assert_eq!(releases, releases_saved)
+    }
+
+    #[tokio::test]
+    async fn test_get_releases_token() {
+        let mut id_map = AppDataMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let test_token = std::env::var("GITHUB_TOKEN");
+        if test_token.is_err() {
+            return;
+        }
+        let test_token = test_token.unwrap();
+        let hub_data = HubDataMap::from([("token", test_token.as_str())]);
+
+        let github_provider = GitHubProvider::new();
+        let releases = github_provider
+            .get_releases(&FIn::new_with_frag(&id_map, &hub_data, None))
+            .await
+            .result
+            .unwrap();
+
+        assert!(!releases.is_empty());
+
+        let hub_data = HubDataMap::from([("token", " ")]);
+        id_map.insert("token", &test_token);
+
+        let releases = github_provider
+            .get_releases(&FIn::new_with_frag(&id_map, &hub_data, None))
+            .await
+            .result
+            .unwrap();
+
+        assert!(!releases.is_empty());
     }
 }
