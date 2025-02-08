@@ -61,7 +61,7 @@ pub fn get_cache_request_key(
     get_provider(uuid).map(|provider| provider.get_cache_request_key(function_type, data_map))
 }
 
-pub async fn check_app_available<'a>(uuid: &str, fin: &FIn<'a>) -> Option<FOut<bool>> {
+pub async fn check_app_available(uuid: &str, fin: &FIn<'_>) -> Option<FOut<bool>> {
     if let Some(provider) = get_provider(uuid) {
         Some(provider.check_app_available(fin).await)
     } else {
@@ -69,7 +69,7 @@ pub async fn check_app_available<'a>(uuid: &str, fin: &FIn<'a>) -> Option<FOut<b
     }
 }
 
-pub async fn get_latest_release<'a>(uuid: &str, fin: &FIn<'a>) -> Option<FOut<ReleaseData>> {
+pub async fn get_latest_release(uuid: &str, fin: &FIn<'_>) -> Option<FOut<ReleaseData>> {
     if let Some(provider) = get_provider(uuid) {
         Some(provider.get_latest_release(fin).await)
     } else {
@@ -77,7 +77,7 @@ pub async fn get_latest_release<'a>(uuid: &str, fin: &FIn<'a>) -> Option<FOut<Re
     }
 }
 
-pub async fn get_releases<'a>(uuid: &str, fin: &FIn<'a>) -> Option<FOut<Vec<ReleaseData>>> {
+pub async fn get_releases(uuid: &str, fin: &FIn<'_>) -> Option<FOut<Vec<ReleaseData>>> {
     if let Some(provider) = get_provider(uuid) {
         Some(provider.get_releases(fin).await)
     } else {

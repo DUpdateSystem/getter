@@ -36,7 +36,7 @@ impl GitHubProvider {
         if let Some(token) = token {
             map.insert("Authorization".to_string(), format!("Bearer {}", token));
         }
-        return map;
+        map
     }
 }
 

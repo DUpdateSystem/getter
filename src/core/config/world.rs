@@ -18,7 +18,7 @@ pub async fn init_world_list(world_list_path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub async fn get_world_list<'a>() -> Arc<Mutex<WorldList>> {
+pub async fn get_world_list() -> Arc<Mutex<WorldList>> {
     INSTANCE_CONTAINER.get().await.clone()
 }
 

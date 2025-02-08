@@ -29,6 +29,6 @@ pub async fn init_cache_manager_with_expire(local_cache_path: &Path, expire_time
         .set_global_expire_time(expire_time);
 }
 
-pub async fn get_cache_manager<'a>() -> Arc<Mutex<CacheManager>> {
+pub async fn get_cache_manager() -> Arc<Mutex<CacheManager>> {
     INSTANCE_CONTAINER.get().await.clone()
 }
