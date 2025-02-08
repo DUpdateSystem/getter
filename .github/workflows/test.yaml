@@ -23,7 +23,7 @@ jobs:
         with:
           sarif_file: results.sarif
 
-  static-code-check:
+  static-code-analysis:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,3 +47,5 @@ jobs:
 
       - name: Run test script
         run: ./tests/script/cargo_test.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.TEST_GITHUB_TOKEN }}
