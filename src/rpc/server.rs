@@ -52,8 +52,8 @@ pub async fn run_server(
                 Ok(result)
             } else {
                 Err(ErrorObjectOwned::owned(
-                    ErrorCode::ParseError.code(),
-                    "Parse params error",
+                    ErrorCode::InternalError.code(),
+                    "Failed to check app availability",
                     Some(params.as_str().unwrap_or("None").to_string()),
                 ))
             }
@@ -70,8 +70,8 @@ pub async fn run_server(
                     Ok(result)
                 } else {
                     Err(ErrorObjectOwned::borrowed(
-                        ErrorCode::InvalidParams.code(),
-                        "Invalid params",
+                        ErrorCode::InternalError.code(),
+                        "Failed to get latest release",
                         None,
                     ))
                 }
@@ -92,8 +92,8 @@ pub async fn run_server(
                 Ok(result)
             } else {
                 Err(ErrorObjectOwned::borrowed(
-                    ErrorCode::InvalidParams.code(),
-                    "Invalid params",
+                    ErrorCode::InternalError.code(),
+                    "Failed to get releases",
                     None,
                 ))
             }
