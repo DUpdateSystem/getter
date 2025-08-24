@@ -22,6 +22,7 @@ quick-xml = { version = "0.37.0", features = ["encoding", "async-tokio"] }
 async_fn_traits = "0.1.1"
 version-compare = "0.2.0"
 regex = "1.10.4"
+chrono = { version = "0.4", features = ["serde"] }
 hyper-util = { version = "0.1.6", features = ["client", "tokio", "http1"] }
 http-body-util = "0.1.1"
 jsonrpsee = { version = "0.24.0", features = ["server", "client"] }
