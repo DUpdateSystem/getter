@@ -39,6 +39,14 @@ impl BaseProviderExt for LsposedRepoProvider {}
 
 #[async_trait]
 impl BaseProvider for LsposedRepoProvider {
+    fn get_uuid(&self) -> &'static str {
+        "401e6259-2eab-46f0-8e8a-d2bfafedf5bf"
+    }
+
+    fn get_friendly_name(&self) -> &'static str {
+        "lsposed"
+    }
+
     fn get_cache_request_key(
         &self,
         _function_type: &FunctionType,

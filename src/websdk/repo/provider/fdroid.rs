@@ -38,6 +38,14 @@ impl BaseProviderExt for FDroidProvider {}
 
 #[async_trait]
 impl BaseProvider for FDroidProvider {
+    fn get_uuid(&self) -> &'static str {
+        "6a6d590b-1809-41bf-8ce3-7e3f6c8da945"
+    }
+
+    fn get_friendly_name(&self) -> &'static str {
+        "fdroid"
+    }
+
     fn get_cache_request_key(
         &self,
         function_type: &FunctionType,

@@ -89,6 +89,14 @@ impl GitLabProvider {
 
 #[async_trait]
 impl BaseProvider for GitLabProvider {
+    fn get_uuid(&self) -> &'static str {
+        "a84e2fbe-1478-4db5-80ae-75d00454c7eb"
+    }
+
+    fn get_friendly_name(&self) -> &'static str {
+        "gitlab"
+    }
+
     fn get_cache_request_key(
         &self,
         function_type: &FunctionType,

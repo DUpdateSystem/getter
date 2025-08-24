@@ -127,6 +127,12 @@ impl<T> FOut<T> {
 
 #[async_trait]
 pub trait BaseProvider {
+    /// Get the unique UUID for this provider
+    fn get_uuid(&self) -> &'static str;
+
+    /// Get friendly name for this provider (e.g., "github" for GitHub provider)
+    fn get_friendly_name(&self) -> &'static str;
+
     fn get_cache_request_key(
         &self,
         function_type: &FunctionType,
@@ -222,6 +228,14 @@ mod tests {
 
     #[async_trait]
     impl BaseProvider for MockProvider {
+        fn get_uuid(&self) -> &'static str {
+            "test-mock-provider-uuid"
+        }
+
+        fn get_friendly_name(&self) -> &'static str {
+            "mock"
+        }
+
         fn get_cache_request_key(
             &self,
             function_type: &FunctionType,

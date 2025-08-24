@@ -44,6 +44,14 @@ impl BaseProviderExt for GitHubProvider {}
 
 #[async_trait]
 impl BaseProvider for GitHubProvider {
+    fn get_uuid(&self) -> &'static str {
+        "fd9b2602-62c5-4d55-bd1e-0d6537714ca0"
+    }
+
+    fn get_friendly_name(&self) -> &'static str {
+        "github"
+    }
+
     fn get_cache_request_key(
         &self,
         function_type: &FunctionType,

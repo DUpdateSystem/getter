@@ -4,6 +4,4 @@ pub struct App {
     db: AppDb,
 }
 
-impl App {
-
-}
+impl App {}

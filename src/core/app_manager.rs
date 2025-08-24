@@ -13,19 +13,31 @@ pub struct OpId {
 
 impl OpId {
     fn check_available(hub_uuid: &str, app_key: &str) -> Self {
-        Self { op_type: 0, key: format!("{}:{}", hub_uuid, app_key) }
+        Self {
+            op_type: 0,
+            key: format!("{}:{}", hub_uuid, app_key),
+        }
     }
-    
+
     fn get_latest(hub_uuid: &str, app_key: &str) -> Self {
-        Self { op_type: 1, key: format!("{}:{}", hub_uuid, app_key) }
+        Self {
+            op_type: 1,
+            key: format!("{}:{}", hub_uuid, app_key),
+        }
     }
-    
+
     fn get_releases(hub_uuid: &str, app_key: &str) -> Self {
-        Self { op_type: 2, key: format!("{}:{}", hub_uuid, app_key) }
+        Self {
+            op_type: 2,
+            key: format!("{}:{}", hub_uuid, app_key),
+        }
     }
-    
+
     fn update_app(app_id: &str) -> Self {
-        Self { op_type: 3, key: app_id.to_string() }
+        Self {
+            op_type: 3,
+            key: app_id.to_string(),
+        }
     }
 }
 
@@ -55,11 +67,11 @@ impl AppManager {
     /// Create new AppManager instance
     pub fn new() -> Self {
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
-        
+
         // Start background processor with minimal memory footprint
         let processor = Processor::new(msg_rx);
         tokio::spawn(processor.run());
-        
+
         Self { msg_tx }
     }
 
@@ -73,7 +85,7 @@ impl AppManager {
         let app_key = self.serialize_minimal(app_data, hub_data);
         let id = OpId::check_available(hub_uuid, &app_key);
         let data = vec![hub_uuid.to_string(), app_key];
-        
+
         match self.send_request(id, data).await? {
             AppResult::Bool(result) => Ok(result),
             AppResult::Error(err) => Err(err),
@@ -91,7 +103,7 @@ impl AppManager {
         let app_key = self.serialize_minimal(app_data, hub_data);
         let id = OpId::get_latest(hub_uuid, &app_key);
         let data = vec![hub_uuid.to_string(), app_key];
-        
+
         match self.send_request(id, data).await? {
             AppResult::Release(release) => Ok(release),
             AppResult::Error(err) => Err(err),
@@ -109,7 +121,7 @@ impl AppManager {
         let app_key = self.serialize_minimal(app_data, hub_data);
         let id = OpId::get_releases(hub_uuid, &app_key);
         let data = vec![hub_uuid.to_string(), app_key];
-        
+
         match self.send_request(id, data).await? {
             AppResult::Releases(releases) => Ok(releases),
             AppResult::Error(err) => Err(err),
@@ -121,7 +133,7 @@ impl AppManager {
     pub async fn update_app(&self, app_id: &str, version: &str) -> Result<String, String> {
         let id = OpId::update_app(app_id);
         let data = vec![app_id.to_string(), version.to_string()];
-        
+
         match self.send_request(id, data).await? {
             AppResult::Success(msg) => Ok(msg),
             AppResult::Error(err) => Err(err),
@@ -145,10 +157,11 @@ impl AppManager {
     async fn send_request(&self, id: OpId, data: Vec<String>) -> Result<AppResult, String> {
         let (tx, rx) = oneshot::channel();
         let msg = Msg { id, data, tx };
-        
-        self.msg_tx.send(msg)
+
+        self.msg_tx
+            .send(msg)
             .map_err(|_| "Processor unavailable".to_string())?;
-        
+
         rx.await.map_err(|_| "Request failed".to_string())
     }
 
@@ -160,7 +173,7 @@ impl AppManager {
     ) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = DefaultHasher::new();
         for (k, v) in app_data {
             k.hash(&mut hasher);
@@ -194,7 +207,7 @@ impl Processor {
         while let Some(msg) = self.msg_rx.recv().await {
             let id = msg.id.clone();
             let tx = msg.tx;
-            
+
             // Check for duplicate requests and add to waiters
             let should_execute = {
                 let mut active = self.active.lock().await;
@@ -241,21 +254,23 @@ impl Processor {
         if msg.data.len() < 2 {
             return AppResult::Error("Invalid data".to_string());
         }
-        
+
         // For memory efficiency, we'll need to reconstruct the data
         // In a real implementation, you might use disk cache here if memory is critically low
         let hub_uuid = &msg.data[0];
-        
+
         // Simplified implementation - in real scenario you'd reconstruct the BTreeMap
         // or use disk cache if memory is constrained
         let empty_app_data = std::collections::BTreeMap::new();
         let empty_hub_data = std::collections::BTreeMap::new();
-        
+
         match crate::websdk::repo::api::check_app_available(
             hub_uuid,
             &empty_app_data,
             &empty_hub_data,
-        ).await {
+        )
+        .await
+        {
             Some(result) => AppResult::Bool(result),
             None => AppResult::Error("API call failed".to_string()),
         }
@@ -266,16 +281,18 @@ impl Processor {
         if msg.data.len() < 2 {
             return AppResult::Error("Invalid data".to_string());
         }
-        
+
         let hub_uuid = &msg.data[0];
         let empty_app_data = std::collections::BTreeMap::new();
         let empty_hub_data = std::collections::BTreeMap::new();
-        
+
         match crate::websdk::repo::api::get_latest_release(
             hub_uuid,
             &empty_app_data,
             &empty_hub_data,
-        ).await {
+        )
+        .await
+        {
             Some(result) => AppResult::Release(result),
             None => AppResult::Error("API call failed".to_string()),
         }
@@ -286,16 +303,14 @@ impl Processor {
         if msg.data.len() < 2 {
             return AppResult::Error("Invalid data".to_string());
         }
-        
+
         let hub_uuid = &msg.data[0];
         let empty_app_data = std::collections::BTreeMap::new();
         let empty_hub_data = std::collections::BTreeMap::new();
-        
-        match crate::websdk::repo::api::get_releases(
-            hub_uuid,
-            &empty_app_data,
-            &empty_hub_data,
-        ).await {
+
+        match crate::websdk::repo::api::get_releases(hub_uuid, &empty_app_data, &empty_hub_data)
+            .await
+        {
             Some(result) => AppResult::Releases(result),
             None => AppResult::Error("API call failed".to_string()),
         }
@@ -306,10 +321,10 @@ impl Processor {
         if msg.data.len() < 2 {
             return AppResult::Error("Invalid data".to_string());
         }
-        
+
         let app_id = &msg.data[0];
         let version = &msg.data[1];
-        
+
         // TODO: Implement actual update logic
         AppResult::Success(format!("Would update {} to {}", app_id, version))
     }
@@ -350,14 +365,14 @@ mod tests {
         let manager = AppManager::new();
         let app_data = std::collections::BTreeMap::from([("repo", "test")]);
         let hub_data = std::collections::BTreeMap::new();
-        
+
         // Multiple identical requests
         let (r1, r2, r3) = tokio::join!(
             manager.check_app_available("hub", &app_data, &hub_data),
             manager.check_app_available("hub", &app_data, &hub_data),
             manager.check_app_available("hub", &app_data, &hub_data),
         );
-        
+
         // Results should be consistent
         assert_eq!(r1.is_ok(), r2.is_ok());
         assert_eq!(r2.is_ok(), r3.is_ok());
@@ -369,13 +384,13 @@ mod tests {
         let app_data1 = std::collections::BTreeMap::from([("repo", "test1")]);
         let app_data2 = std::collections::BTreeMap::from([("repo", "test2")]);
         let hub_data = std::collections::BTreeMap::new();
-        
+
         // Different requests should be handled separately
         let (r1, r2) = tokio::join!(
             manager.check_app_available("hub", &app_data1, &hub_data),
             manager.check_app_available("hub", &app_data2, &hub_data),
         );
-        
+
         // Both should complete (may fail but should not hang)
         assert!(r1.is_ok() || r1.is_err());
         assert!(r2.is_ok() || r2.is_err());
@@ -386,12 +401,14 @@ mod tests {
         let manager = AppManager::new();
         let app_data = std::collections::BTreeMap::from([("nonexistent", "repo")]);
         let hub_data = std::collections::BTreeMap::new();
-        
+
         // This should complete within reasonable time even if API fails
         let start = std::time::Instant::now();
-        let result = manager.check_app_available("invalid-hub", &app_data, &hub_data).await;
+        let result = manager
+            .check_app_available("invalid-hub", &app_data, &hub_data)
+            .await;
         let duration = start.elapsed();
-        
+
         // Should not hang indefinitely
         assert!(duration < std::time::Duration::from_secs(5));
         // Result should be available (likely an error)

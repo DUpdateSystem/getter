@@ -16,6 +16,17 @@ impl OutsideProvider {
 
 #[async_trait]
 impl BaseProvider for OutsideProvider {
+    fn get_uuid(&self) -> &'static str {
+        // OutsideProvider has dynamic UUID, but trait requires 'static str
+        // We'll need to use Box::leak for dynamic providers
+        Box::leak(self.uuid.clone().into_boxed_str())
+    }
+
+    fn get_friendly_name(&self) -> &'static str {
+        // No friendly name for dynamic providers, use empty string
+        ""
+    }
+
     fn get_cache_request_key(
         &self,
         _function_type: &FunctionType,

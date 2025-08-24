@@ -146,5 +146,5 @@ pub fn add_outside_provider(uuid: &str, url: &str) {
         uuid: uuid.to_string(),
         url: url.to_string(),
     };
-    add_provider(uuid, provider);
+    add_provider(provider);
 }

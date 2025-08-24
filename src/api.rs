@@ -3,7 +3,8 @@ use std::path::Path;
 
 use crate::cache::init_cache_manager_with_expire;
 use crate::core::app_manager::{get_app_manager, AppManager};
-use crate::core::config::world::{init_world_list, world_list};
+use crate::core::config::world::init_world_list;
+use crate::core::config::world::world_list::WORLD_CONFIG_LIST_NAME;
 use crate::error::Result;
 use crate::utils::json::json_to_string;
 use crate::websdk::repo::data::release::ReleaseData;
@@ -11,13 +12,13 @@ use crate::websdk::repo::data::release::ReleaseData;
 /// Initialize the system with data and cache directories
 pub async fn init(data_dir: &Path, cache_dir: &Path, global_expire_time: u64) -> Result<()> {
     // Initialize world list configuration
-    let world_list_path = data_dir.join(world_list::WORLD_CONFIG_LIST_NAME);
+    let world_list_path = data_dir.join(WORLD_CONFIG_LIST_NAME);
     init_world_list(&world_list_path).await?;
-    
+
     // Initialize cache manager
     let local_cache_path = cache_dir.join("local_cache");
     init_cache_manager_with_expire(local_cache_path.as_path(), global_expire_time).await;
-    
+
     Ok(())
 }
 
