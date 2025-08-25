@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use getter_rpc::{types::*, GetterRpcClient};
+use getter_rpc::GetterRpcClient;
 
 #[derive(Parser)]
 #[command(name = "getter")]
