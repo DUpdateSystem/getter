@@ -1,4 +1,4 @@
-use crate::{CacheBackend, CacheManager};
+use crate::CacheManager;
 
 pub struct CacheManagerBuilder;
 
@@ -8,7 +8,6 @@ impl CacheManagerBuilder {
         use crate::concurrent::ConcurrentCache;
         CacheManager::new(Box::new(ConcurrentCache::new()))
     }
-
 
     pub fn new_local() -> CacheManager {
         use crate::local::LocalCache;

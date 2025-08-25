@@ -1,13 +1,11 @@
 // Core module that ties everything together
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 pub use getter_appmanager::{get_app_manager, AppManager, AppStatus, AppStatusInfo};
 pub use getter_cache::{CacheManager, LegacyCacheManager};
-pub use getter_config::{get_world_list, init_world_list, RuleList, TrackedApp, get_data_path};
-pub use getter_provider::{ProviderManager, GitHubProvider, ReleaseData, AssetData};
-pub use getter_rpc::{GetterRpcServer, GetterRpcClient};
-pub use getter_utils::{http, versioning, time};
+pub use getter_config::{get_data_path, get_world_list, init_world_list, RuleList, TrackedApp};
+pub use getter_provider::{AssetData, GitHubProvider, ProviderManager, ReleaseData};
+pub use getter_rpc::{GetterRpcClient, GetterRpcServer};
+pub use getter_utils::{http, time, versioning};
 
 pub struct Core {
     app_manager: &'static AppManager,
@@ -27,7 +25,9 @@ impl Core {
         app_data: std::collections::HashMap<String, String>,
         hub_data: std::collections::HashMap<String, String>,
     ) -> Result<String, String> {
-        self.app_manager.add_app(app_id, hub_uuid, app_data, hub_data).await
+        self.app_manager
+            .add_app(app_id, hub_uuid, app_data, hub_data)
+            .await
     }
 
     pub async fn remove_app(&self, app_id: &str) -> Result<bool, String> {
@@ -60,7 +60,9 @@ impl Core {
         app_data: &std::collections::BTreeMap<&str, &str>,
         hub_data: &std::collections::BTreeMap<&str, &str>,
     ) -> Result<bool, String> {
-        self.app_manager.check_app_available(hub_uuid, app_data, hub_data).await
+        self.app_manager
+            .check_app_available(hub_uuid, app_data, hub_data)
+            .await
     }
 
     pub async fn get_latest_release(
@@ -69,7 +71,9 @@ impl Core {
         app_data: &std::collections::BTreeMap<&str, &str>,
         hub_data: &std::collections::BTreeMap<&str, &str>,
     ) -> Result<ReleaseData, String> {
-        self.app_manager.get_latest_release(hub_uuid, app_data, hub_data).await
+        self.app_manager
+            .get_latest_release(hub_uuid, app_data, hub_data)
+            .await
     }
 
     pub async fn get_releases(
@@ -78,7 +82,9 @@ impl Core {
         app_data: &std::collections::BTreeMap<&str, &str>,
         hub_data: &std::collections::BTreeMap<&str, &str>,
     ) -> Result<Vec<ReleaseData>, String> {
-        self.app_manager.get_releases(hub_uuid, app_data, hub_data).await
+        self.app_manager
+            .get_releases(hub_uuid, app_data, hub_data)
+            .await
     }
 }
 

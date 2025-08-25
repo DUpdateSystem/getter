@@ -1,7 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use serde::{Deserialize, Serialize};
 
 use crate::app_status::AppStatus;
 
@@ -56,7 +56,12 @@ impl StatusTracker {
         }
     }
 
-    pub async fn set_versions(&self, app_id: &str, current: Option<String>, latest: Option<String>) {
+    pub async fn set_versions(
+        &self,
+        app_id: &str,
+        current: Option<String>,
+        latest: Option<String>,
+    ) {
         let mut statuses = self.statuses.lock().await;
         if let Some(info) = statuses.get_mut(app_id) {
             info.current_version = current;
@@ -100,7 +105,9 @@ mod tests {
         assert_eq!(status.status, AppStatus::AppInactive);
 
         // Update status
-        tracker.update_status("test-app", AppStatus::AppLatest).await;
+        tracker
+            .update_status("test-app", AppStatus::AppLatest)
+            .await;
         let status = tracker.get_status("test-app").await.unwrap();
         assert_eq!(status.status, AppStatus::AppLatest);
         assert!(status.last_checked.is_some());

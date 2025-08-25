@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
 use bytes::Bytes;
-use super::local::LocalCache;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -13,6 +13,7 @@ pub enum GroupType {
 pub struct LegacyCacheManager {
     local_cache_dir: Option<PathBuf>,
     global_expire_time: Option<u64>,
+    #[allow(dead_code)]
     local_cache: Arc<RwLock<HashMap<String, LocalCacheItem>>>,
 }
 
@@ -53,7 +54,11 @@ impl LocalCacheItem {
     }
 }
 
-use std::collections::HashMap;
+impl Default for LegacyCacheManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl LegacyCacheManager {
     pub fn new() -> Self {

@@ -8,6 +8,12 @@ pub struct LocalCache {
     data: RwLock<HashMap<String, String>>,
 }
 
+impl Default for LocalCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LocalCache {
     pub fn new() -> Self {
         Self {

@@ -1,14 +1,11 @@
-pub mod manager;
 pub mod app_status;
+pub mod manager;
 pub mod status_tracker;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Mutex};
 use once_cell::sync::Lazy;
 
-pub use manager::*;
 pub use app_status::AppStatus;
+pub use manager::*;
 pub use status_tracker::{AppStatusInfo, StatusTracker};
 
 // Global instance with lazy initialization

@@ -2,10 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use crate::app_status::AppStatus;
 use crate::status_tracker::{AppStatusInfo, StatusTracker};
-use getter_provider::{ReleaseData, ProviderManager, BaseProvider, GitHubProvider};
-use getter_config::{get_world_list, TrackedApp};
+use getter_config::get_world_list;
+use getter_provider::{GitHubProvider, ProviderManager, ReleaseData};
 
 /// Lightweight operation identifier for deduplication
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -309,7 +308,7 @@ impl Processor {
     fn new(msg_rx: mpsc::UnboundedReceiver<Msg>) -> Self {
         let mut provider_manager = ProviderManager::new();
         provider_manager.register_provider(Box::new(GitHubProvider::new()));
-        
+
         Self {
             msg_rx,
             active: Arc::new(Mutex::new(HashMap::new())),
@@ -342,9 +341,10 @@ impl Processor {
                 let provider_manager = &self.provider_manager;
                 let msg_data = msg.data;
                 let msg_id = msg.id;
-                
+
                 // Execute in separate task to avoid blocking
-                let result = Self::execute(&msg_id, &msg_data, &status_tracker, provider_manager).await;
+                let result =
+                    Self::execute(&msg_id, &msg_data, &status_tracker, provider_manager).await;
                 Self::notify_and_cleanup(active, id, result).await;
             }
         }
@@ -352,10 +352,10 @@ impl Processor {
 
     /// Execute the actual operation
     async fn execute(
-        op_id: &OpId, 
-        data: &[String], 
+        op_id: &OpId,
+        data: &[String],
         status_tracker: &StatusTracker,
-        provider_manager: &ProviderManager
+        provider_manager: &ProviderManager,
     ) -> AppResult {
         match op_id.op_type {
             0 => Self::exec_check_available(data, provider_manager).await,
@@ -372,7 +372,10 @@ impl Processor {
     }
 
     /// Execute check availability - simplified implementation
-    async fn exec_check_available(data: &[String], _provider_manager: &ProviderManager) -> AppResult {
+    async fn exec_check_available(
+        data: &[String],
+        _provider_manager: &ProviderManager,
+    ) -> AppResult {
         if data.len() < 2 {
             return AppResult::Error("Invalid data".to_string());
         }

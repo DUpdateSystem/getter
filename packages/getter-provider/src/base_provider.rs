@@ -94,10 +94,7 @@ impl<T> FOut<T> {
 
     pub fn new_empty() -> Self {
         FOut {
-            result: Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "no data",
-            ))),
+            result: Err(Box::new(std::io::Error::other("no data"))),
             cached_map: None,
         }
     }

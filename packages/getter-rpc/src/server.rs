@@ -2,13 +2,10 @@ use crate::types::*;
 use getter_appmanager::{get_app_manager, AppManager};
 use hyper::{body::Bytes, service::Service, Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use serde_json::Value;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 
 type Body = http_body_util::Full<Bytes>;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -17,9 +14,15 @@ pub struct GetterRpcServer {
     app_manager: &'static AppManager,
 }
 
+impl Default for GetterRpcServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GetterRpcServer {
     pub fn new() -> Self {
-        Self { 
+        Self {
             app_manager: get_app_manager(),
         }
     }
@@ -59,7 +62,7 @@ impl Service<Request<hyper::body::Incoming>> for RpcService {
 
     fn call(&self, req: Request<hyper::body::Incoming>) -> Self::Future {
         let app_manager = self.app_manager;
-        
+
         Box::pin(async move {
             if req.method() != Method::POST {
                 return Ok(Response::builder()
@@ -96,16 +99,23 @@ impl Service<Request<hyper::body::Incoming>> for RpcService {
     }
 }
 
-async fn handle_rpc_request(
-    app_manager: &'static AppManager,
-    request: RpcRequest,
-) -> RpcResponse {
+async fn handle_rpc_request(app_manager: &'static AppManager, request: RpcRequest) -> RpcResponse {
     match request.method.as_str() {
         "add_app" => {
             if let Some(params) = request.params {
                 if let Ok(add_req) = serde_json::from_value::<AddAppRequest>(params) {
-                    match app_manager.add_app(add_req.app_id, add_req.hub_uuid, add_req.app_data, add_req.hub_data).await {
-                        Ok(msg) => RpcResponse::success(request.id, serde_json::json!({"message": msg})),
+                    match app_manager
+                        .add_app(
+                            add_req.app_id,
+                            add_req.hub_uuid,
+                            add_req.app_data,
+                            add_req.hub_data,
+                        )
+                        .await
+                    {
+                        Ok(msg) => {
+                            RpcResponse::success(request.id, serde_json::json!({"message": msg}))
+                        }
                         Err(e) => RpcResponse::error(request.id, -1, e),
                     }
                 } else {
@@ -119,7 +129,10 @@ async fn handle_rpc_request(
             if let Some(params) = request.params {
                 if let Ok(remove_req) = serde_json::from_value::<RemoveAppRequest>(params) {
                     match app_manager.remove_app(&remove_req.app_id).await {
-                        Ok(success) => RpcResponse::success(request.id, serde_json::json!({"removed": success})),
+                        Ok(success) => RpcResponse::success(
+                            request.id,
+                            serde_json::json!({"removed": success}),
+                        ),
                         Err(e) => RpcResponse::error(request.id, -1, e),
                     }
                 } else {
@@ -129,12 +142,10 @@ async fn handle_rpc_request(
                 RpcResponse::error(request.id, -32602, "Missing parameters".to_string())
             }
         }
-        "list_apps" => {
-            match app_manager.list_apps().await {
-                Ok(apps) => RpcResponse::success(request.id, serde_json::to_value(apps).unwrap()),
-                Err(e) => RpcResponse::error(request.id, -1, e),
-            }
-        }
+        "list_apps" => match app_manager.list_apps().await {
+            Ok(apps) => RpcResponse::success(request.id, serde_json::to_value(apps).unwrap()),
+            Err(e) => RpcResponse::error(request.id, -1, e),
+        },
         _ => RpcResponse::error(request.id, -32601, "Method not found".to_string()),
     }
 }

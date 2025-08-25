@@ -43,6 +43,12 @@ pub struct RuleList {
     pub tracked_apps: HashMap<String, TrackedApp>,
 }
 
+impl Default for RuleList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RuleList {
     pub fn new() -> Self {
         RuleList {

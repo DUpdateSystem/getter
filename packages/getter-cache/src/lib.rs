@@ -1,6 +1,6 @@
-pub mod manager;
-pub mod local;
 pub mod legacy_manager;
+pub mod local;
+pub mod manager;
 
 #[cfg(feature = "concurrent")]
 pub mod concurrent;
@@ -45,6 +45,6 @@ impl CacheManager {
 
 // Re-export legacy API for compatibility
 pub use legacy_manager::{
-    LegacyCacheManager, GroupType, LocalCacheItem,
-    init_cache_manager, init_cache_manager_with_expire, get_cache_manager
+    get_cache_manager, init_cache_manager, init_cache_manager_with_expire, GroupType,
+    LegacyCacheManager, LocalCacheItem,
 };

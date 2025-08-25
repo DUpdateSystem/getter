@@ -1,7 +1,7 @@
+use std::error::Error;
 use std::fs::{create_dir_all, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::error::Error;
 
 use crate::rule_list::RuleList;
 
@@ -10,6 +10,12 @@ pub const WORLD_CONFIG_LIST_NAME: &str = "world_config_list.json";
 pub struct WorldList {
     config_path: Option<PathBuf>,
     pub rule_list: RuleList,
+}
+
+impl Default for WorldList {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WorldList {

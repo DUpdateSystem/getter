@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Application status indicating current state relative to available updates
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum AppStatus {
     /// App is not being tracked/managed
+    #[default]
     AppInactive,
     /// App is currently being checked for updates
     AppPending,
@@ -53,12 +54,6 @@ impl AppStatus {
             AppStatus::AppOutdated => "Updates available",
             AppStatus::AppNoLocal => "No local version",
         }
-    }
-}
-
-impl Default for AppStatus {
-    fn default() -> Self {
-        AppStatus::AppInactive
     }
 }
 

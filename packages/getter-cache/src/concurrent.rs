@@ -9,6 +9,12 @@ pub struct ConcurrentCache {
     data: RwLock<HashMap<String, String>>,
 }
 
+impl Default for ConcurrentCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConcurrentCache {
     pub fn new() -> Self {
         Self {

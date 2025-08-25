@@ -1,7 +1,7 @@
-use std::cmp::Ordering;
-use version_compare;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::cmp::Ordering;
+use version_compare;
 
 static VERSION_NUMBER_STRICT_MATCH_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\d+(\.\d+)+([.|\-|+|_| ]*[A-Za-z0-9]+)*").unwrap());
@@ -56,25 +56,39 @@ mod tests {
 
     #[test]
     fn test_version_is_valid() {
-        let version = Version { string: "1.0.0".to_string() };
+        let version = Version {
+            string: "1.0.0".to_string(),
+        };
         assert!(version.is_valid());
-        let version = Version { string: "1.0.0-alpha".to_string() };
+        let version = Version {
+            string: "1.0.0-alpha".to_string(),
+        };
         assert!(version.is_valid());
-        let version = Version { string: "版本1.0.0".to_string() };
+        let version = Version {
+            string: "版本1.0.0".to_string(),
+        };
         assert!(version.is_valid());
     }
 
     #[test]
     fn test_version_eq() {
-        let version = Version { string: "1.0.0".to_string() };
-        let other_version = Version { string: "1.0".to_string() };
+        let version = Version {
+            string: "1.0.0".to_string(),
+        };
+        let other_version = Version {
+            string: "1.0".to_string(),
+        };
         assert_eq!(version, other_version);
     }
 
     #[test]
     fn test_version_lt() {
-        let version = Version { string: "1.0".to_string() };
-        let other_version = Version { string: "1.0.1".to_string() };
+        let version = Version {
+            string: "1.0".to_string(),
+        };
+        let other_version = Version {
+            string: "1.0.1".to_string(),
+        };
         assert!(version < other_version);
     }
 }

@@ -3,8 +3,8 @@ use bytes::Bytes;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::data::{ReleaseData, AssetData};
 use crate::base_provider::*;
+use crate::data::{AssetData, ReleaseData};
 
 use getter_utils::{
     http::{get, head, http_status_is_ok},
@@ -18,6 +18,12 @@ const VERSION_NUMBER_KEY: &str = "version_number_key";
 const VERSION_CODE_KEY: &str = "version_code_key";
 
 pub struct GitHubProvider;
+
+impl Default for GitHubProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl GitHubProvider {
     pub fn new() -> Self {
