@@ -18,7 +18,7 @@ echo "Testing workspace with default features"
 run cargo test --workspace --verbose
 
 echo "Building individual packages"
-packages=("getter-utils" "getter-cache" "getter-provider" "getter-config" "getter-appmanager" "getter-rpc" "getter-core" "getter-cli")
+packages=("getter-utils" "getter-cache" "getter-provider" "getter-config" "getter-appmanager" "getter-rpc" "getter-core" "getter-cli" "getter")
 for package in "${packages[@]}"; do
   echo "Building package: $package"
   run cargo build --package "$package" --verbose

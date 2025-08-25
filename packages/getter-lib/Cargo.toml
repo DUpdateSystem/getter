@@ -1,0 +1,20 @@
+[package]
+name = "getter"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+getter-core = { workspace = true }
+getter-appmanager = { workspace = true }
+getter-cache = { workspace = true }
+getter-provider = { workspace = true }
+getter-config = { workspace = true }
+getter-utils = { workspace = true }
+getter-rpc = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true }

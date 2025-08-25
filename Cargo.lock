@@ -351,7 +351,6 @@ dependencies = [
  "getter-provider",
  "getter-rpc",
  "getter-utils",
- "serde_json",
  "tokio",
 ]
 
