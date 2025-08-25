@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[tokio::test]
 async fn test_core_integration() {
     use getter::Core;
-    
+
     let core = Core::new();
     let apps = core.list_apps().await;
     assert!(apps.is_ok(), "Core should be able to list apps");
@@ -14,7 +14,7 @@ async fn test_core_integration() {
 #[tokio::test]
 async fn test_appmanager_integration() {
     use getter::get_app_manager;
-    
+
     let manager = get_app_manager();
     let apps = manager.list_apps().await;
     assert!(apps.is_ok(), "AppManager should be able to list apps");
@@ -23,9 +23,9 @@ async fn test_appmanager_integration() {
 #[tokio::test]
 async fn test_config_integration() {
     use getter::RuleList;
-    
+
     let mut rule_list = RuleList::new();
-    
+
     let app_data = HashMap::from([
         ("owner".to_string(), "rust-lang".to_string()),
         ("repo".to_string(), "rust".to_string()),
@@ -46,7 +46,7 @@ async fn test_config_integration() {
 #[tokio::test]
 async fn test_provider_integration() {
     use getter::{GitHubProvider, ProviderManager};
-    
+
     let mut provider_manager = ProviderManager::new();
     provider_manager.register_provider(Box::new(GitHubProvider::new()));
 
@@ -60,21 +60,21 @@ async fn test_cache_integration() {
     use std::error::Error;
 
     struct TestBackend;
-    
+
     #[async_trait::async_trait]
     impl CacheBackend for TestBackend {
         async fn get(&self, _key: &str) -> Result<Option<String>, Box<dyn Error>> {
             Ok(Some("test_value".to_string()))
         }
-        
+
         async fn set(&self, _key: &str, _value: &str) -> Result<(), Box<dyn Error>> {
             Ok(())
         }
-        
+
         async fn remove(&self, _key: &str) -> Result<(), Box<dyn Error>> {
             Ok(())
         }
-        
+
         async fn clear(&self) -> Result<(), Box<dyn Error>> {
             Ok(())
         }

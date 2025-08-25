@@ -1,0 +1,55 @@
+// Example: How to add a new provider (disabled with .example extension)
+// To enable: rename this file to remove .example extension and add to mod.rs
+
+use async_trait::async_trait;
+use crate::base_provider::{BaseProvider, FIn, FOut, FunctionType, DataMap};
+use crate::data::ReleaseData;
+use crate::register_provider;
+
+/// Example provider for a new service
+pub struct ExampleProvider;
+
+impl Default for ExampleProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExampleProvider {
+    pub fn new() -> Self {
+        ExampleProvider
+    }
+}
+
+#[async_trait]
+impl BaseProvider for ExampleProvider {
+    fn get_uuid(&self) -> &'static str {
+        "example-service-uuid"
+    }
+
+    fn get_friendly_name(&self) -> &'static str {
+        "example" // This key is used in ProviderManager
+    }
+
+    fn get_cache_request_key(&self, _function_type: &FunctionType, _data_map: &DataMap<'_>) -> Vec<String> {
+        vec!["example-cache-key".to_string()]
+    }
+
+    async fn check_app_available(&self, _fin: &FIn) -> FOut<bool> {
+        // Your implementation here
+        FOut::new(true)
+    }
+
+    async fn get_latest_release(&self, _fin: &FIn) -> FOut<ReleaseData> {
+        // Your implementation here
+        FOut::new_empty()
+    }
+
+    async fn get_releases(&self, _fin: &FIn) -> FOut<Vec<ReleaseData>> {
+        // Your implementation here
+        FOut::new(vec![])
+    }
+}
+
+// 🎉 This single line automatically registers the provider!
+// register_provider!(ExampleProvider);

@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::status_tracker::{AppStatusInfo, StatusTracker};
 use getter_config::get_world_list;
-use getter_provider::{GitHubProvider, ProviderManager, ReleaseData};
+use getter_provider::{ProviderManager, ReleaseData};
 
 /// Lightweight operation identifier for deduplication
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -306,8 +306,8 @@ struct Processor {
 
 impl Processor {
     fn new(msg_rx: mpsc::UnboundedReceiver<Msg>) -> Self {
-        let mut provider_manager = ProviderManager::new();
-        provider_manager.register_provider(Box::new(GitHubProvider::new()));
+        // Use automatic provider registration - no manual registration needed!
+        let provider_manager = ProviderManager::with_auto_registered();
 
         Self {
             msg_rx,

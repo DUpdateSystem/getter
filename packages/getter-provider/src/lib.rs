@@ -1,6 +1,7 @@
 pub mod base_provider;
 pub mod data;
-pub mod github;
+pub mod providers;
+pub mod registry;
 
 // Re-export common types
 pub use base_provider::{
@@ -9,7 +10,7 @@ pub use base_provider::{
     ANDROID_MAGISK_MODULE_TYPE, KEY_REPO_API_URL, KEY_REPO_URL, REVERSE_PROXY,
 };
 pub use data::{AssetData, ReleaseData};
-pub use github::GitHubProvider;
+pub use providers::*;
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -31,6 +32,15 @@ impl ProviderManager {
         }
     }
 
+    /// Create a new ProviderManager with all automatically registered providers
+    pub fn with_auto_registered() -> Self {
+        let providers = crate::registry::ProviderRegistry::global()
+            .lock()
+            .unwrap()
+            .create_all();
+        Self { providers }
+    }
+
     pub fn register_provider(&mut self, provider: Box<dyn BaseProvider>) {
         self.providers
             .insert(provider.get_friendly_name().to_string(), provider);
@@ -38,6 +48,11 @@ impl ProviderManager {
 
     pub fn get_provider(&self, name: &str) -> Option<&dyn BaseProvider> {
         self.providers.get(name).map(|p| p.as_ref())
+    }
+
+    /// Get the list of registered provider names (for testing)
+    pub fn provider_names(&self) -> Vec<String> {
+        self.providers.keys().cloned().collect()
     }
 
     pub async fn check_app_available(

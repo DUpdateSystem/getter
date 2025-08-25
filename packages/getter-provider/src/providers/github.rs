@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use crate::base_provider::*;
 use crate::data::{AssetData, ReleaseData};
+use crate::register_provider;
 
 use getter_utils::{
     http::{get, head, http_status_is_ok},
@@ -187,3 +188,6 @@ impl BaseProvider for GitHubProvider {
         }
     }
 }
+
+// Automatically register the GitHub provider
+register_provider!(GitHubProvider);
