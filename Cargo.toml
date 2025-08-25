@@ -52,12 +52,12 @@ hyper-util = { version = "0.1.6", features = ["client", "tokio", "http1"] }
 http-body-util = "0.1.1"
 hyper-rustls = { version = "0.27.2", features = ["http1", "http2", "native-tokio", "ring", "tls12"], default-features = false }
 rustls = { version = "0.23.12", default-features = false }
-rustls-platform-verifier = { version = "0.5.0" }
+rustls-platform-verifier = { version = "0.6.0" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.114"
-quick-xml = { version = "0.37.0", features = ["encoding", "async-tokio"] }
+quick-xml = { version = "0.38.0", features = ["encoding", "async-tokio"] }
 
 
 # Utilities
