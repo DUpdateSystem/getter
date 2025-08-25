@@ -1,0 +1,24 @@
+[package]
+name = "getter-appmanager"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+once_cell = { workspace = true }
+
+# Internal dependencies
+getter-provider = { workspace = true }
+getter-config = { workspace = true }
+getter-cache = { workspace = true }
+getter-utils = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"

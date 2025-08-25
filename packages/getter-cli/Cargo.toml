@@ -1,0 +1,23 @@
+[package]
+name = "getter-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "getter"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace dependencies  
+tokio = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+
+# Internal dependencies - CLI only uses RPC client
+getter-rpc = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"

@@ -1,0 +1,22 @@
+[package]
+name = "getter-provider"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+regex = { workspace = true }
+
+# Internal dependencies
+getter-utils = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"

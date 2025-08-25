@@ -1,0 +1,33 @@
+[package]
+name = "getter-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["rustls-platform-verifier"]
+rustls-platform-verifier = ["dep:rustls-platform-verifier"]
+rustls-platform-verifier-android = ["rustls-platform-verifier", "rustls-platform-verifier/jni"]
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Internal dependencies
+getter-appmanager = { workspace = true }
+getter-cache = { workspace = true }
+getter-provider = { workspace = true }
+getter-config = { workspace = true }
+getter-utils = { workspace = true }
+getter-rpc = { workspace = true }
+
+# For feature flags
+rustls-platform-verifier = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"

@@ -1,0 +1,28 @@
+[package]
+name = "getter-rpc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+hyper-rustls = { workspace = true }
+
+# Internal dependencies
+getter-appmanager = { workspace = true }
+getter-provider = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"

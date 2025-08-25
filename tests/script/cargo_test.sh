@@ -12,23 +12,31 @@ function run {
   fi
 }
 
-echo "Building with default features"
-run cargo build --verbose
-echo "Testing with default features"
-run cargo test --verbose
+echo "Building workspace with default features"
+run cargo build --workspace --verbose
+echo "Testing workspace with default features"
+run cargo test --workspace --verbose
 
-echo "Building with each feature individually"
-for feature in "rustls-platform-verifier" "webpki-roots" "native-tokio"; do
-  echo "Building with feature: $feature"
-  run cargo build --verbose --no-default-features --features "$feature"
+echo "Building individual packages"
+packages=("getter-utils" "getter-cache" "getter-provider" "getter-config" "getter-appmanager" "getter-rpc" "getter-core" "getter-cli")
+for package in "${packages[@]}"; do
+  echo "Building package: $package"
+  run cargo build --package "$package" --verbose
 done
-echo "Testing with each feature individually"
-for feature in "rustls-platform-verifier" "webpki-roots" "native-tokio"; do
-  echo "Testing with feature: $feature"
-  run cargo test --verbose --no-default-features --features "$feature"
+
+echo "Testing individual packages"
+for package in "${packages[@]}"; do
+  echo "Testing package: $package"
+  run cargo test --package "$package" --verbose
 done
+
+echo "Building with feature flags (where applicable)"
+echo "Building getter-cache with concurrent feature"
+run cargo build --package getter-cache --features concurrent --verbose
 
 echo "Building with all features"
-run cargo build --verbose --all-features
+run cargo build --workspace --all-features --verbose
 echo "Testing with all features"
-run cargo test --verbose --all-features
+run cargo test --workspace --all-features --verbose
+
+echo "All tests completed successfully!"

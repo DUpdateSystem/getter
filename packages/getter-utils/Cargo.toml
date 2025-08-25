@@ -1,0 +1,38 @@
+[package]
+name = "getter-utils"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["rustls-platform-verifier"]
+rustls-platform-verifier = ["dep:rustls-platform-verifier"]
+rustls-platform-verifier-android = ["rustls-platform-verifier", "rustls-platform-verifier/jni"]
+webpki-roots = ["hyper-rustls/webpki-roots"]
+native-tokio = ["hyper-rustls/native-tokio"]
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+regex = { workspace = true }
+version-compare = { workspace = true }
+chrono = { workspace = true }
+markdown = { workspace = true }
+once_cell = { workspace = true }
+
+# HTTP and networking
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+hyper-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-platform-verifier = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"

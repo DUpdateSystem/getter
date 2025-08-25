@@ -1,0 +1,214 @@
+use async_trait::async_trait;
+use bytes::Bytes;
+use core::fmt;
+use regex::Regex;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::{
+    collections::{BTreeMap, HashMap},
+    error::Error,
+};
+
+use crate::data::ReleaseData;
+
+pub type HubDataMap<'a> = BTreeMap<&'a str, &'a str>;
+pub type AppDataMap<'a> = BTreeMap<&'a str, &'a str>;
+
+#[derive(Hash)]
+pub struct DataMap<'a> {
+    pub app_data: &'a AppDataMap<'a>,
+    pub hub_data: &'a HubDataMap<'a>,
+}
+
+impl fmt::Display for DataMap<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "app_data: {:?}, hub_data: {:?}",
+            self.app_data, self.hub_data
+        )
+    }
+}
+
+impl DataMap<'_> {
+    pub fn get_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+pub type CacheMap<K, T> = HashMap<K, T>;
+
+pub enum FunctionType {
+    CheckAppAvailable,
+    GetLatestRelease,
+    GetReleases,
+}
+
+pub struct FIn<'a> {
+    pub data_map: DataMap<'a>,
+    cache_map: Option<HashMap<String, Bytes>>,
+}
+
+impl<'a> FIn<'a> {
+    pub fn new_with_frag(
+        app_data: &'a AppDataMap<'a>,
+        hub_data: &'a HubDataMap<'a>,
+        cache_map: Option<CacheMap<String, Bytes>>,
+    ) -> Self {
+        FIn {
+            data_map: DataMap { app_data, hub_data },
+            cache_map,
+        }
+    }
+    pub fn new(data_map: DataMap<'a>, cache_map: Option<CacheMap<String, Bytes>>) -> Self {
+        FIn {
+            data_map,
+            cache_map,
+        }
+    }
+
+    pub fn get_cache(&self, key: &str) -> Option<&Bytes> {
+        if let Some(cache_map) = &self.cache_map {
+            if let Some(value) = cache_map.get(key) {
+                return Some(value);
+            }
+        }
+        None
+    }
+}
+
+#[derive(Debug)]
+pub struct FOut<T> {
+    pub result: Result<T, Box<dyn Error + Send + Sync>>,
+    pub cached_map: Option<HashMap<String, Bytes>>,
+}
+
+impl<T> FOut<T> {
+    pub fn new(data: T) -> Self {
+        FOut {
+            result: Ok(data),
+            cached_map: None,
+        }
+    }
+
+    pub fn new_empty() -> Self {
+        FOut {
+            result: Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "no data",
+            ))),
+            cached_map: None,
+        }
+    }
+
+    pub fn set_cache(mut self, key: &str, value: Bytes) -> Self {
+        let cache_map = self.cached_map.get_or_insert_with(HashMap::new);
+        cache_map.insert(key.to_string(), value);
+        self
+    }
+
+    pub fn set_error(mut self, error: Box<dyn Error + Send + Sync>) -> Self {
+        self.result = Err(error);
+        self
+    }
+
+    pub fn set_data(mut self, data: T) -> Self {
+        self.result = Ok(data);
+        self
+    }
+
+    pub fn set_cached_map(mut self, cached_map: HashMap<String, Bytes>) -> Self {
+        self.cached_map = Some(cached_map);
+        self
+    }
+}
+
+#[async_trait]
+pub trait BaseProvider: Send + Sync {
+    /// Get the unique UUID for this provider
+    fn get_uuid(&self) -> &'static str;
+
+    /// Get friendly name for this provider (e.g., "github" for GitHub provider)
+    fn get_friendly_name(&self) -> &'static str;
+
+    fn get_cache_request_key(
+        &self,
+        function_type: &FunctionType,
+        data_map: &DataMap,
+    ) -> Vec<String>;
+
+    async fn check_app_available(&self, fin: &FIn) -> FOut<bool>;
+
+    async fn get_latest_release(&self, fin: &FIn) -> FOut<ReleaseData> {
+        let result = self.get_releases(fin).await;
+
+        let fout_result = match result.result {
+            Ok(releases) => {
+                let release = releases.first().cloned();
+                if let Some(release) = release {
+                    Ok(release)
+                } else {
+                    Err(
+                        Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "no data"))
+                            as Box<dyn std::error::Error + Send + Sync>,
+                    )
+                }
+            }
+            Err(e) => Err(e),
+        };
+
+        FOut {
+            result: fout_result,
+            cached_map: result.cached_map,
+        }
+    }
+
+    async fn get_releases(&self, fin: &FIn) -> FOut<Vec<ReleaseData>>;
+}
+
+pub trait BaseProviderExt: BaseProvider {
+    fn url_proxy_map(&self, fin: &FIn) -> HashMap<String, String> {
+        let hub_data = fin.data_map.hub_data;
+        if let Some(proxy_map) = hub_data.get(REVERSE_PROXY) {
+            proxy_map
+                .lines()
+                .map(|line| {
+                    let mut parts = line.splitn(2, "->");
+                    let url_prefix = parts.next().unwrap_or_default().trim();
+                    let proxy_url = parts.next().unwrap_or_default().trim();
+                    (url_prefix.to_string(), proxy_url.to_string())
+                })
+                .filter(|v| !v.0.is_empty() && !v.1.is_empty())
+                .collect::<HashMap<String, String>>()
+        } else {
+            HashMap::new()
+        }
+    }
+
+    fn replace_proxy_url(&self, fin: &FIn, url: &str) -> String {
+        let mut result_url = url.to_string();
+        for (url_prefix, proxy_url) in self.url_proxy_map(fin).iter() {
+            let regex_prefix = "regex:";
+            if let Some(stripped) = url_prefix.strip_prefix(regex_prefix) {
+                let url_prefix = &stripped.trim();
+                if let Ok(re) = Regex::new(url_prefix) {
+                    result_url = re.replace_all(&result_url, proxy_url.clone()).to_string();
+                }
+            } else {
+                result_url = result_url.replace(url_prefix, proxy_url);
+            }
+        }
+        result_url
+    }
+}
+
+pub const ANDROID_APP_TYPE: &str = "android_app_package";
+pub const ANDROID_MAGISK_MODULE_TYPE: &str = "android_magisk_module";
+pub const ANDROID_CUSTOM_SHELL: &str = "android_custom_shell";
+pub const ANDROID_CUSTOM_SHELL_ROOT: &str = "android_custom_shell_root";
+
+pub const KEY_REPO_URL: &str = "repo_url";
+pub const KEY_REPO_API_URL: &str = "repo_api_url";
+
+pub const REVERSE_PROXY: &str = "reverse_proxy";
