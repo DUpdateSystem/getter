@@ -373,7 +373,7 @@ mod tests {
 
         let result = provider.check_app_available(&fin).await;
         assert!(result.result.is_ok());
-        assert_eq!(result.result.unwrap(), true);
+        assert!(result.result.unwrap());
 
         // Test with non-existing package
         let app_data = BTreeMap::from([(ANDROID_APP_TYPE, "nonexist")]);
@@ -385,7 +385,7 @@ mod tests {
 
         let result = provider.check_app_available(&fin).await;
         assert!(result.result.is_ok());
-        assert_eq!(result.result.unwrap(), false);
+        assert!(!result.result.unwrap());
     }
 
     #[tokio::test]

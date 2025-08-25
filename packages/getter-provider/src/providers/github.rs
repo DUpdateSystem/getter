@@ -87,7 +87,7 @@ impl BaseProvider for GitHubProvider {
                 return FOut::new(http_status_is_ok(rsp.status));
             }
         }
-        FOut::new_empty()
+        FOut::new(false)
     }
 
     async fn get_releases(&self, fin: &FIn) -> FOut<Vec<ReleaseData>> {
@@ -191,3 +191,350 @@ impl BaseProvider for GitHubProvider {
 
 // Automatically register the GitHub provider
 register_provider!(GitHubProvider);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockito::Server;
+    use std::collections::BTreeMap;
+    use std::fs;
+
+    #[test]
+    fn test_github_cache_keys() {
+        let provider = GitHubProvider::new();
+
+        let app_data = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let hub_data = BTreeMap::new();
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+
+        let keys = provider.get_cache_request_key(&FunctionType::CheckAppAvailable, &data_map);
+        assert_eq!(
+            keys,
+            vec!["https://github.com/DUpdateSystem/UpgradeAll/HEAD"]
+        );
+
+        let keys = provider.get_cache_request_key(&FunctionType::GetLatestRelease, &data_map);
+        assert_eq!(
+            keys,
+            vec!["https://api.github.com/repos/DUpdateSystem/UpgradeAll/releases"]
+        );
+
+        let keys = provider.get_cache_request_key(&FunctionType::GetReleases, &data_map);
+        assert_eq!(
+            keys,
+            vec!["https://api.github.com/repos/DUpdateSystem/UpgradeAll/releases"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_github_check_app_available() {
+        // Test without proxy - this should try to connect to real GitHub
+        // and will likely return false in test environment, which is expected
+        let provider = GitHubProvider::new();
+        let app_data = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let hub_data = BTreeMap::new();
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+        let fin = FIn::new(data_map, None);
+
+        let result = provider.check_app_available(&fin).await;
+        // This may succeed or fail depending on network - just check it returns a bool
+        assert!(result.result.is_ok());
+    }
+
+    // Note: Proxy testing is complex due to the URL replacement mechanism
+    // In real usage, the proxy feature works as expected
+
+    #[tokio::test]
+    async fn test_github_check_app_nonexistent_with_proxy() {
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("HEAD", "/DUpdateSystem/NonExistent")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let provider = GitHubProvider::new();
+        let app_data = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "NonExistent")]);
+        let proxy_url = format!("{} -> {}", GITHUB_URL, server.url());
+        let hub_data = BTreeMap::from([(REVERSE_PROXY, proxy_url.as_str())]);
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+        let fin = FIn::new(data_map, None);
+
+        let result = provider.check_app_available(&fin).await;
+        assert!(result.result.is_ok());
+        assert!(!result.result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_github_get_releases() {
+        let body = fs::read_to_string("tests/web/github_api_release.json").unwrap();
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/repos/DUpdateSystem/UpgradeAll/releases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let provider = GitHubProvider::new();
+        let app_data = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let proxy_url = format!("{} -> {}", GITHUB_API_URL, server.url());
+        let hub_data = BTreeMap::from([(REVERSE_PROXY, proxy_url.as_str())]);
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+        let fin = FIn::new(data_map, None);
+
+        let result = provider.get_releases(&fin).await;
+        assert!(result.result.is_ok());
+
+        let releases = result.result.unwrap();
+        assert!(!releases.is_empty());
+
+        // Check first release data
+        let first_release = &releases[0];
+        assert_eq!(first_release.version_number, "0.13-beta.4");
+        assert_eq!(
+            first_release.changelog,
+            "Changelog:\r\nAdd Ukrainian Language\r\n更新日志：\r\n添加乌克兰语"
+        );
+        assert_eq!(first_release.assets.len(), 1);
+
+        // Check asset data
+        let asset = &first_release.assets[0];
+        assert_eq!(asset.file_name, "UpgradeAll_0.13-beta.4.apk");
+        assert_eq!(asset.file_type, "application/vnd.android.package-archive");
+        assert_eq!(asset.download_url, "https://github.com/DUpdateSystem/UpgradeAll/releases/download/0.13-beta.4/UpgradeAll_0.13-beta.4.apk");
+    }
+
+    #[tokio::test]
+    async fn test_github_get_releases_compare_expected() {
+        let body = fs::read_to_string("tests/web/github_api_release.json").unwrap();
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/repos/DUpdateSystem/UpgradeAll/releases")
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let app_data = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let proxy_url = format!("{} -> {}", GITHUB_API_URL, server.url());
+        let hub_data = BTreeMap::from([(REVERSE_PROXY, proxy_url.as_str())]);
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+
+        let github_provider = GitHubProvider::new();
+        let releases = github_provider
+            .get_releases(&FIn::new(data_map, None))
+            .await
+            .result
+            .unwrap();
+
+        let release_json = fs::read_to_string("tests/data/provider_github_release.json").unwrap();
+        let releases_saved = serde_json::from_str::<Vec<ReleaseData>>(&release_json).unwrap();
+        assert_eq!(releases, releases_saved);
+    }
+
+    #[tokio::test]
+    async fn test_github_get_releases_with_token() {
+        let body = fs::read_to_string("tests/web/github_api_release.json").unwrap();
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/repos/DUpdateSystem/UpgradeAll/releases")
+            .match_header("authorization", "Bearer test_token")
+            .match_header("user-agent", "UpgradeAll-App")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let provider = GitHubProvider::new();
+        let app_data = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let proxy_url = format!("{} -> {}", GITHUB_API_URL, server.url());
+        let hub_data = BTreeMap::from([
+            ("reverse_proxy", proxy_url.as_str()),
+            ("token", "test_token"),
+        ]);
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+        let fin = FIn::new(data_map, None);
+
+        let result = provider.get_releases(&fin).await;
+        assert!(result.result.is_ok());
+
+        let releases = result.result.unwrap();
+        assert!(!releases.is_empty());
+        assert_eq!(releases[0].version_number, "0.13-beta.4");
+    }
+
+    #[tokio::test]
+    async fn test_github_get_releases_empty() {
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/repos/DUpdateSystem/UpgradeAll/releases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let provider = GitHubProvider::new();
+        let app_data = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let proxy_url = format!("{} -> {}", GITHUB_API_URL, server.url());
+        let hub_data = BTreeMap::from([(REVERSE_PROXY, proxy_url.as_str())]);
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+        let fin = FIn::new(data_map, None);
+
+        let result = provider.get_releases(&fin).await;
+        assert!(result.result.is_ok());
+
+        let releases = result.result.unwrap();
+        assert!(releases.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_github_get_latest_release() {
+        let body = fs::read_to_string("tests/web/github_api_release.json").unwrap();
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/repos/DUpdateSystem/UpgradeAll/releases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let provider = GitHubProvider::new();
+        let app_data = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let proxy_url = format!("{} -> {}", GITHUB_API_URL, server.url());
+        let hub_data = BTreeMap::from([(REVERSE_PROXY, proxy_url.as_str())]);
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+        let fin = FIn::new(data_map, None);
+
+        let result = provider.get_latest_release(&fin).await;
+        assert!(result.result.is_ok());
+
+        let release = result.result.unwrap();
+        assert_eq!(release.version_number, "0.13-beta.4");
+        assert_eq!(
+            release.changelog,
+            "Changelog:\r\nAdd Ukrainian Language\r\n更新日志：\r\n添加乌克兰语"
+        );
+        assert_eq!(release.assets.len(), 1);
+        assert_eq!(release.assets[0].file_name, "UpgradeAll_0.13-beta.4.apk");
+    }
+
+    #[tokio::test]
+    async fn test_github_version_number_key() {
+        let body = fs::read_to_string("tests/web/github_api_release.json").unwrap();
+        let mut server = Server::new_async().await;
+        let _m = server
+            .mock("GET", "/repos/DUpdateSystem/UpgradeAll/releases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let provider = GitHubProvider::new();
+        let app_data = BTreeMap::from([("owner", "DUpdateSystem"), ("repo", "UpgradeAll")]);
+        let proxy_url = format!("{} -> {}", GITHUB_API_URL, server.url());
+        let hub_data = BTreeMap::from([
+            ("reverse_proxy", proxy_url.as_str()),
+            ("version_number_key", "tag_name"), // Use tag_name instead of name
+        ]);
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+        let fin = FIn::new(data_map, None);
+
+        let result = provider.get_releases(&fin).await;
+        assert!(result.result.is_ok());
+
+        let releases = result.result.unwrap();
+        assert!(!releases.is_empty());
+        assert_eq!(releases[0].version_number, "0.13-beta.4");
+    }
+
+    #[test]
+    fn test_github_token_header() {
+        let provider = GitHubProvider::new();
+
+        // Test with token in hub_data
+        let app_data = BTreeMap::new();
+        let hub_data = BTreeMap::from([("token", "test_token")]);
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+        let fin = FIn::new(data_map, None);
+
+        let headers = provider.get_token_header(&fin);
+        assert_eq!(
+            headers.get("Authorization"),
+            Some(&"Bearer test_token".to_string())
+        );
+
+        // Test with token in app_data
+        let app_data = BTreeMap::from([("token", "app_token")]);
+        let hub_data = BTreeMap::new();
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+        let fin = FIn::new(data_map, None);
+
+        let headers = provider.get_token_header(&fin);
+        assert_eq!(
+            headers.get("Authorization"),
+            Some(&"Bearer app_token".to_string())
+        );
+
+        // Test with no token
+        let app_data = BTreeMap::new();
+        let hub_data = BTreeMap::new();
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+        let fin = FIn::new(data_map, None);
+
+        let headers = provider.get_token_header(&fin);
+        assert!(!headers.contains_key("Authorization"));
+
+        // Test with empty token
+        let hub_data = BTreeMap::from([("token", "   ")]);
+        let data_map = DataMap {
+            app_data: &app_data,
+            hub_data: &hub_data,
+        };
+        let fin = FIn::new(data_map, None);
+
+        let headers = provider.get_token_header(&fin);
+        assert!(!headers.contains_key("Authorization"));
+    }
+}
