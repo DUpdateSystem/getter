@@ -152,6 +152,7 @@ fn https_config() -> Result<hyper_rustls::HttpsConnector<HttpConnector>, HttpsCo
             .with_safe_default_protocol_versions()
             .map_err(|e| HttpsConfigError { error: Box::new(e) })?
             .with_platform_verifier()
+            .map_err(|e| HttpsConfigError { error: Box::new(e) })?
             .with_no_client_auth();
     }
     #[cfg(all(feature = "webpki-roots", not(feature = "rustls-platform-verifier")))]
