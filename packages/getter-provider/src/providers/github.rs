@@ -68,18 +68,37 @@ impl BaseProvider for GitHubProvider {
         match function_type {
             FunctionType::CheckAppAvailable => vec![format!(
                 "{}/{}/{}/HEAD",
-                GITHUB_URL, id_map["owner"], id_map["repo"]
+                GITHUB_URL,
+                id_map.get("owner").map_or("", |v| v),
+                id_map.get("repo").map_or("", |v| v)
             )],
             FunctionType::GetLatestRelease | FunctionType::GetReleases => vec![format!(
                 "{}/repos/{}/{}/releases",
-                GITHUB_API_URL, id_map["owner"], id_map["repo"]
+                GITHUB_API_URL,
+                id_map.get("owner").map_or("", |v| v),
+                id_map.get("repo").map_or("", |v| v)
             )],
         }
     }
 
     async fn check_app_available(&self, fin: &FIn) -> FOut<bool> {
         let id_map = fin.data_map.app_data;
-        let api_url = format!("{}/{}/{}", GITHUB_URL, id_map["owner"], id_map["repo"]);
+        let owner = match id_map.get("owner") {
+            Some(owner) => owner,
+            None => {
+                return FOut::new_empty()
+                    .set_error(Box::new(std::io::Error::other("Missing owner in app_data")))
+            }
+        };
+        let repo = match id_map.get("repo") {
+            Some(repo) => repo,
+            None => {
+                return FOut::new_empty()
+                    .set_error(Box::new(std::io::Error::other("Missing repo in app_data")))
+            }
+        };
+
+        let api_url = format!("{}/{}/{}", GITHUB_URL, owner, repo);
         let api_url = self.replace_proxy_url(fin, &api_url);
 
         if let Ok(parsed_url) = api_url.parse() {
@@ -92,10 +111,22 @@ impl BaseProvider for GitHubProvider {
 
     async fn get_releases(&self, fin: &FIn) -> FOut<Vec<ReleaseData>> {
         let id_map = fin.data_map.app_data;
-        let url = format!(
-            "{}/repos/{}/{}/releases",
-            GITHUB_API_URL, id_map["owner"], id_map["repo"]
-        );
+        let owner = match id_map.get("owner") {
+            Some(owner) => owner,
+            None => {
+                return FOut::new_empty()
+                    .set_error(Box::new(std::io::Error::other("Missing owner in app_data")))
+            }
+        };
+        let repo = match id_map.get("repo") {
+            Some(repo) => repo,
+            None => {
+                return FOut::new_empty()
+                    .set_error(Box::new(std::io::Error::other("Missing repo in app_data")))
+            }
+        };
+
+        let url = format!("{}/repos/{}/{}/releases", GITHUB_API_URL, owner, repo);
         let url = self.replace_proxy_url(fin, &url);
         let mut fout = FOut::new_empty();
         let cache_body = fin.get_cache(&url);
