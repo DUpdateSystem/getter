@@ -15,16 +15,14 @@ pub struct Repository {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepositoryConfig {
     pub repositories: Vec<Repository>,
 }
 
 impl RepositoryConfig {
     pub fn new() -> Self {
-        Self {
-            repositories: Vec::new(),
-        }
+        Self::default()
     }
 
     pub fn load(path: &Path) -> Result<Self, Box<dyn Error + Send + Sync>> {

@@ -103,8 +103,8 @@ async fn test_repository_overlay() {
 
     // Create main repository
     let main_repo_path = data_path.join("repos/main");
-    fs::create_dir_all(&main_repo_path.join("apps")).unwrap();
-    fs::create_dir_all(&main_repo_path.join("hubs")).unwrap();
+    fs::create_dir_all(main_repo_path.join("apps")).unwrap();
+    fs::create_dir_all(main_repo_path.join("hubs")).unwrap();
 
     // Add app to main repo
     let main_app_config = serde_json::json!({
@@ -122,7 +122,7 @@ async fn test_repository_overlay() {
 
     // Create community repository with higher priority
     let community_repo_path = data_path.join("repos/community");
-    fs::create_dir_all(&community_repo_path.join("apps")).unwrap();
+    fs::create_dir_all(community_repo_path.join("apps")).unwrap();
 
     // Add overlaying config to community repo
     let community_app_config = serde_json::json!({
@@ -139,7 +139,7 @@ async fn test_repository_overlay() {
 
     // Create local config overlay
     let config_path = data_path.join("config");
-    fs::create_dir_all(&config_path.join("apps")).unwrap();
+    fs::create_dir_all(config_path.join("apps")).unwrap();
 
     let local_config = serde_json::json!({
         "metadata": {

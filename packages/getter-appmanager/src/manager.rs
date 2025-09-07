@@ -692,7 +692,7 @@ mod tests {
             .check_app_available("test-hub", &app_data, &hub_data)
             .await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
     }
 
     #[tokio::test]
@@ -801,7 +801,7 @@ mod tests {
             .check_app_available("test-hub", &app_data, &hub_data)
             .await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     #[tokio::test]

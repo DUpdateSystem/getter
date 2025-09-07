@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::error::Error;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -37,9 +38,11 @@ impl AppIdentifier {
             hub_id: parts[1].to_string(),
         })
     }
+}
 
-    pub fn to_string(&self) -> String {
-        format!("{}::{}", self.app_id, self.hub_id)
+impl fmt::Display for AppIdentifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}::{}", self.app_id, self.hub_id)
     }
 }
 

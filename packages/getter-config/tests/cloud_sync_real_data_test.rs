@@ -238,7 +238,7 @@ fn test_uuid_mapping_with_real_data() {
     let cloud_config = cloud_sync.load_from_file(test_data_path).unwrap();
 
     // Test conversion of real UUIDs to human-readable names
-    let known_mappings = vec![
+    let known_mappings = [
         ("f27f71e1-d7a1-4fd1-bbcc-9744380611a1", "upgradeall"),
         ("ec2f237e-a502-4a1c-864b-3b64eaa75303", "apkgrabber"),
         ("fd9b2602-62c5-4d55-bd1e-0d6537714ca0", "github"),
@@ -252,7 +252,7 @@ fn test_uuid_mapping_with_real_data() {
             .hub_config_list
             .iter()
             .find(|h| h.uuid == *uuid)
-            .expect(&format!("Hub with UUID {} should exist", uuid));
+            .unwrap_or_else(|| panic!("Hub with UUID {} should exist", uuid));
 
         let (hub_id, _) = cloud_sync.convert_hub_item(hub);
         assert_eq!(
@@ -268,7 +268,7 @@ fn test_uuid_mapping_with_real_data() {
             .app_config_list
             .iter()
             .find(|a| a.uuid == *uuid)
-            .expect(&format!("App with UUID {} should exist", uuid));
+            .unwrap_or_else(|| panic!("App with UUID {} should exist", uuid));
 
         let (app_id, _) = cloud_sync.convert_app_item(app);
         assert_eq!(
@@ -299,7 +299,7 @@ fn test_app_categories_from_real_data() {
 
         apps_by_hub
             .entry(hub_name)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(app.info.name.clone());
     }
 

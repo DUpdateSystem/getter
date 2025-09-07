@@ -78,6 +78,7 @@ pub struct CloudHubInfo {
 }
 
 /// Sync cloud configuration to local repo layer
+#[derive(Default)]
 pub struct CloudSync {
     cloud_url: Option<String>,
     pub uuid_to_name_map: HashMap<String, String>, // UUID to human-readable name mapping
@@ -85,10 +86,7 @@ pub struct CloudSync {
 
 impl CloudSync {
     pub fn new() -> Self {
-        Self {
-            cloud_url: None,
-            uuid_to_name_map: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub fn with_url(cloud_url: String) -> Self {
