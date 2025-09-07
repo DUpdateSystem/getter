@@ -1,5 +1,6 @@
 pub mod app_status;
 pub mod manager;
+pub mod manager_v2;
 pub mod status_tracker;
 
 use once_cell::sync::Lazy;

@@ -15,6 +15,10 @@ once_cell = { workspace = true }
 
 # Internal dependencies
 getter-utils = { workspace = true }
+json-patch = "4.0.0"
+reqwest = { version = "0.12.23", features = ["json"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile = "3"
+futures = "0.3.31"

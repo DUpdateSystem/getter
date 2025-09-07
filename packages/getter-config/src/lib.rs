@@ -1,3 +1,7 @@
+pub mod app_registry;
+pub mod cloud_sync;
+pub mod layered_config;
+pub mod repository;
 pub mod rule_list;
 pub mod utils;
 pub mod world_list;
@@ -11,6 +15,8 @@ use crate::world_list::WorldList;
 use getter_utils::instance::InstanceContainer;
 
 // Re-export commonly used types
+pub use app_registry::{AppConfig, AppIdentifier, AppRegistry, HubConfig};
+pub use layered_config::{get_layered_config, init_layered_config, LayeredConfig};
 pub use rule_list::{RuleList, TrackedApp};
 pub use utils::{all_dir, get_data_path, DataDir};
 pub use world_list::WORLD_CONFIG_LIST_NAME;

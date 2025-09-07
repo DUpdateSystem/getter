@@ -1,0 +1,57 @@
+{
+  "app_config_list": [
+    {
+      "base_version": 6,
+      "config_version": 1,
+      "uuid": "c45e9012-3456-7890-1def-234567890abc",
+      "base_hub_uuid": "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
+      "info": {
+        "name": "Rust",
+        "url": "https://github.com/rust-lang/rust",
+        "extra_map": {
+          "category": "development"
+        }
+      }
+    },
+    {
+      "base_version": 6,
+      "config_version": 1,
+      "uuid": "d56f0123-4567-8901-2ef3-456789012345",
+      "base_hub_uuid": "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
+      "info": {
+        "name": "Neovim",
+        "url": "https://github.com/neovim/neovim",
+        "extra_map": {
+          "category": "editors"
+        }
+      }
+    },
+    {
+      "base_version": 6,
+      "config_version": 1,
+      "uuid": "e67a1234-5678-9012-3f45-67890123456a",
+      "base_hub_uuid": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+      "info": {
+        "name": "Docker",
+        "url": "https://hub.docker.com/_/docker",
+        "extra_map": {
+          "category": "containers"
+        }
+      }
+    }
+  ],
+  "hub_config_list": [
+    {
+      "base_version": 6,
+      "config_version": 1,
+      "uuid": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+      "info": {
+        "hub_name": "Docker Hub",
+        "hub_icon_url": ""
+      },
+      "target_check_api": "",
+      "api_keywords": ["image", "tag"],
+      "app_url_templates": ["https://hub.docker.com/r/%image/"]
+    }
+  ]
+}

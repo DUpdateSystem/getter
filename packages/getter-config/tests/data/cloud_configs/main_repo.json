@@ -1,0 +1,94 @@
+{
+  "app_config_list": [
+    {
+      "base_version": 6,
+      "config_version": 1,
+      "uuid": "f27f71e1-d7a1-4fd1-bbcc-9744380611a1",
+      "base_hub_uuid": "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
+      "info": {
+        "name": "UpgradeAll",
+        "url": "https://github.com/DUpdateSystem/UpgradeAll",
+        "extra_map": {
+          "android_app_package": "net.xzos.upgradeall"
+        }
+      }
+    },
+    {
+      "base_version": 6,
+      "config_version": 1,
+      "uuid": "ec2f237e-a502-4a1c-864b-3b64eaa75303",
+      "base_hub_uuid": "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
+      "info": {
+        "name": "APKGrabber",
+        "url": "https://github.com/hemker/apkgrabber",
+        "extra_map": {
+          "android_app_package": "de.apkgrabber"
+        }
+      }
+    },
+    {
+      "base_version": 6,
+      "config_version": 2,
+      "uuid": "a23f8c90-1234-5678-9abc-def012345678",
+      "base_hub_uuid": "65c2f60c-7d08-48b8-b4ba-ac6ee924f6fa",
+      "info": {
+        "name": "Termux",
+        "url": "https://play.google.com/store/apps/details?id=com.termux",
+        "extra_map": {
+          "android_app_package": "com.termux"
+        }
+      }
+    },
+    {
+      "base_version": 6,
+      "config_version": 1,
+      "uuid": "b34d7890-2345-6789-0bcd-ef1234567890",
+      "base_hub_uuid": "1ed03edc-e1bb-4288-9c85-82d0a4dc9ce3",
+      "info": {
+        "name": "Firefox",
+        "url": "https://www.mozilla.org/firefox/",
+        "extra_map": {
+          "android_app_package": "org.mozilla.firefox"
+        }
+      }
+    }
+  ],
+  "hub_config_list": [
+    {
+      "base_version": 6,
+      "config_version": 3,
+      "uuid": "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
+      "info": {
+        "hub_name": "GitHub",
+        "hub_icon_url": ""
+      },
+      "target_check_api": "",
+      "api_keywords": ["owner", "repo"],
+      "app_url_templates": ["https://github.com/%owner/%repo/"]
+    },
+    {
+      "base_version": 6,
+      "config_version": 1,
+      "uuid": "65c2f60c-7d08-48b8-b4ba-ac6ee924f6fa",
+      "info": {
+        "hub_name": "Google Play",
+        "hub_icon_url": ""
+      },
+      "target_check_api": "",
+      "api_keywords": ["package"],
+      "app_url_templates": ["https://play.google.com/store/apps/details?id=%package"]
+    },
+    {
+      "base_version": 6,
+      "config_version": 2,
+      "uuid": "1ed03edc-e1bb-4288-9c85-82d0a4dc9ce3",
+      "info": {
+        "hub_name": "F-Droid",
+        "hub_icon_url": ""
+      },
+      "target_check_api": "",
+      "api_keywords": ["package"],
+      "app_url_templates": ["https://f-droid.org/packages/%package/"]
+    }
+  ]
+}
