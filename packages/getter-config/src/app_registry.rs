@@ -65,7 +65,7 @@ impl AppRegistry {
         fs::create_dir_all(config_path.join("hubs"))?;
 
         let repository_manager = crate::repository::RepositoryManager::new(data_path).ok();
-        
+
         let mut registry = Self {
             repo_path,
             config_path,
@@ -101,11 +101,11 @@ impl AppRegistry {
 
     pub fn add_app(&mut self, identifier: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         let app_id = AppIdentifier::parse(identifier)?;
-        
+
         // Check if app and hub configs exist
         self.get_app_config(&app_id.app_id)?;
         self.get_hub_config(&app_id.hub_id)?;
-        
+
         if !self.app_list.contains(&identifier.to_string()) {
             self.app_list.push(identifier.to_string());
             self.save_app_list()?;
@@ -127,7 +127,10 @@ impl AppRegistry {
         self.app_list.clone()
     }
 
-    pub fn get_app_config(&mut self, app_id: &str) -> Result<AppConfig, Box<dyn Error + Send + Sync>> {
+    pub fn get_app_config(
+        &mut self,
+        app_id: &str,
+    ) -> Result<AppConfig, Box<dyn Error + Send + Sync>> {
         if let Some(config) = self.apps_cache.get(app_id) {
             return Ok(config.clone());
         }
@@ -137,7 +140,10 @@ impl AppRegistry {
         Ok(config)
     }
 
-    pub fn get_hub_config(&mut self, hub_id: &str) -> Result<HubConfig, Box<dyn Error + Send + Sync>> {
+    pub fn get_hub_config(
+        &mut self,
+        hub_id: &str,
+    ) -> Result<HubConfig, Box<dyn Error + Send + Sync>> {
         if let Some(config) = self.hubs_cache.get(hub_id) {
             return Ok(config.clone());
         }
@@ -147,7 +153,10 @@ impl AppRegistry {
         Ok(config)
     }
 
-    fn load_merged_app_config(&self, app_id: &str) -> Result<AppConfig, Box<dyn Error + Send + Sync>> {
+    fn load_merged_app_config(
+        &self,
+        app_id: &str,
+    ) -> Result<AppConfig, Box<dyn Error + Send + Sync>> {
         let mut base_config: Option<Value> = None;
 
         // First check if we have repository manager for multi-repo support
@@ -157,7 +166,7 @@ impl AppRegistry {
             for (_repo_name, config_path) in repo_configs.iter().rev() {
                 let content = fs::read_to_string(config_path)?;
                 let config: Value = serde_json::from_str(&content)?;
-                
+
                 if let Some(base) = base_config {
                     base_config = Some(apply_merge_patch(&base, &config)?);
                 } else {
@@ -165,7 +174,7 @@ impl AppRegistry {
                 }
             }
         }
-        
+
         // If no config found via repository manager, try the default repo path
         if base_config.is_none() {
             let repo_path = self.repo_path.join("apps").join(format!("{}.json", app_id));
@@ -176,11 +185,14 @@ impl AppRegistry {
         }
 
         // Load and merge local config if exists
-        let config_path = self.config_path.join("apps").join(format!("{}.json", app_id));
+        let config_path = self
+            .config_path
+            .join("apps")
+            .join(format!("{}.json", app_id));
         if config_path.exists() {
             let content = fs::read_to_string(&config_path)?;
             let local_config: Value = serde_json::from_str(&content)?;
-            
+
             if let Some(base) = base_config {
                 base_config = Some(apply_merge_patch(&base, &local_config)?);
             } else {
@@ -194,7 +206,10 @@ impl AppRegistry {
         }
     }
 
-    fn load_merged_hub_config(&self, hub_id: &str) -> Result<HubConfig, Box<dyn Error + Send + Sync>> {
+    fn load_merged_hub_config(
+        &self,
+        hub_id: &str,
+    ) -> Result<HubConfig, Box<dyn Error + Send + Sync>> {
         let mut base_config: Option<Value> = None;
 
         // First check if we have repository manager for multi-repo support
@@ -204,7 +219,7 @@ impl AppRegistry {
             for (_repo_name, config_path) in repo_configs.iter().rev() {
                 let content = fs::read_to_string(config_path)?;
                 let config: Value = serde_json::from_str(&content)?;
-                
+
                 if let Some(base) = base_config {
                     base_config = Some(apply_merge_patch(&base, &config)?);
                 } else {
@@ -212,7 +227,7 @@ impl AppRegistry {
                 }
             }
         }
-        
+
         // If no config found via repository manager, try the default repo path
         if base_config.is_none() {
             let repo_path = self.repo_path.join("hubs").join(format!("{}.json", hub_id));
@@ -223,11 +238,14 @@ impl AppRegistry {
         }
 
         // Load and merge local config if exists
-        let config_path = self.config_path.join("hubs").join(format!("{}.json", hub_id));
+        let config_path = self
+            .config_path
+            .join("hubs")
+            .join(format!("{}.json", hub_id));
         if config_path.exists() {
             let content = fs::read_to_string(&config_path)?;
             let local_config: Value = serde_json::from_str(&content)?;
-            
+
             if let Some(base) = base_config {
                 base_config = Some(apply_merge_patch(&base, &local_config)?);
             } else {
@@ -241,11 +259,18 @@ impl AppRegistry {
         }
     }
 
-    pub fn save_app_config(&self, app_id: &str, config: &AppConfig, to_repo: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub fn save_app_config(
+        &self,
+        app_id: &str,
+        config: &AppConfig,
+        to_repo: bool,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let path = if to_repo {
             self.repo_path.join("apps").join(format!("{}.json", app_id))
         } else {
-            self.config_path.join("apps").join(format!("{}.json", app_id))
+            self.config_path
+                .join("apps")
+                .join(format!("{}.json", app_id))
         };
 
         let json = serde_json::to_string_pretty(config)?;
@@ -253,11 +278,18 @@ impl AppRegistry {
         Ok(())
     }
 
-    pub fn save_hub_config(&self, hub_id: &str, config: &HubConfig, to_repo: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub fn save_hub_config(
+        &self,
+        hub_id: &str,
+        config: &HubConfig,
+        to_repo: bool,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let path = if to_repo {
             self.repo_path.join("hubs").join(format!("{}.json", hub_id))
         } else {
-            self.config_path.join("hubs").join(format!("{}.json", hub_id))
+            self.config_path
+                .join("hubs")
+                .join(format!("{}.json", hub_id))
         };
 
         let json = serde_json::to_string_pretty(config)?;
@@ -265,7 +297,10 @@ impl AppRegistry {
         Ok(())
     }
 
-    pub fn get_app_details(&mut self, identifier: &str) -> Result<(AppConfig, HubConfig), Box<dyn Error + Send + Sync>> {
+    pub fn get_app_details(
+        &mut self,
+        identifier: &str,
+    ) -> Result<(AppConfig, HubConfig), Box<dyn Error + Send + Sync>> {
         let app_id = AppIdentifier::parse(identifier)?;
         let app_config = self.get_app_config(&app_id.app_id)?;
         let hub_config = self.get_hub_config(&app_id.hub_id)?;
@@ -289,7 +324,10 @@ impl AppRegistry {
         Ok(())
     }
 
-    pub async fn sync_repository(&mut self, name: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn sync_repository(
+        &mut self,
+        name: &str,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         if let Some(ref repo_manager) = self.repository_manager {
             repo_manager.sync_repository(name).await?;
             self.clear_cache();
@@ -299,7 +337,7 @@ impl AppRegistry {
 
     pub fn list_available_apps(&self) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
         let mut apps = HashMap::new();
-        
+
         if let Some(ref repo_manager) = self.repository_manager {
             for repo in repo_manager.get_enabled_repositories() {
                 let apps_dir = repo.path.join("apps");
@@ -329,7 +367,7 @@ impl AppRegistry {
                 }
             }
         }
-        
+
         let mut app_list: Vec<_> = apps.keys().cloned().collect();
         app_list.sort();
         Ok(app_list)
@@ -337,7 +375,7 @@ impl AppRegistry {
 
     pub fn list_available_hubs(&self) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
         let mut hubs = HashMap::new();
-        
+
         if let Some(ref repo_manager) = self.repository_manager {
             for repo in repo_manager.get_enabled_repositories() {
                 let hubs_dir = repo.path.join("hubs");
@@ -367,7 +405,7 @@ impl AppRegistry {
                 }
             }
         }
-        
+
         let mut hub_list: Vec<_> = hubs.keys().cloned().collect();
         hub_list.sort();
         Ok(hub_list)
@@ -425,13 +463,13 @@ mod tests {
         assert_eq!(result["config"]["retry"], 3);
         assert_eq!(result["config"]["new_field"], true);
         assert_eq!(result["extra"], "data");
-        
+
         // Test null removal
         let patch_with_null = serde_json::json!({
             "name": null,
             "version": "3.0"
         });
-        
+
         let result2 = apply_merge_patch(&result, &patch_with_null).unwrap();
         assert_eq!(result2.get("name"), None); // name should be removed
         assert_eq!(result2["version"], "3.0");
@@ -441,21 +479,19 @@ mod tests {
     fn test_app_registry() {
         let temp_dir = TempDir::new().unwrap();
         let data_path = temp_dir.path();
-        
+
         // Create necessary directories
         fs::create_dir_all(data_path.join("repo/apps")).unwrap();
         fs::create_dir_all(data_path.join("repo/hubs")).unwrap();
         fs::create_dir_all(data_path.join("config/apps")).unwrap();
         fs::create_dir_all(data_path.join("config/hubs")).unwrap();
-        
+
         let mut registry = AppRegistry::new(data_path).unwrap();
 
         // Create test app config
         let app_config = AppConfig {
             name: "rust".to_string(),
-            metadata: HashMap::from([
-                ("repo".to_string(), serde_json::json!("rust-lang/rust")),
-            ]),
+            metadata: HashMap::from([("repo".to_string(), serde_json::json!("rust-lang/rust"))]),
         };
 
         // Create test hub config
@@ -467,7 +503,9 @@ mod tests {
 
         // Save configs to repo (true means save to repo)
         registry.save_app_config("rust", &app_config, true).unwrap();
-        registry.save_hub_config("github", &hub_config, true).unwrap();
+        registry
+            .save_hub_config("github", &hub_config, true)
+            .unwrap();
 
         // Clear cache to ensure configs are reloaded
         registry.clear_cache();

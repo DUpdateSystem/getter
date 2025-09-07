@@ -57,33 +57,42 @@ impl AppManager {
     }
 
     pub async fn check_app_available(&self, identifier: &str) -> Result<bool, String> {
-        self.send_request(OpId::Check(identifier.to_string()), vec![identifier.to_string()])
-            .await
-            .and_then(|result| match result {
-                AppResult::Bool(v) => Ok(v),
-                AppResult::Error(e) => Err(e),
-                _ => Err("Invalid result type".to_string()),
-            })
+        self.send_request(
+            OpId::Check(identifier.to_string()),
+            vec![identifier.to_string()],
+        )
+        .await
+        .and_then(|result| match result {
+            AppResult::Bool(v) => Ok(v),
+            AppResult::Error(e) => Err(e),
+            _ => Err("Invalid result type".to_string()),
+        })
     }
 
     pub async fn get_latest_release(&self, identifier: &str) -> Result<ReleaseData, String> {
-        self.send_request(OpId::Latest(identifier.to_string()), vec![identifier.to_string()])
-            .await
-            .and_then(|result| match result {
-                AppResult::Release(v) => Ok(v),
-                AppResult::Error(e) => Err(e),
-                _ => Err("Invalid result type".to_string()),
-            })
+        self.send_request(
+            OpId::Latest(identifier.to_string()),
+            vec![identifier.to_string()],
+        )
+        .await
+        .and_then(|result| match result {
+            AppResult::Release(v) => Ok(v),
+            AppResult::Error(e) => Err(e),
+            _ => Err("Invalid result type".to_string()),
+        })
     }
 
     pub async fn get_releases(&self, identifier: &str) -> Result<Vec<ReleaseData>, String> {
-        self.send_request(OpId::Releases(identifier.to_string()), vec![identifier.to_string()])
-            .await
-            .and_then(|result| match result {
-                AppResult::Releases(v) => Ok(v),
-                AppResult::Error(e) => Err(e),
-                _ => Err("Invalid result type".to_string()),
-            })
+        self.send_request(
+            OpId::Releases(identifier.to_string()),
+            vec![identifier.to_string()],
+        )
+        .await
+        .and_then(|result| match result {
+            AppResult::Releases(v) => Ok(v),
+            AppResult::Error(e) => Err(e),
+            _ => Err("Invalid result type".to_string()),
+        })
     }
 
     pub async fn update_app(&self, identifier: &str, version: &str) -> Result<String, String> {
@@ -107,7 +116,7 @@ impl AppManager {
     ) -> Result<String, String> {
         let app_json = serde_json::to_string(&app_metadata).unwrap_or_default();
         let hub_json = serde_json::to_string(&hub_config).unwrap_or_default();
-        
+
         self.send_request(
             OpId::Add(identifier.to_string()),
             vec![identifier.to_string(), app_json, hub_json],
@@ -121,13 +130,16 @@ impl AppManager {
     }
 
     pub async fn remove_app(&self, identifier: &str) -> Result<bool, String> {
-        self.send_request(OpId::Remove(identifier.to_string()), vec![identifier.to_string()])
-            .await
-            .and_then(|result| match result {
-                AppResult::Bool(v) => Ok(v),
-                AppResult::Error(e) => Err(e),
-                _ => Err("Invalid result type".to_string()),
-            })
+        self.send_request(
+            OpId::Remove(identifier.to_string()),
+            vec![identifier.to_string()],
+        )
+        .await
+        .and_then(|result| match result {
+            AppResult::Bool(v) => Ok(v),
+            AppResult::Error(e) => Err(e),
+            _ => Err("Invalid result type".to_string()),
+        })
     }
 
     pub async fn list_apps(&self) -> Result<Vec<String>, String> {
@@ -141,13 +153,16 @@ impl AppManager {
     }
 
     pub async fn get_app_status(&self, identifier: &str) -> Result<Option<AppStatusInfo>, String> {
-        self.send_request(OpId::GetStatus(identifier.to_string()), vec![identifier.to_string()])
-            .await
-            .and_then(|result| match result {
-                AppResult::Status(status) => Ok(Some(status)),
-                AppResult::Error(_) => Ok(None),
-                _ => Err("Invalid result type".to_string()),
-            })
+        self.send_request(
+            OpId::GetStatus(identifier.to_string()),
+            vec![identifier.to_string()],
+        )
+        .await
+        .and_then(|result| match result {
+            AppResult::Status(status) => Ok(Some(status)),
+            AppResult::Error(_) => Ok(None),
+            _ => Err("Invalid result type".to_string()),
+        })
     }
 
     pub async fn get_all_app_statuses(&self) -> Result<Vec<AppStatusInfo>, String> {
@@ -222,7 +237,8 @@ impl Processor {
                 let msg_data = msg.data;
                 let msg_id = msg.id;
 
-                let result = Self::execute(&msg_id, &msg_data, &status_tracker, provider_manager).await;
+                let result =
+                    Self::execute(&msg_id, &msg_data, &status_tracker, provider_manager).await;
                 Self::notify_and_cleanup(active, id, result).await;
             }
         }
@@ -248,7 +264,10 @@ impl Processor {
         }
     }
 
-    async fn exec_check_available(data: &[String], provider_manager: &ProviderManager) -> AppResult {
+    async fn exec_check_available(
+        data: &[String],
+        provider_manager: &ProviderManager,
+    ) -> AppResult {
         if data.is_empty() {
             return AppResult::Error("Invalid data".to_string());
         }
@@ -256,16 +275,19 @@ impl Processor {
         let identifier = &data[0];
         let config = get_layered_config().await;
         let mut config = config.lock().await;
-        
+
         match config.get_app_details(identifier) {
             Ok((app_config, hub_config)) => {
                 // Convert configs to FIn format for provider
                 let app_data = convert_to_btree(&app_config.metadata);
                 let hub_data = convert_to_btree(&hub_config.config);
                 let fin = getter_provider::FIn::new_with_frag(&app_data, &hub_data, None);
-                
+
                 // Try provider based on hub type
-                match provider_manager.check_app_available(&hub_config.provider_type, &fin).await {
+                match provider_manager
+                    .check_app_available(&hub_config.provider_type, &fin)
+                    .await
+                {
                     Ok(result) => AppResult::Bool(result),
                     Err(e) => AppResult::Error(format!("Provider error: {}", e)),
                 }
@@ -282,14 +304,17 @@ impl Processor {
         let identifier = &data[0];
         let config = get_layered_config().await;
         let mut config = config.lock().await;
-        
+
         match config.get_app_details(identifier) {
             Ok((app_config, hub_config)) => {
                 let app_data = convert_to_btree(&app_config.metadata);
                 let hub_data = convert_to_btree(&hub_config.config);
                 let fin = getter_provider::FIn::new_with_frag(&app_data, &hub_data, None);
-                
-                match provider_manager.get_latest_release(&hub_config.provider_type, &fin).await {
+
+                match provider_manager
+                    .get_latest_release(&hub_config.provider_type, &fin)
+                    .await
+                {
                     Ok(release) => AppResult::Release(release),
                     Err(e) => AppResult::Error(format!("Provider error: {}", e)),
                 }
@@ -306,14 +331,17 @@ impl Processor {
         let identifier = &data[0];
         let config = get_layered_config().await;
         let mut config = config.lock().await;
-        
+
         match config.get_app_details(identifier) {
             Ok((app_config, hub_config)) => {
                 let app_data = convert_to_btree(&app_config.metadata);
                 let hub_data = convert_to_btree(&hub_config.config);
                 let fin = getter_provider::FIn::new_with_frag(&app_data, &hub_data, None);
-                
-                match provider_manager.get_releases(&hub_config.provider_type, &fin).await {
+
+                match provider_manager
+                    .get_releases(&hub_config.provider_type, &fin)
+                    .await
+                {
                     Ok(releases) => AppResult::Releases(releases),
                     Err(_) => AppResult::Releases(vec![]),
                 }
@@ -329,13 +357,15 @@ impl Processor {
 
         let identifier = &data[0];
         let version = &data[1];
-        
+
         let config = get_layered_config().await;
         let mut config = config.lock().await;
-        
+
         match config.update_version(identifier, Some(version.to_string()), None) {
             Ok(()) => {
-                status_tracker.set_versions(identifier, Some(version.to_string()), None).await;
+                status_tracker
+                    .set_versions(identifier, Some(version.to_string()), None)
+                    .await;
                 AppResult::Success(format!("Updated {} to {}", identifier, version))
             }
             Err(e) => AppResult::Error(format!("Update failed: {}", e)),
@@ -348,39 +378,41 @@ impl Processor {
         }
 
         let identifier = &data[0];
-        let app_metadata: Option<HashMap<String, Value>> = if data.len() > 1 && !data[1].is_empty() {
+        let app_metadata: Option<HashMap<String, Value>> = if data.len() > 1 && !data[1].is_empty()
+        {
             serde_json::from_str(&data[1]).ok()
         } else {
             None
         };
-        
-        let hub_config_data: Option<HashMap<String, Value>> = if data.len() > 2 && !data[2].is_empty() {
-            serde_json::from_str(&data[2]).ok()
-        } else {
-            None
-        };
+
+        let hub_config_data: Option<HashMap<String, Value>> =
+            if data.len() > 2 && !data[2].is_empty() {
+                serde_json::from_str(&data[2]).ok()
+            } else {
+                None
+            };
 
         let config = get_layered_config().await;
         let mut config = config.lock().await;
-        
+
         // Parse identifier
         let app_id = match AppIdentifier::parse(identifier) {
             Ok(id) => id,
             Err(e) => return AppResult::Error(format!("Invalid identifier: {}", e)),
         };
-        
+
         // Create configs if provided
         let app_config = app_metadata.map(|metadata| AppConfig {
             name: app_id.app_id.clone(),
             metadata,
         });
-        
+
         let hub_config = hub_config_data.map(|config_data| HubConfig {
             name: app_id.hub_id.clone(),
             provider_type: app_id.hub_id.clone(), // Default to hub_id as provider type
             config: config_data,
         });
-        
+
         match config.add_tracked_app(identifier, app_config, hub_config) {
             Ok(()) => {
                 status_tracker.add_app(identifier.to_string()).await;
@@ -398,7 +430,7 @@ impl Processor {
         let identifier = &data[0];
         let config = get_layered_config().await;
         let mut config = config.lock().await;
-        
+
         match config.remove_tracked_app(identifier) {
             Ok(removed) => {
                 if removed {
@@ -436,7 +468,7 @@ impl Processor {
     async fn exec_get_outdated_apps() -> AppResult {
         let config = get_layered_config().await;
         let config = config.lock().await;
-        
+
         let outdated = config.get_outdated_apps();
         let statuses: Vec<AppStatusInfo> = outdated
             .into_iter()
@@ -448,7 +480,7 @@ impl Processor {
                 last_checked: info.last_checked,
             })
             .collect();
-        
+
         AppResult::StatusList(statuses)
     }
 

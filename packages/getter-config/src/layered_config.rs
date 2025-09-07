@@ -26,7 +26,7 @@ impl LayeredConfig {
     pub fn new(data_path: &Path) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let registry = AppRegistry::new(data_path)?;
         let tracking = Self::load_tracking(data_path)?;
-        
+
         Ok(Self {
             registry,
             tracking,
@@ -34,7 +34,9 @@ impl LayeredConfig {
         })
     }
 
-    fn load_tracking(data_path: &Path) -> Result<HashMap<String, AppTrackingInfo>, Box<dyn Error + Send + Sync>> {
+    fn load_tracking(
+        data_path: &Path,
+    ) -> Result<HashMap<String, AppTrackingInfo>, Box<dyn Error + Send + Sync>> {
         let tracking_path = data_path.join("config").join("tracking.json");
         if tracking_path.exists() {
             let content = std::fs::read_to_string(&tracking_path)?;
@@ -58,26 +60,28 @@ impl LayeredConfig {
         hub_config: Option<HubConfig>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let app_id = AppIdentifier::parse(identifier)?;
-        
+
         // Save configs if provided
         if let Some(config) = app_config {
-            self.registry.save_app_config(&app_id.app_id, &config, false)?;
+            self.registry
+                .save_app_config(&app_id.app_id, &config, false)?;
         }
-        
+
         if let Some(config) = hub_config {
-            self.registry.save_hub_config(&app_id.hub_id, &config, false)?;
+            self.registry
+                .save_hub_config(&app_id.hub_id, &config, false)?;
         }
-        
+
         // Add to registry
         self.registry.add_app(identifier)?;
-        
+
         // Add tracking info
         if !self.tracking.contains_key(identifier) {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-            
+
             self.tracking.insert(
                 identifier.to_string(),
                 AppTrackingInfo {
@@ -89,11 +93,14 @@ impl LayeredConfig {
             );
             self.save_tracking()?;
         }
-        
+
         Ok(())
     }
 
-    pub fn remove_tracked_app(&mut self, identifier: &str) -> Result<bool, Box<dyn Error + Send + Sync>> {
+    pub fn remove_tracked_app(
+        &mut self,
+        identifier: &str,
+    ) -> Result<bool, Box<dyn Error + Send + Sync>> {
         let removed = self.registry.remove_app(identifier)?;
         if removed {
             self.tracking.remove(identifier);
@@ -106,7 +113,10 @@ impl LayeredConfig {
         self.registry.list_apps()
     }
 
-    pub fn get_app_details(&mut self, identifier: &str) -> Result<(AppConfig, HubConfig), Box<dyn Error + Send + Sync>> {
+    pub fn get_app_details(
+        &mut self,
+        identifier: &str,
+    ) -> Result<(AppConfig, HubConfig), Box<dyn Error + Send + Sync>> {
         self.registry.get_app_details(identifier)
     }
 
@@ -154,17 +164,20 @@ impl LayeredConfig {
 }
 
 /// Global instance management
-static INSTANCE: once_cell::sync::OnceCell<Arc<Mutex<LayeredConfig>>> = once_cell::sync::OnceCell::new();
+static INSTANCE: once_cell::sync::OnceCell<Arc<Mutex<LayeredConfig>>> =
+    once_cell::sync::OnceCell::new();
 
 pub async fn init_layered_config(data_path: &Path) -> Result<(), Box<dyn Error + Send + Sync>> {
     let config = LayeredConfig::new(data_path)?;
-    INSTANCE.set(Arc::new(Mutex::new(config)))
+    INSTANCE
+        .set(Arc::new(Mutex::new(config)))
         .map_err(|_| "LayeredConfig already initialized")?;
     Ok(())
 }
 
 pub async fn get_layered_config() -> Arc<Mutex<LayeredConfig>> {
-    INSTANCE.get()
+    INSTANCE
+        .get()
         .expect("LayeredConfig not initialized")
         .clone()
 }
@@ -182,9 +195,7 @@ mod tests {
         // Create test configs
         let app_config = AppConfig {
             name: "firefox".to_string(),
-            metadata: HashMap::from([
-                ("repo".to_string(), serde_json::json!("mozilla/firefox")),
-            ]),
+            metadata: HashMap::from([("repo".to_string(), serde_json::json!("mozilla/firefox"))]),
         };
 
         let hub_config = HubConfig {
@@ -194,19 +205,27 @@ mod tests {
         };
 
         // Add tracked app
-        config.add_tracked_app("firefox::mozilla", Some(app_config), Some(hub_config)).unwrap();
-        
+        config
+            .add_tracked_app("firefox::mozilla", Some(app_config), Some(hub_config))
+            .unwrap();
+
         // Check app is tracked
         assert_eq!(config.list_tracked_apps(), vec!["firefox::mozilla"]);
-        
+
         // Update version
-        config.update_version("firefox::mozilla", Some("100.0".to_string()), Some("101.0".to_string())).unwrap();
-        
+        config
+            .update_version(
+                "firefox::mozilla",
+                Some("100.0".to_string()),
+                Some("101.0".to_string()),
+            )
+            .unwrap();
+
         // Check outdated apps
         let outdated = config.get_outdated_apps();
         assert_eq!(outdated.len(), 1);
         assert_eq!(outdated[0].0, "firefox::mozilla");
-        
+
         // Remove app
         assert!(config.remove_tracked_app("firefox::mozilla").unwrap());
         assert!(config.list_tracked_apps().is_empty());

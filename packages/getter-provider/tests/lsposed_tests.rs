@@ -19,7 +19,8 @@ async fn test_check_app_available() {
         .await;
 
     let id_map = BTreeMap::from([(ANDROID_APP_TYPE, "com.agoines.relaxhelp")]);
-    let proxy_url = format!("{} -> {}", LSPOSED_REPO_API_URL, server.url());
+    let mock_url = format!("{}/modules.json", server.url());
+    let proxy_url = format!("{} -> {}", LSPOSED_REPO_API_URL, mock_url);
     let hub_data = BTreeMap::from([(REVERSE_PROXY, proxy_url.as_str())]);
 
     let lsposed_provider = LsposedRepoProvider::new();
@@ -43,7 +44,8 @@ async fn test_get_releases() {
         .await;
 
     let id_map = BTreeMap::from([(ANDROID_APP_TYPE, "com.agoines.relaxhelp")]);
-    let proxy_url = format!("{} -> {}", LSPOSED_REPO_API_URL, server.url());
+    let mock_url = format!("{}/modules.json", server.url());
+    let proxy_url = format!("{} -> {}", LSPOSED_REPO_API_URL, mock_url);
     let hub_data = BTreeMap::from([(REVERSE_PROXY, proxy_url.as_str())]);
 
     let lsposed_provider = LsposedRepoProvider::new();

@@ -88,7 +88,7 @@ impl BaseProvider for FDroidProvider {
                 return FOut::new(rsp.status >= 200 && rsp.status < 300);
             }
         }
-        FOut::new_empty()
+        FOut::new(false)
     }
 
     async fn get_releases(&self, fin: &FIn) -> FOut<Vec<ReleaseData>> {
