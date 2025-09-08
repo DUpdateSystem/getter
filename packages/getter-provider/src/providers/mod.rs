@@ -14,8 +14,14 @@ pub mod github;
 pub mod gitlab;
 pub mod lsposed;
 
+#[cfg(target_os = "android")]
+pub mod android;
+
 // Re-export all providers for convenience
 pub use fdroid::FDroidProvider;
 pub use github::GitHubProvider;
 pub use gitlab::GitLabProvider;
 pub use lsposed::LsposedRepoProvider;
+
+#[cfg(target_os = "android")]
+pub use android::{AndroidAppProvider, MagiskModuleProvider};
