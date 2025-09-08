@@ -16,7 +16,7 @@ once_cell = { workspace = true }
 # Internal dependencies
 getter-utils = { workspace = true }
 json-patch = "4.0.0"
-reqwest = { version = "0.12.23", features = ["json"] }
+reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
