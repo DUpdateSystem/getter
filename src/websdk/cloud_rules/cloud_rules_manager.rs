@@ -30,7 +30,7 @@ impl CloudRules {
         }
     }
 
-    pub fn get_config_list(&self) -> ConfigListViewer {
+    pub fn get_config_list(&self) -> ConfigListViewer<'_> {
         self._config_list
             .as_ref()
             .map_or_else(ConfigListViewer::default, |config_list| {

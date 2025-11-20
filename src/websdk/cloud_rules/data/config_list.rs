@@ -32,7 +32,7 @@ pub struct ConfigList {
 }
 
 impl ConfigList {
-    pub fn viewer(&self) -> ConfigListViewer {
+    pub fn viewer(&self) -> ConfigListViewer<'_> {
         ConfigListViewer {
             app_config_list: self.app_config_list.iter().collect(),
             hub_config_list: self.hub_config_list.iter().collect(),

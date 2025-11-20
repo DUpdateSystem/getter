@@ -158,7 +158,7 @@ impl FDroidProvider {
             };
         }
         let download_url = format!("{}/{}", url, file_name);
-        let file_type = file_name.split('.').last().unwrap_or("").to_string();
+        let file_type = file_name.split('.').next_back().unwrap_or("").to_string();
 
         let extra = if extra.is_empty() { None } else { Some(extra) };
         Ok(ReleaseData {
