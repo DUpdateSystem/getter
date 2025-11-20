@@ -152,6 +152,7 @@ fn https_config() -> Result<hyper_rustls::HttpsConnector<HttpConnector>, HttpsCo
             .with_safe_default_protocol_versions()
             .map_err(|e| HttpsConfigError { error: Box::new(e) })?
             .with_platform_verifier()
+            .map_err(|e| HttpsConfigError { error: Box::new(e) })?
             .with_no_client_auth();
     }
     #[cfg(all(feature = "webpki-roots", not(feature = "rustls-platform-verifier")))]
@@ -255,7 +256,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_https_get_status() {
-        let url = "https://httpstat.us/418".parse().unwrap();
+        let url = "https://httpbin.org/status/418".parse().unwrap();
         let result = https_get(url, &HashMap::new()).await;
         assert_eq!(result.unwrap().status, 418);
     }

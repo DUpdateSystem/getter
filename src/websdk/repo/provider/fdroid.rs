@@ -142,15 +142,14 @@ impl FDroidProvider {
                     }
                 }
                 Ok(Event::Text(e)) => {
-                    if let Ok(e) = e.unescape() {
-                        let text = e.into_owned();
+                    if let Ok(text) = e.decode() {
                         match current_tag.as_str() {
-                            "version" => version_number += &text,
-                            "changelog" => changelog += &text,
+                            "version" => version_number += text.as_ref(),
+                            "changelog" => changelog += text.as_ref(),
                             "versionCode" | "nativecode" => {
                                 extra.insert(current_tag.clone(), text.to_string());
                             }
-                            "apkname" => file_name += &text,
+                            "apkname" => file_name += text.as_ref(),
                             _ => (),
                         }
                     }
@@ -199,10 +198,9 @@ impl FDroidProvider {
                     }
                 }
                 Ok(Event::Text(e)) => {
-                    if let Ok(e) = e.unescape() {
-                        let text = e.into_owned();
+                    if let Ok(text) = e.decode() {
                         if current_tag.as_str() == "changelog" {
-                            changelog += &text
+                            changelog += text.as_ref()
                         }
                     }
                 }
