@@ -24,7 +24,7 @@ pub struct RequestOptions {
 /// This struct defines what features a downloader implementation supports.
 /// These capabilities are determined at initialization time and remain constant
 /// throughout the downloader's lifetime.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct DownloaderCapabilities {
     /// Whether the downloader supports pausing downloads
     pub supports_pause: bool,
@@ -36,18 +36,6 @@ pub struct DownloaderCapabilities {
     pub supports_range_requests: bool,
     /// Whether the downloader supports batch download operations
     pub supports_batch_download: bool,
-}
-
-impl Default for DownloaderCapabilities {
-    fn default() -> Self {
-        Self {
-            supports_pause: false,
-            supports_resume: false,
-            supports_cancellation: false,
-            supports_range_requests: false,
-            supports_batch_download: false,
-        }
-    }
 }
 
 impl DownloaderCapabilities {

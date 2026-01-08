@@ -3,22 +3,17 @@
 use serde::{Deserialize, Serialize};
 
 /// Downloader backend selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DownloaderBackend {
     /// Use trauma downloader (default)
+    #[default]
     Trauma,
     // Future backends can be added here:
     // /// Use reqwest downloader
     // Reqwest,
     // /// Use custom CLI command
     // Custom,
-}
-
-impl Default for DownloaderBackend {
-    fn default() -> Self {
-        Self::Trauma
-    }
 }
 
 /// Download configuration

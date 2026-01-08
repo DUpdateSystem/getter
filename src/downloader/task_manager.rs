@@ -735,7 +735,7 @@ mod tests {
 
         // Initial state should be Pending
         let initial_task = manager.get_task(&task_id).unwrap();
-        states_observed.push(initial_task.state.clone());
+        states_observed.push(initial_task.state);
         assert_eq!(
             initial_task.state,
             DownloadState::Pending,
@@ -747,11 +747,11 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
 
             if let Ok(task_info) = manager.get_task(&task_id) {
-                let current_state = task_info.state.clone();
+                let current_state = task_info.state;
 
                 // Record new state
                 if states_observed.last() != Some(&current_state) {
-                    states_observed.push(current_state.clone());
+                    states_observed.push(current_state);
                 }
 
                 // If completed, verify file exists

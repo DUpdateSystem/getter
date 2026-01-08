@@ -192,7 +192,7 @@ impl DownloadState {
 }
 
 /// Download progress information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DownloadProgress {
     /// Number of bytes downloaded so far
     pub downloaded_bytes: u64,
@@ -256,17 +256,6 @@ impl DownloadProgress {
             self.downloaded_bytes >= total
         } else {
             false
-        }
-    }
-}
-
-impl Default for DownloadProgress {
-    fn default() -> Self {
-        Self {
-            downloaded_bytes: 0,
-            total_bytes: None,
-            speed_bytes_per_sec: None,
-            eta_seconds: None,
         }
     }
 }
