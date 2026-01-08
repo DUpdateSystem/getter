@@ -1,5 +1,6 @@
 use super::data::*;
 use crate::api as api_root;
+use crate::downloader::{DownloadConfig, DownloadTaskManager};
 use crate::websdk::cloud_rules::cloud_rules_manager::CloudRules;
 use crate::websdk::repo::api;
 use jsonrpsee::server::{RpcModule, Server, ServerHandle};
@@ -128,6 +129,203 @@ pub async fn run_server(
             }
         },
     )?;
+
+    // ========================================================================
+    // Downloader RPC Methods
+    // ========================================================================
+
+    // Create download task manager
+    let download_config = DownloadConfig::from_env();
+    let task_manager = Arc::new(DownloadTaskManager::from_config(&download_config));
+
+    // download_submit: Submit a single download task
+    let manager_clone = task_manager.clone();
+    module.register_async_method("download_submit", move |params, _context, _extensions| {
+        let manager = manager_clone.clone();
+        async move {
+            let request = params.parse::<RpcDownloadRequest>()?;
+            match manager.submit_task_with_options(
+                request.url,
+                request.dest_path,
+                request.headers,
+                request.cookies,
+            ) {
+                Ok(task_id) => Ok(RpcTaskIdResponse { task_id }),
+                Err(e) => Err(ErrorObjectOwned::owned(
+                    ErrorCode::InternalError.code(),
+                    "Failed to submit download task",
+                    Some(e.message),
+                )),
+            }
+        }
+    })?;
+
+    // download_submit_batch: Submit multiple download tasks
+    let manager_clone = task_manager.clone();
+    module.register_async_method(
+        "download_submit_batch",
+        move |params, _context, _extensions| {
+            let manager = manager_clone.clone();
+            async move {
+                let request = params.parse::<RpcDownloadBatchRequest>()?;
+                let tasks: Vec<(String, String)> = request
+                    .tasks
+                    .into_iter()
+                    .map(|t| (t.url, t.dest_path))
+                    .collect();
+
+                match manager.submit_batch(tasks) {
+                    Ok(task_ids) => Ok(RpcTaskIdsResponse { task_ids }),
+                    Err(e) => Err(ErrorObjectOwned::owned(
+                        ErrorCode::InternalError.code(),
+                        "Failed to submit batch download tasks",
+                        Some(e.message),
+                    )),
+                }
+            }
+        },
+    )?;
+
+    // download_get_status: Get status of a download task
+    let manager_clone = task_manager.clone();
+    module.register_async_method(
+        "download_get_status",
+        move |params, _context, _extensions| {
+            let manager = manager_clone.clone();
+            async move {
+                let request = params.parse::<RpcTaskStatusRequest>()?;
+                match manager.get_task(request.task_id) {
+                    Ok(task_info) => Ok(task_info),
+                    Err(e) => Err(ErrorObjectOwned::owned(
+                        ErrorCode::InvalidParams.code(),
+                        "Task not found",
+                        Some(e.message),
+                    )),
+                }
+            }
+        },
+    )?;
+
+    // download_wait_for_change: Long-polling for task state change
+    let manager_clone = task_manager.clone();
+    module.register_async_method(
+        "download_wait_for_change",
+        move |params, _context, _extensions| {
+            let manager = manager_clone.clone();
+            async move {
+                let request = params.parse::<RpcWaitForChangeRequest>()?;
+                let timeout = Duration::from_secs(request.timeout_seconds);
+
+                match manager.wait_for_change(request.task_id, timeout).await {
+                    Ok(task_info) => Ok(task_info),
+                    Err(e) => Err(ErrorObjectOwned::owned(
+                        ErrorCode::InvalidParams.code(),
+                        "Failed to wait for task change",
+                        Some(e.message),
+                    )),
+                }
+            }
+        },
+    )?;
+
+    // download_cancel: Cancel a download task
+    let manager_clone = task_manager.clone();
+    module.register_async_method("download_cancel", move |params, _context, _extensions| {
+        let manager = manager_clone.clone();
+        async move {
+            let request = params.parse::<RpcCancelTaskRequest>()?;
+            match manager.cancel_task(request.task_id) {
+                Ok(_) => Ok(true),
+                Err(e) => Err(ErrorObjectOwned::owned(
+                    ErrorCode::InternalError.code(),
+                    "Failed to cancel task",
+                    Some(e.message),
+                )),
+            }
+        }
+    })?;
+
+    // download_pause: Pause a download task
+    let manager_clone = task_manager.clone();
+    module.register_async_method("download_pause", move |params, _context, _extensions| {
+        let manager = manager_clone.clone();
+        async move {
+            let request = params.parse::<RpcPauseTaskRequest>()?;
+            match manager.pause_task(request.task_id).await {
+                Ok(_) => Ok(true),
+                Err(e) => Err(ErrorObjectOwned::owned(
+                    ErrorCode::InternalError.code(),
+                    "Failed to pause task",
+                    Some(e.message),
+                )),
+            }
+        }
+    })?;
+
+    // download_resume: Resume a paused download task
+    let manager_clone = task_manager.clone();
+    module.register_async_method("download_resume", move |params, _context, _extensions| {
+        let manager = manager_clone.clone();
+        async move {
+            let request = params.parse::<RpcResumeTaskRequest>()?;
+            match manager.resume_task(request.task_id).await {
+                Ok(_) => Ok(true),
+                Err(e) => Err(ErrorObjectOwned::owned(
+                    ErrorCode::InternalError.code(),
+                    "Failed to resume task",
+                    Some(e.message),
+                )),
+            }
+        }
+    })?;
+
+    // download_get_capabilities: Get downloader capabilities
+    let manager_clone = task_manager.clone();
+    module.register_method("download_get_capabilities", move |_, _context, _extensions| {
+        let caps = manager_clone.get_capabilities();
+        Ok::<_, ErrorObjectOwned>(caps.clone())
+    })?;
+
+    // download_get_all_tasks: Get all tasks
+    let manager_clone = task_manager.clone();
+    module.register_async_method("download_get_all_tasks", move |_, _context, _extensions| {
+        let manager = manager_clone.clone();
+        async move {
+            Ok::<RpcTasksResponse, ErrorObjectOwned>(RpcTasksResponse {
+                tasks: manager.get_all_tasks(),
+            })
+        }
+    })?;
+
+    // download_get_active_tasks: Get active tasks
+    let manager_clone = task_manager.clone();
+    module.register_async_method(
+        "download_get_active_tasks",
+        move |_, _context, _extensions| {
+            let manager = manager_clone.clone();
+            async move {
+                Ok::<RpcTasksResponse, ErrorObjectOwned>(RpcTasksResponse {
+                    tasks: manager.get_active_tasks(),
+                })
+            }
+        },
+    )?;
+
+    // download_get_tasks_by_state: Get tasks by state
+    let manager_clone = task_manager.clone();
+    module.register_async_method(
+        "download_get_tasks_by_state",
+        move |params, _context, _extensions| {
+            let manager = manager_clone.clone();
+            async move {
+                let request = params.parse::<RpcTasksByStateRequest>()?;
+                Ok::<RpcTasksResponse, ErrorObjectOwned>(RpcTasksResponse {
+                    tasks: manager.get_tasks_by_state(request.state),
+                })
+            }
+        },
+    )?;
+
     let addr = server.local_addr()?;
     let handle = server.start(module);
     tokio::spawn(handle.clone().stopped());

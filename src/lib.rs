@@ -1,6 +1,7 @@
 pub mod api;
 mod cache;
 mod core;
+pub mod downloader;
 mod error;
 mod locale;
 pub mod rpc;
