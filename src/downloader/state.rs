@@ -108,7 +108,10 @@ where
 }
 
 /// Serialize Option<SystemTime> as Unix timestamp in milliseconds
-fn serialize_option_system_time<S>(time: &Option<SystemTime>, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_option_system_time<S>(
+    time: &Option<SystemTime>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -296,19 +299,31 @@ pub struct TaskInfo {
     pub error: Option<String>,
 
     /// Task creation timestamp (Unix timestamp in milliseconds)
-    #[serde(serialize_with = "serialize_system_time", deserialize_with = "deserialize_system_time")]
+    #[serde(
+        serialize_with = "serialize_system_time",
+        deserialize_with = "deserialize_system_time"
+    )]
     pub created_at: SystemTime,
 
     /// Task start timestamp (Unix timestamp in milliseconds, None if not started yet)
-    #[serde(serialize_with = "serialize_option_system_time", deserialize_with = "deserialize_option_system_time")]
+    #[serde(
+        serialize_with = "serialize_option_system_time",
+        deserialize_with = "deserialize_option_system_time"
+    )]
     pub started_at: Option<SystemTime>,
 
     /// Task completion timestamp (Unix timestamp in milliseconds, None if not completed)
-    #[serde(serialize_with = "serialize_option_system_time", deserialize_with = "deserialize_option_system_time")]
+    #[serde(
+        serialize_with = "serialize_option_system_time",
+        deserialize_with = "deserialize_option_system_time"
+    )]
     pub completed_at: Option<SystemTime>,
 
     /// Task last paused timestamp (Unix timestamp in milliseconds, None if never paused)
-    #[serde(serialize_with = "serialize_option_system_time", deserialize_with = "deserialize_option_system_time")]
+    #[serde(
+        serialize_with = "serialize_option_system_time",
+        deserialize_with = "deserialize_option_system_time"
+    )]
     pub paused_at: Option<SystemTime>,
 
     /// HTTP headers to include in requests

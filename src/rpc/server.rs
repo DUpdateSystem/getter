@@ -281,10 +281,13 @@ pub async fn run_server(
 
     // download_get_capabilities: Get downloader capabilities
     let manager_clone = task_manager.clone();
-    module.register_method("download_get_capabilities", move |_, _context, _extensions| {
-        let caps = manager_clone.get_capabilities();
-        Ok::<_, ErrorObjectOwned>(caps.clone())
-    })?;
+    module.register_method(
+        "download_get_capabilities",
+        move |_, _context, _extensions| {
+            let caps = manager_clone.get_capabilities();
+            Ok::<_, ErrorObjectOwned>(caps.clone())
+        },
+    )?;
 
     // download_get_all_tasks: Get all tasks
     let manager_clone = task_manager.clone();

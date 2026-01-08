@@ -633,8 +633,14 @@ mod tests {
             .mock("GET", "/protected-file.txt")
             .match_header("authorization", "Bearer test-token-123")
             .match_header("x-custom-header", "custom-value")
-            .match_header("cookie", mockito::Matcher::Regex(".*session_id=abc123.*".to_string()))
-            .match_header("cookie", mockito::Matcher::Regex(".*user_id=456.*".to_string()))
+            .match_header(
+                "cookie",
+                mockito::Matcher::Regex(".*session_id=abc123.*".to_string()),
+            )
+            .match_header(
+                "cookie",
+                mockito::Matcher::Regex(".*user_id=456.*".to_string()),
+            )
             .with_status(200)
             .with_body(b"Protected content")
             .create();
