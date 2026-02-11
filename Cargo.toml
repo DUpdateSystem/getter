@@ -20,7 +20,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.149"
 quick-xml = { version = "0.38.4", features = ["encoding", "async-tokio"] }
 async_fn_traits = "0.1.1"
-version-compare = "0.2.1"
+libversion-sys = { git = "https://github.com/DUpdateSystem/libversion-sys" }
 regex = "1.12.2"
 hyper-util = { version = "0.1.19", features = ["client", "tokio", "http1"] }
 http-body-util = "0.1.3"

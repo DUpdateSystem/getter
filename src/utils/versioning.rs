@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use version_compare;
+use libversion_sys;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -26,29 +26,28 @@ impl Version {
     }
 
     pub fn get_valid_version(&self) -> Option<String> {
-        let version_string = VERSION_NUMBER_STRICT_MATCH_REGEX
+        VERSION_NUMBER_STRICT_MATCH_REGEX
             .find(&self.string)
             .or_else(|| VERSION_NUMBER_MATCH_REGEX.find(&self.string))
-            .map(|match_str| match_str.as_str());
-        version_string.and_then(|version_string| {
-            version_compare::Version::from(version_string).map(|v| v.to_string())
-        })
+            .map(|match_str| match_str.as_str().to_string())
     }
 }
 
 impl PartialEq for Version {
     fn eq(&self, other: &Self) -> bool {
-        let version = version_compare::Version::from(self.string.as_str());
-        let other_version = version_compare::Version::from(other.string.as_str());
-        version == other_version
+        match (self.get_valid_version(), other.get_valid_version()) {
+            (Some(v1), Some(v2)) => libversion_sys::compare(&v1, &v2) == Ordering::Equal,
+            _ => false,
+        }
     }
 }
 
 impl PartialOrd for Version {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let version = version_compare::Version::from(self.string.as_str());
-        let other_version = version_compare::Version::from(other.string.as_str());
-        version.partial_cmp(&other_version)
+        match (self.get_valid_version(), other.get_valid_version()) {
+            (Some(v1), Some(v2)) => Some(libversion_sys::compare(&v1, &v2)),
+            _ => None,
+        }
     }
 }
 
