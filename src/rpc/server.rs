@@ -11,12 +11,29 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+// Default 2GB size limit for WebSocket messages
+// Can be overridden at compile time by setting MAX_WS_MESSAGE_SIZE environment variable
+// Example: MAX_WS_MESSAGE_SIZE=1073741824 cargo build (for 1GB)
+const DEFAULT_MAX_SIZE: u32 = 2 * 1024 * 1024 * 1024; // 2GB
+
+fn get_max_message_size() -> u32 {
+    // Allow compile-time configuration via environment variable
+    match option_env!("MAX_WS_MESSAGE_SIZE") {
+        Some(size_str) => size_str.parse().unwrap_or(DEFAULT_MAX_SIZE),
+        None => DEFAULT_MAX_SIZE,
+    }
+}
+
 pub async fn run_server(
     addr: &str,
     is_running: Arc<AtomicBool>,
 ) -> Result<(String, ServerHandle), Box<dyn std::error::Error>> {
     let addr = if addr.is_empty() { "127.0.0.1:0" } else { addr };
-    let server = Server::builder().build(addr.parse::<SocketAddr>()?).await?;
+    let max_size = get_max_message_size();
+    let server = Server::builder()
+        .max_request_body_size(max_size)
+        .max_response_body_size(max_size)
+        .build(addr.parse::<SocketAddr>()?).await?;
     let mut module = RpcModule::new(());
     // Register the shutdown method
     let run_flag = is_running.clone();
