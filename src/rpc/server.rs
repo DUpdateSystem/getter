@@ -3,7 +3,7 @@ use crate::api as api_root;
 use crate::downloader::{DownloadConfig, DownloadTaskManager};
 use crate::websdk::cloud_rules::cloud_rules_manager::CloudRules;
 use crate::websdk::repo::api;
-use jsonrpsee::server::{RpcModule, Server, ServerHandle};
+use jsonrpsee::server::{RpcModule, Server, ServerConfig, ServerHandle};
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -12,15 +12,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 // Default 2GB size limit for WebSocket messages
-// Can be overridden at compile time by setting MAX_WS_MESSAGE_SIZE environment variable
-// Example: MAX_WS_MESSAGE_SIZE=1073741824 cargo build (for 1GB)
+// Can be overridden at runtime by setting GETTER_WS_MAX_MESSAGE_SIZE environment variable
+// Example: GETTER_WS_MAX_MESSAGE_SIZE=1073741824 ./getter (for 1GB)
 const DEFAULT_MAX_SIZE: u32 = 2 * 1024 * 1024 * 1024; // 2GB
 
 fn get_max_message_size() -> u32 {
-    // Allow compile-time configuration via environment variable
-    match option_env!("MAX_WS_MESSAGE_SIZE") {
-        Some(size_str) => size_str.parse().unwrap_or(DEFAULT_MAX_SIZE),
-        None => DEFAULT_MAX_SIZE,
+    // Allow runtime configuration via environment variable
+    match std::env::var("GETTER_WS_MAX_MESSAGE_SIZE") {
+        Ok(size_str) => size_str.parse().unwrap_or(DEFAULT_MAX_SIZE),
+        Err(_) => DEFAULT_MAX_SIZE,
     }
 }
 
@@ -30,10 +30,14 @@ pub async fn run_server(
 ) -> Result<(String, ServerHandle), Box<dyn std::error::Error>> {
     let addr = if addr.is_empty() { "127.0.0.1:0" } else { addr };
     let max_size = get_max_message_size();
-    let server = Server::builder()
+    let config = ServerConfig::builder()
         .max_request_body_size(max_size)
         .max_response_body_size(max_size)
-        .build(addr.parse::<SocketAddr>()?).await?;
+        .build();
+    let server = Server::builder()
+        .set_config(config)
+        .build(addr.parse::<SocketAddr>()?)
+        .await?;
     let mut module = RpcModule::new(());
     // Register the shutdown method
     let run_flag = is_running.clone();
