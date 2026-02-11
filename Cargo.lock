@@ -1043,9 +1043,10 @@ dependencies = [
 [[package]]
 name = "libversion-sys"
 version = "0.1.0"
-source = "git+https://github.com/DUpdateSystem/libversion-sys?rev=0bf93a13845e6abcbfc1514fe240be624de370f8#0bf93a13845e6abcbfc1514fe240be624de370f8"
+source = "git+https://github.com/DUpdateSystem/libversion-sys?rev=68391515ac8f555ca86bc5dfcd980f66352e414d#68391515ac8f555ca86bc5dfcd980f66352e414d"
 dependencies = [
  "bindgen",
+ "cc",
  "cmake",
 ]
 
@@ -1267,9 +1268,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.38.4"
+version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
+checksum = "f2e3bf4aa9d243beeb01a7b3bc30b77cfe2c44e24ec02d751a7104a53c2c49a1"
 dependencies = [
  "encoding_rs",
  "memchr",
