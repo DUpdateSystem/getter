@@ -18,9 +18,9 @@ tokio = { version = "1", features = ["full", "macros"] }
 bytes = "1.11.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.149"
-quick-xml = { version = "0.38.4", features = ["encoding", "async-tokio"] }
+quick-xml = { version = "0.39.0", features = ["encoding", "async-tokio"] }
 async_fn_traits = "0.1.1"
-libversion-sys = { git = "https://github.com/DUpdateSystem/libversion-sys", rev = "0bf93a13845e6abcbfc1514fe240be624de370f8" }
+libversion-sys = { git = "https://github.com/DUpdateSystem/libversion-sys", rev = "68391515ac8f555ca86bc5dfcd980f66352e414d" }
 regex = "1.12.2"
 hyper-util = { version = "0.1.19", features = ["client", "tokio", "http1"] }
 http-body-util = "0.1.3"
