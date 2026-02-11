@@ -609,4 +609,138 @@ mod tests {
         assert!(!config.hub_config_list.is_empty());
         handle.stop().unwrap();
     }
+
+    // ========================================================================
+    // WebSocket and message size tests
+    // ========================================================================
+
+    use jsonrpsee::ws_client::WsClientBuilder;
+    use serial_test::serial;
+
+    /// Generate a random ASCII string of given byte length (not compressible).
+    /// Uses printable ASCII range (0x21-0x7e) to avoid JSON escape overhead.
+    fn generate_random_string(size: usize) -> String {
+        use rand::RngExt;
+        let mut rng = rand::rng();
+        let mut buf = vec![0u8; size];
+        rng.fill(&mut buf[..]);
+        // Map each byte to printable ASCII (0x21..=0x7e, 94 chars), avoid '"' and '\\'
+        for b in buf.iter_mut() {
+            *b = match (*b % 92) + 0x21 {
+                b'"' => b'a',
+                b'\\' => b'b',
+                v => v,
+            };
+        }
+        // SAFETY: all bytes are valid ASCII
+        unsafe { String::from_utf8_unchecked(buf) }
+    }
+
+    /// Helper: start a minimal RPC server with "echo_data" method for size testing.
+    async fn start_test_server_with_config(max_size: u32) -> (String, ServerHandle) {
+        let config = ServerConfig::builder()
+            .max_request_body_size(max_size)
+            .max_response_body_size(max_size)
+            .build();
+        let server = jsonrpsee::server::Server::builder()
+            .set_config(config)
+            .build("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+            .await
+            .unwrap();
+        let mut module = RpcModule::new(());
+        module
+            .register_method("echo_data", |params, _, _| {
+                let data: String = params.one()?;
+                Ok::<String, ErrorObjectOwned>(data)
+            })
+            .unwrap();
+        module.register_method("ping", |_, _, _| "pong").unwrap();
+        let addr = server.local_addr().unwrap();
+        let handle = server.start(module);
+        (format!("ws://{}", addr), handle)
+    }
+
+    #[tokio::test]
+    async fn test_ws_client_connection() {
+        let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
+            .await
+            .unwrap();
+        let ws_url = url.replace("http://", "ws://");
+        let max_size = get_max_message_size();
+        let client = WsClientBuilder::default()
+            .max_request_size(max_size)
+            .max_response_size(max_size)
+            .build(&ws_url)
+            .await
+            .unwrap();
+        let response: String = client.request("ping", rpc_params![]).await.unwrap();
+        assert_eq!(response, "pong");
+        handle.stop().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_ws_large_message_50mb() {
+        const SIZE: usize = 50 * 1024 * 1024; // 50MB
+        let max_size = DEFAULT_MAX_SIZE;
+        let (ws_url, handle) = start_test_server_with_config(max_size).await;
+        let client = WsClientBuilder::default()
+            .max_request_size(max_size)
+            .max_response_size(max_size)
+            .build(&ws_url)
+            .await
+            .unwrap();
+        let data = generate_random_string(SIZE);
+        let response: String = client
+            .request("echo_data", rpc_params![&data])
+            .await
+            .unwrap();
+        assert_eq!(response.len(), data.len());
+        handle.stop().unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ws_env_var_limits_message_size() {
+        const ONE_MB: u32 = 1024 * 1024;
+        const TWO_MB: usize = 2 * 1024 * 1024;
+
+        // Set env var to 1MB limit
+        // SAFETY: This test is marked #[serial] so no other tests run concurrently
+        unsafe { std::env::set_var("GETTER_WS_MAX_MESSAGE_SIZE", ONE_MB.to_string()) };
+        assert_eq!(get_max_message_size(), ONE_MB);
+
+        let (url, handle) = run_server("", Arc::new(AtomicBool::new(true)))
+            .await
+            .unwrap();
+        let ws_url = url.replace("http://", "ws://");
+
+        // Client allows large messages, but server should reject
+        let client = WsClientBuilder::default()
+            .max_request_size(u32::MAX)
+            .max_response_size(u32::MAX)
+            .build(&ws_url)
+            .await
+            .unwrap();
+
+        // Verify ping still works (small message)
+        let response: String = client.request("ping", rpc_params![]).await.unwrap();
+        assert_eq!(response, "pong");
+
+        // Send 2MB data via init request, should be rejected by 1MB server limit
+        let large_data = generate_random_string(TWO_MB);
+        let params = RpcInitRequest {
+            data_path: &large_data,
+            cache_path: "/tmp/cache",
+            global_expire_time: 3600,
+        };
+        let response: Result<bool, _> = client.request("init", params).await;
+        assert!(
+            response.is_err(),
+            "2MB request should be rejected by 1MB server limit"
+        );
+
+        handle.stop().unwrap();
+        // SAFETY: This test is marked #[serial] so no other tests run concurrently
+        unsafe { std::env::remove_var("GETTER_WS_MAX_MESSAGE_SIZE") };
+    }
 }
