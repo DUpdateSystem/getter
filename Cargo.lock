@@ -1043,7 +1043,7 @@ dependencies = [
 [[package]]
 name = "libversion-sys"
 version = "0.1.0"
-source = "git+https://github.com/DUpdateSystem/libversion-sys#0bf93a13845e6abcbfc1514fe240be624de370f8"
+source = "git+https://github.com/DUpdateSystem/libversion-sys?rev=0bf93a13845e6abcbfc1514fe240be624de370f8#0bf93a13845e6abcbfc1514fe240be624de370f8"
 dependencies = [
  "bindgen",
  "cmake",
