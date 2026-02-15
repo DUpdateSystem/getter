@@ -241,7 +241,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_https_get() {
-        let url = "https://example.com".parse().unwrap();
+        let url = "https://github.com".parse().unwrap();
         let result = https_get(url, &HashMap::new()).await;
         assert!(result.is_ok());
         assert!(!result.unwrap().body.unwrap().is_empty());
@@ -263,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_https_head() {
-        let url = "https://example.com".parse().unwrap();
+        let url = "https://github.com".parse().unwrap();
         let result = https_head(url, &HashMap::new()).await;
         assert!(result.is_ok());
         assert!(result.unwrap().body.is_none());
