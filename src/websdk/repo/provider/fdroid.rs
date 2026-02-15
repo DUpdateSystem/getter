@@ -51,6 +51,7 @@ impl BaseProvider for FDroidProvider {
                 url, id_map[ANDROID_APP_TYPE]
             )],
             FunctionType::GetLatestRelease | FunctionType::GetReleases => vec![api_url.to_string()],
+            FunctionType::GetDownload => vec![],
         }
     }
 

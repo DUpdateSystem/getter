@@ -104,6 +104,7 @@ impl BaseProvider for GitLabProvider {
                 "{}/{}/{}/releases",
                 GITLAB_API_URL, id_map["owner"], id_map["repo"]
             )],
+            FunctionType::GetDownload => vec![],
         }
     }
 

@@ -58,4 +58,20 @@ impl Client {
         };
         self.client.request("get_releases", data).await
     }
+
+    pub async fn get_download(
+        &self,
+        hub_uuid: &str,
+        app_data: BTreeMap<&str, &str>,
+        hub_data: BTreeMap<&str, &str>,
+        asset_index: &[i32],
+    ) -> Result<Vec<DownloadItemData>, Error> {
+        let data = RpcDownloadInfoRequest {
+            hub_uuid,
+            app_data,
+            hub_data,
+            asset_index: asset_index.to_vec(),
+        };
+        self.client.request("get_download", data).await
+    }
 }

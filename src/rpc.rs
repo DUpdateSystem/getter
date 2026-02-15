@@ -1,3 +1,3 @@
 pub mod client;
-mod data;
+pub mod data;
 pub mod server;

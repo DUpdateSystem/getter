@@ -128,6 +128,44 @@ pub async fn run_server(
         }
     })?;
 
+    // register_provider: Dynamically register an external provider (e.g., Kotlin hub via HTTP JSON-RPC)
+    module.register_async_method(
+        "register_provider",
+        |params, _context, _extensions| async move {
+            let request = params.parse::<RpcRegisterProviderRequest>()?;
+            api::add_outside_provider(request.hub_uuid, request.url);
+            Ok::<bool, ErrorObjectOwned>(true)
+        },
+    )?;
+
+    // get_download: Get download info for an app's asset
+    module.register_async_method("get_download", |params, _context, _extensions| async move {
+        if let Ok(request) = params.parse::<RpcDownloadInfoRequest>() {
+            if let Some(result) = api::get_download(
+                request.hub_uuid,
+                &request.app_data,
+                &request.hub_data,
+                &request.asset_index,
+            )
+            .await
+            {
+                Ok(result)
+            } else {
+                Err(ErrorObjectOwned::borrowed(
+                    ErrorCode::InvalidParams.code(),
+                    "Invalid params",
+                    None,
+                ))
+            }
+        } else {
+            Err(ErrorObjectOwned::owned(
+                ErrorCode::ParseError.code(),
+                "Parse params error",
+                Some(params.as_str().unwrap_or("None").to_string()),
+            ))
+        }
+    })?;
+
     module.register_async_method(
         "get_cloud_config",
         |params, _context, _extensions| async move {

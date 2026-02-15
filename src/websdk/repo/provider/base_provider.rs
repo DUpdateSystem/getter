@@ -10,6 +10,7 @@ use std::{
 };
 
 use super::super::data::release::*;
+use crate::rpc::data::DownloadItemData;
 
 pub type HubDataMap<'a> = BTreeMap<&'a str, &'a str>;
 pub type AppDataMap<'a> = BTreeMap<&'a str, &'a str>;
@@ -44,6 +45,7 @@ pub enum FunctionType {
     CheckAppAvailable,
     GetLatestRelease,
     GetReleases,
+    GetDownload,
 }
 
 pub struct FIn<'a> {
@@ -157,6 +159,12 @@ pub trait BaseProvider {
     }
 
     async fn get_releases(&self, fin: &FIn) -> FOut<Vec<ReleaseData>>;
+
+    /// Get download info for an app's asset. Default returns empty (not supported).
+    /// Only OutsideProvider (Kotlin hubs) needs to implement this.
+    async fn get_download(&self, _fin: &FIn, _asset_index: &[i32]) -> FOut<Vec<DownloadItemData>> {
+        FOut::new_empty()
+    }
 }
 
 pub trait BaseProviderExt: BaseProvider {
@@ -228,6 +236,7 @@ mod tests {
                 FunctionType::CheckAppAvailable => "check_app_available",
                 FunctionType::GetLatestRelease => "get_latest_release",
                 FunctionType::GetReleases => "get_releases",
+                FunctionType::GetDownload => "get_download",
             };
             let id_map = data_map.app_data;
             vec![format!(

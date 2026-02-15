@@ -15,6 +15,7 @@ use self::github::GitHubProvider;
 use self::gitlab::GitLabProvider;
 use self::lsposed_repo::LsposedRepoProvider;
 use super::data::release::ReleaseData;
+use crate::rpc::data::DownloadItemData;
 
 type ProviderMap = HashMap<&'static str, Arc<dyn BaseProvider + Send + Sync>>;
 
@@ -80,6 +81,18 @@ pub async fn get_latest_release<'a>(uuid: &str, fin: &FIn<'a>) -> Option<FOut<Re
 pub async fn get_releases<'a>(uuid: &str, fin: &FIn<'a>) -> Option<FOut<Vec<ReleaseData>>> {
     if let Some(provider) = get_provider(uuid) {
         Some(provider.get_releases(fin).await)
+    } else {
+        None
+    }
+}
+
+pub async fn get_download<'a>(
+    uuid: &str,
+    fin: &FIn<'a>,
+    asset_index: &[i32],
+) -> Option<FOut<Vec<DownloadItemData>>> {
+    if let Some(provider) = get_provider(uuid) {
+        Some(provider.get_download(fin, asset_index).await)
     } else {
         None
     }

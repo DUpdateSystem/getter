@@ -8,6 +8,7 @@ use super::provider::outside_rpc::OutsideProvider;
 use super::provider::{self, add_provider};
 use crate::cache::get_cache_manager;
 use crate::cache::manager::GroupType;
+use crate::rpc::data::DownloadItemData;
 use crate::utils::json::{bytes_to_json, json_to_bytes};
 use std::collections::HashMap;
 
@@ -139,6 +140,21 @@ pub async fn get_releases<'a>(
     )
     .await
     .unwrap_or(None)
+}
+
+pub async fn get_download<'a>(
+    uuid: &str,
+    app_data: &AppDataMap<'a>,
+    hub_data: &HubDataMap<'a>,
+    asset_index: &[i32],
+) -> Option<Vec<DownloadItemData>> {
+    let data_map = DataMap { app_data, hub_data };
+    let fin = FIn::new(data_map, None);
+    if let Some(fout) = provider::get_download(uuid, &fin, asset_index).await {
+        fout.result.ok()
+    } else {
+        None
+    }
 }
 
 pub fn add_outside_provider(uuid: &str, url: &str) {

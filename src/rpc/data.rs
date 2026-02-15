@@ -2,7 +2,7 @@ use crate::downloader::{DownloadState, TaskInfo};
 use jsonrpsee::core::traits::ToRpcParams;
 use serde::{Deserialize, Serialize};
 use serde_json::value::to_raw_value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RpcInitRequest<'a> {
@@ -39,6 +39,49 @@ impl ToRpcParams for RpcCloudConfigRequest<'_> {
     fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
         to_raw_value(&self).map(Some)
     }
+}
+
+// ============================================================================
+// Provider Registration RPC Data Structures
+// ============================================================================
+
+/// Request to register an external provider
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcRegisterProviderRequest<'a> {
+    pub hub_uuid: &'a str,
+    pub url: &'a str,
+}
+
+impl ToRpcParams for RpcRegisterProviderRequest<'_> {
+    fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
+        to_raw_value(&self).map(Some)
+    }
+}
+
+/// Request to get download info for an app
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcDownloadInfoRequest<'a> {
+    pub hub_uuid: &'a str,
+    pub app_data: BTreeMap<&'a str, &'a str>,
+    pub hub_data: BTreeMap<&'a str, &'a str>,
+    pub asset_index: Vec<i32>,
+}
+
+impl ToRpcParams for RpcDownloadInfoRequest<'_> {
+    fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
+        to_raw_value(&self).map(Some)
+    }
+}
+
+/// Download item data returned by get_download
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadItemData {
+    pub name: Option<String>,
+    pub url: String,
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub cookies: Option<HashMap<String, String>>,
 }
 
 // ============================================================================

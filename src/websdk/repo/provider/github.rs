@@ -59,6 +59,7 @@ impl BaseProvider for GitHubProvider {
                 "{}/repos/{}/{}/releases",
                 GITHUB_API_URL, id_map["owner"], id_map["repo"]
             )],
+            FunctionType::GetDownload => vec![],
         }
     }
 

@@ -1,6 +1,7 @@
 use super::super::data::release::*;
 use super::base_provider::*;
 use crate::rpc::client::*;
+use crate::rpc::data::DownloadItemData;
 use async_trait::async_trait;
 
 pub struct OutsideProvider {
@@ -74,6 +75,28 @@ impl BaseProvider for OutsideProvider {
                         &self.uuid,
                         fin.data_map.app_data.to_owned(),
                         fin.data_map.hub_data.to_owned(),
+                    )
+                    .await
+            }) {
+                Ok(result) => match result.await {
+                    Ok(result) => Ok(result),
+                    Err(e) => Err(Box::new(e)),
+                },
+                Err(e) => Err(Box::new(e)),
+            },
+            cached_map: None,
+        }
+    }
+
+    async fn get_download(&self, fin: &FIn, asset_index: &[i32]) -> FOut<Vec<DownloadItemData>> {
+        FOut {
+            result: match Client::new(&self.url).map(|client| async move {
+                client
+                    .get_download(
+                        &self.uuid,
+                        fin.data_map.app_data.to_owned(),
+                        fin.data_map.hub_data.to_owned(),
+                        asset_index,
                     )
                     .await
             }) {
