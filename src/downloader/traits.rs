@@ -17,6 +17,8 @@ pub struct RequestOptions {
     pub headers: Option<HashMap<String, String>>,
     /// HTTP cookies to include in the request
     pub cookies: Option<HashMap<String, String>>,
+    /// Extra metadata for dispatch (e.g., hub_uuid for routing to external downloaders)
+    pub metadata: Option<HashMap<String, String>>,
 }
 
 /// Downloader capability information

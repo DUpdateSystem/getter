@@ -88,13 +88,14 @@ impl DownloadTaskManager {
         Ok(task_id)
     }
 
-    /// Submit a new download task with optional headers and cookies
+    /// Submit a new download task with optional headers, cookies, and hub_uuid
     ///
     /// # Arguments
     /// * `url` - The URL to download from
     /// * `dest_path` - The destination file path
     /// * `headers` - Optional HTTP headers
     /// * `cookies` - Optional HTTP cookies
+    /// * `hub_uuid` - Optional hub UUID for routing to external downloaders
     ///
     /// # Returns
     /// * `Ok(task_id)` - The unique task ID
@@ -105,9 +106,10 @@ impl DownloadTaskManager {
         dest_path: impl Into<String>,
         headers: Option<std::collections::HashMap<String, String>>,
         cookies: Option<std::collections::HashMap<String, String>>,
+        hub_uuid: Option<String>,
     ) -> Result<String> {
         let task_id = Uuid::new_v4().to_string();
-        let task = TaskInfo::with_options(task_id.clone(), url, dest_path, headers, cookies);
+        let task = TaskInfo::with_options(task_id.clone(), url, dest_path, headers, cookies, hub_uuid);
 
         {
             let mut tasks = self.tasks.write();
@@ -273,7 +275,7 @@ impl DownloadTaskManager {
         }
 
         // Get task details and verify state
-        let (url, dest_path, headers, cookies) = {
+        let (url, dest_path, headers, cookies, hub_uuid) = {
             let tasks = self.tasks.read();
             let task = tasks
                 .get(task_id)
@@ -291,6 +293,7 @@ impl DownloadTaskManager {
                 task.dest_path.clone(),
                 task.headers.clone(),
                 task.cookies.clone(),
+                task.hub_uuid.clone(),
             )
         };
 
@@ -308,9 +311,22 @@ impl DownloadTaskManager {
         let manager = self.clone_for_task();
         let task_id_clone = task_id.to_string();
         tokio::spawn(async move {
-            // Create request options if headers or cookies exist
-            let options = if headers.is_some() || cookies.is_some() {
-                Some(super::traits::RequestOptions { headers, cookies })
+            // Create request options with headers, cookies, and hub_uuid metadata
+            let mut metadata = std::collections::HashMap::new();
+            if let Some(uuid) = &hub_uuid {
+                metadata.insert("hub_uuid".to_string(), uuid.clone());
+            }
+
+            let options = if headers.is_some() || cookies.is_some() || !metadata.is_empty() {
+                Some(super::traits::RequestOptions {
+                    headers,
+                    cookies,
+                    metadata: if metadata.is_empty() {
+                        None
+                    } else {
+                        Some(metadata)
+                    },
+                })
             } else {
                 None
             };
@@ -475,7 +491,7 @@ impl DownloadTaskManager {
         self.notifier.notify_waiters();
 
         // Get task details
-        let (url, dest_path, headers, cookies) = {
+        let (url, dest_path, headers, cookies, hub_uuid) = {
             let tasks = self.tasks.read();
             if let Some(task) = tasks.get(task_id) {
                 (
@@ -483,15 +499,29 @@ impl DownloadTaskManager {
                     task.dest_path.clone(),
                     task.headers.clone(),
                     task.cookies.clone(),
+                    task.hub_uuid.clone(),
                 )
             } else {
                 return;
             }
         };
 
-        // Create request options if headers or cookies exist
-        let options = if headers.is_some() || cookies.is_some() {
-            Some(super::traits::RequestOptions { headers, cookies })
+        // Create request options with headers, cookies, and hub_uuid metadata
+        let mut metadata = std::collections::HashMap::new();
+        if let Some(uuid) = &hub_uuid {
+            metadata.insert("hub_uuid".to_string(), uuid.clone());
+        }
+
+        let options = if headers.is_some() || cookies.is_some() || !metadata.is_empty() {
+            Some(super::traits::RequestOptions {
+                headers,
+                cookies,
+                metadata: if metadata.is_empty() {
+                    None
+                } else {
+                    Some(metadata)
+                },
+            })
         } else {
             None
         };
@@ -668,7 +698,7 @@ mod tests {
 
         // Submit task with headers and cookies
         let task_id = manager
-            .submit_task_with_options(&url, dest.to_str().unwrap(), Some(headers), Some(cookies))
+            .submit_task_with_options(&url, dest.to_str().unwrap(), Some(headers), Some(cookies), None)
             .unwrap();
 
         // Wait for download to complete

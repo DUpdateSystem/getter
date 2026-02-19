@@ -193,9 +193,13 @@ pub async fn run_server(
     // Downloader RPC Methods
     // ========================================================================
 
-    // Create download task manager
+    // Create download task manager with HubDispatchDownloader
     let download_config = DownloadConfig::from_env();
-    let task_manager = Arc::new(DownloadTaskManager::from_config(&download_config));
+    let http_downloader = crate::downloader::create_downloader(&download_config);
+    let dispatcher = crate::downloader::HubDispatchDownloader::new(http_downloader);
+    
+    // Clone dispatcher for task manager (HubDispatchDownloader is cheap to clone via Arc internally)
+    let task_manager = Arc::new(DownloadTaskManager::new(Box::new(dispatcher.clone())));
 
     // download_submit: Submit a single download task
     let manager_clone = task_manager.clone();
@@ -208,6 +212,7 @@ pub async fn run_server(
                 request.dest_path,
                 request.headers,
                 request.cookies,
+                request.hub_uuid,
             ) {
                 Ok(task_id) => Ok(RpcTaskIdResponse { task_id }),
                 Err(e) => Err(ErrorObjectOwned::owned(
@@ -384,6 +389,37 @@ pub async fn run_server(
                 Ok::<RpcTasksResponse, ErrorObjectOwned>(RpcTasksResponse {
                     tasks: manager.get_tasks_by_state(request.state),
                 })
+            }
+        },
+    )?;
+
+    // register_downloader: Register an external downloader for a hub_uuid
+    let dispatcher_clone = dispatcher.clone();
+    module.register_async_method(
+        "register_downloader",
+        move |params, _context, _extensions| {
+            let dispatcher = dispatcher_clone.clone();
+            async move {
+                let request = params.parse::<RpcRegisterDownloaderRequest>()?;
+                let external_downloader = Box::new(crate::downloader::ExternalRpcDownloader::new(
+                    request.rpc_url.to_string(),
+                ));
+                dispatcher.register(request.hub_uuid, external_downloader);
+                Ok::<bool, ErrorObjectOwned>(true)
+            }
+        },
+    )?;
+
+    // unregister_downloader: Unregister an external downloader for a hub_uuid
+    let dispatcher_clone = dispatcher.clone();
+    module.register_async_method(
+        "unregister_downloader",
+        move |params, _context, _extensions| {
+            let dispatcher = dispatcher_clone.clone();
+            async move {
+                let request = params.parse::<RpcUnregisterDownloaderRequest>()?;
+                dispatcher.unregister(request.hub_uuid);
+                Ok::<bool, ErrorObjectOwned>(true)
             }
         },
     )?;

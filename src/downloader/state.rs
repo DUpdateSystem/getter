@@ -322,6 +322,13 @@ pub struct TaskInfo {
     /// HTTP cookies to include in requests
     #[serde(default)]
     pub cookies: Option<std::collections::HashMap<String, String>>,
+
+    /// Hub UUID for dispatching to registered external downloaders.
+    /// When set, the download task manager routes this task to the
+    /// external downloader registered for this hub_uuid.
+    /// When None, the default built-in downloader is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub_uuid: Option<String>,
 }
 
 impl TaskInfo {
@@ -342,6 +349,7 @@ impl TaskInfo {
             paused_at: None,
             headers: None,
             cookies: None,
+            hub_uuid: None,
         }
     }
 
@@ -366,16 +374,18 @@ impl TaskInfo {
             paused_at: None,
             headers: None,
             cookies: None,
+            hub_uuid: None,
         }
     }
 
-    /// Create with headers and cookies
+    /// Create with headers, cookies, and optional hub_uuid
     pub fn with_options(
         task_id: impl Into<String>,
         url: impl Into<String>,
         dest_path: impl Into<String>,
         headers: Option<std::collections::HashMap<String, String>>,
         cookies: Option<std::collections::HashMap<String, String>>,
+        hub_uuid: Option<String>,
     ) -> Self {
         Self {
             task_id: task_id.into(),
@@ -392,6 +402,7 @@ impl TaskInfo {
             paused_at: None,
             headers,
             cookies,
+            hub_uuid,
         }
     }
 

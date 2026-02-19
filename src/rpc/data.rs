@@ -97,6 +97,10 @@ pub struct RpcDownloadRequest<'a> {
     pub headers: Option<std::collections::HashMap<String, String>>,
     #[serde(default)]
     pub cookies: Option<std::collections::HashMap<String, String>>,
+    /// Hub UUID for routing to registered external downloaders.
+    /// When set, routes to external downloader; when None, uses default HTTP downloader.
+    #[serde(default)]
+    pub hub_uuid: Option<String>,
 }
 
 impl ToRpcParams for RpcDownloadRequest<'_> {
@@ -215,4 +219,33 @@ pub type RpcTaskInfoResponse = TaskInfo;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RpcTasksResponse {
     pub tasks: Vec<TaskInfo>,
+}
+
+// ============================================================================
+// Downloader Registration RPC Data Structures
+// ============================================================================
+
+/// Request to register an external downloader for a hub_uuid
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcRegisterDownloaderRequest<'a> {
+    pub hub_uuid: &'a str,
+    pub rpc_url: &'a str,
+}
+
+impl ToRpcParams for RpcRegisterDownloaderRequest<'_> {
+    fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
+        to_raw_value(&self).map(Some)
+    }
+}
+
+/// Request to unregister an external downloader for a hub_uuid
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcUnregisterDownloaderRequest<'a> {
+    pub hub_uuid: &'a str,
+}
+
+impl ToRpcParams for RpcUnregisterDownloaderRequest<'_> {
+    fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
+        to_raw_value(&self).map(Some)
+    }
 }

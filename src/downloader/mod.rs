@@ -9,6 +9,8 @@
 
 mod config;
 mod error;
+mod external_rpc_impl;
+mod hub_dispatch;
 mod state;
 mod task_manager;
 mod traits;
@@ -16,6 +18,8 @@ mod trauma_impl;
 
 pub use config::{DownloadConfig, DownloaderBackend};
 pub use error::{DownloadError, Result};
+pub use external_rpc_impl::ExternalRpcDownloader;
+pub use hub_dispatch::HubDispatchDownloader;
 pub use state::{DownloadProgress, DownloadState, SpeedCalculator, TaskInfo};
 pub use task_manager::DownloadTaskManager;
 pub use traits::Downloader;
