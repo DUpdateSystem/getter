@@ -1,7 +1,12 @@
+pub mod android_api;
 pub mod app_manager;
 pub mod app_status;
+pub mod auto_template;
+pub mod cloud_config_getter;
 pub mod data_getter;
 pub mod hub_manager;
+pub mod notification;
 pub mod updater;
+pub mod url_replace;
 pub mod version;
 pub mod version_map;

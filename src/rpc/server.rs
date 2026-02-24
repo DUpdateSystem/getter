@@ -1,8 +1,11 @@
 use super::data::*;
 use crate::api as api_root;
 use crate::downloader::{DownloadConfig, DownloadTaskManager};
+use crate::manager::android_api;
 use crate::manager::app_manager::AppManager;
+use crate::manager::cloud_config_getter::CloudConfigGetter;
 use crate::manager::hub_manager::HubManager;
+use crate::manager::notification;
 use crate::websdk::cloud_rules::cloud_rules_manager::CloudRules;
 use crate::websdk::repo::api;
 use jsonrpsee::server::{RpcModule, Server, ServerConfig, ServerHandle};
@@ -18,6 +21,7 @@ use tokio::sync::RwLock;
 /// Global manager state initialised on first `init` RPC call.
 static APP_MANAGER: OnceCell<Arc<RwLock<AppManager>>> = OnceCell::new();
 static HUB_MANAGER: OnceCell<Arc<RwLock<HubManager>>> = OnceCell::new();
+static CLOUD_CONFIG_GETTER: OnceCell<Arc<RwLock<CloudConfigGetter>>> = OnceCell::new();
 
 fn get_app_manager() -> Option<Arc<RwLock<AppManager>>> {
     APP_MANAGER.get().cloned()
@@ -25,6 +29,10 @@ fn get_app_manager() -> Option<Arc<RwLock<AppManager>>> {
 
 fn get_hub_manager() -> Option<Arc<RwLock<HubManager>>> {
     HUB_MANAGER.get().cloned()
+}
+
+fn get_cloud_config_getter() -> Option<Arc<RwLock<CloudConfigGetter>>> {
+    CLOUD_CONFIG_GETTER.get().cloned()
 }
 
 fn manager_not_init_err() -> ErrorObjectOwned {
@@ -638,6 +646,181 @@ pub async fn run_server(
             .delete_extra_hub(&request.id)
             .map_err(|e| map_manager_err(e))?;
         Ok::<bool, ErrorObjectOwned>(deleted)
+    })?;
+
+    // ========================================================================
+    // Android API / Notification Registration RPC Methods
+    // ========================================================================
+
+    // register_android_api: Register Kotlin's Android API callback URL
+    module.register_async_method("register_android_api", |params, _, _| async move {
+        let request = params.parse::<RpcRegisterAndroidApiRequest>()?;
+        android_api::set_android_api(request.url);
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // register_notification: Register Kotlin's notification callback URL
+    module.register_async_method("register_notification", |params, _, _| async move {
+        let request = params.parse::<RpcRegisterNotificationRequest>()?;
+        notification::set_notification(request.url);
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // ========================================================================
+    // ExtraApp RPC Methods
+    // ========================================================================
+
+    // manager_get_extra_app_by_app_id: Get ExtraApp record by app_id map
+    module.register_async_method(
+        "manager_get_extra_app_by_app_id",
+        |params, _, _| async move {
+            let request = params.parse::<RpcGetExtraAppRequest>()?;
+            let record = crate::database::get_db()
+                .get_extra_app_by_app_id(&request.app_id)
+                .map_err(|e| map_manager_err(e))?;
+            Ok::<Option<crate::database::models::extra_app::ExtraAppRecord>, ErrorObjectOwned>(
+                record,
+            )
+        },
+    )?;
+
+    // manager_save_extra_app: Insert or update an ExtraApp record
+    module.register_async_method("manager_save_extra_app", |params, _, _| async move {
+        let request = params.parse::<RpcSaveExtraAppRequest>()?;
+        crate::database::get_db()
+            .upsert_extra_app(&request.record)
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // manager_delete_extra_app: Delete an ExtraApp by database id
+    module.register_async_method("manager_delete_extra_app", |params, _, _| async move {
+        let request = params.parse::<RpcDeleteExtraAppRequest>()?;
+        let deleted = crate::database::get_db()
+            .delete_extra_app(&request.id)
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(deleted)
+    })?;
+
+    // ========================================================================
+    // Cloud Config Manager RPC Methods
+    // ========================================================================
+
+    // cloud_config_init: Initialise or re-initialise the CloudConfigGetter with an API URL
+    module.register_async_method("cloud_config_init", |params, _, _| async move {
+        let request = params.parse::<RpcCloudConfigInitRequest>()?;
+        let getter = CloudConfigGetter::new(request.api_url);
+        let _ = CLOUD_CONFIG_GETTER.set(Arc::new(RwLock::new(getter)));
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // cloud_config_renew: Download and cache the latest cloud config
+    module.register_async_method("cloud_config_renew", |_, _, _| async move {
+        let getter = get_cloud_config_getter().ok_or_else(|| {
+            ErrorObjectOwned::owned(
+                ErrorCode::InternalError.code(),
+                "CloudConfigGetter not initialised. Call cloud_config_init first.",
+                None::<String>,
+            )
+        })?;
+        getter
+            .read()
+            .await
+            .renew()
+            .await
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // cloud_config_get_app_list: Return all available app configs from cache
+    module.register_async_method("cloud_config_get_app_list", |_, _, _| async move {
+        let getter = get_cloud_config_getter().ok_or_else(|| {
+            ErrorObjectOwned::owned(
+                ErrorCode::InternalError.code(),
+                "CloudConfigGetter not initialised.",
+                None::<String>,
+            )
+        })?;
+        let list = getter.read().await.app_config_list().await;
+        Ok::<Vec<crate::websdk::cloud_rules::data::app_item::AppItem>, ErrorObjectOwned>(list)
+    })?;
+
+    // cloud_config_get_hub_list: Return all available hub configs from cache
+    module.register_async_method("cloud_config_get_hub_list", |_, _, _| async move {
+        let getter = get_cloud_config_getter().ok_or_else(|| {
+            ErrorObjectOwned::owned(
+                ErrorCode::InternalError.code(),
+                "CloudConfigGetter not initialised.",
+                None::<String>,
+            )
+        })?;
+        let list = getter.read().await.hub_config_list().await;
+        Ok::<Vec<crate::websdk::cloud_rules::data::hub_item::HubItem>, ErrorObjectOwned>(list)
+    })?;
+
+    // cloud_config_apply_app: Apply a cloud app config by UUID
+    module.register_async_method("cloud_config_apply_app", |params, _, _| async move {
+        let request = params.parse::<RpcCloudConfigApplyRequest>()?;
+        let getter = get_cloud_config_getter().ok_or_else(|| {
+            ErrorObjectOwned::owned(
+                ErrorCode::InternalError.code(),
+                "CloudConfigGetter not initialised.",
+                None::<String>,
+            )
+        })?;
+        let app_mgr = get_app_manager().ok_or_else(manager_not_init_err)?;
+        let hub_mgr = get_hub_manager().ok_or_else(manager_not_init_err)?;
+        getter
+            .read()
+            .await
+            .apply_app_config(
+                &request.uuid,
+                &mut *app_mgr.write().await,
+                &mut *hub_mgr.write().await,
+            )
+            .await
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // cloud_config_apply_hub: Apply a cloud hub config by UUID
+    module.register_async_method("cloud_config_apply_hub", |params, _, _| async move {
+        let request = params.parse::<RpcCloudConfigApplyRequest>()?;
+        let getter = get_cloud_config_getter().ok_or_else(|| {
+            ErrorObjectOwned::owned(
+                ErrorCode::InternalError.code(),
+                "CloudConfigGetter not initialised.",
+                None::<String>,
+            )
+        })?;
+        let hub_mgr = get_hub_manager().ok_or_else(manager_not_init_err)?;
+        getter
+            .read()
+            .await
+            .apply_hub_config(&request.uuid, &mut *hub_mgr.write().await)
+            .await
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // cloud_config_renew_all: Bulk-update all installed apps/hubs from cloud
+    module.register_async_method("cloud_config_renew_all", |_, _, _| async move {
+        let getter = get_cloud_config_getter().ok_or_else(|| {
+            ErrorObjectOwned::owned(
+                ErrorCode::InternalError.code(),
+                "CloudConfigGetter not initialised.",
+                None::<String>,
+            )
+        })?;
+        let app_mgr = get_app_manager().ok_or_else(manager_not_init_err)?;
+        let hub_mgr = get_hub_manager().ok_or_else(manager_not_init_err)?;
+        getter
+            .read()
+            .await
+            .renew_all_from_cloud(&mut *app_mgr.write().await, &mut *hub_mgr.write().await)
+            .await
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(true)
     })?;
 
     let addr = server.local_addr()?;

@@ -106,6 +106,15 @@ impl Database {
         self.extra_apps.delete::<ExtraAppRecord>(id)
     }
 
+    /// Find an ExtraApp record by matching its `app_id` map.
+    pub fn get_extra_app_by_app_id(
+        &self,
+        app_id: &std::collections::HashMap<String, Option<String>>,
+    ) -> Result<Option<ExtraAppRecord>> {
+        let all = self.extra_apps.load_all::<ExtraAppRecord>()?;
+        Ok(all.into_iter().find(|r| &r.app_id == app_id))
+    }
+
     // --- ExtraHub CRUD ---
 
     pub fn load_extra_hubs(&self) -> Result<Vec<ExtraHubRecord>> {

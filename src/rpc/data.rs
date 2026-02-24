@@ -340,3 +340,59 @@ pub struct RpcSaveExtraHubRequest {
 pub struct RpcGetExtraHubRequest {
     pub id: String,
 }
+
+// ============================================================================
+// Android API / Notification Registration RPC Data Structures
+// ============================================================================
+
+/// Request to register the Kotlin Android API callback URL.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcRegisterAndroidApiRequest {
+    pub url: String,
+}
+
+/// Request to register the Kotlin notification callback URL.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcRegisterNotificationRequest {
+    pub url: String,
+}
+
+// ============================================================================
+// ExtraApp RPC Data Structures
+// ============================================================================
+
+use crate::database::models::extra_app::ExtraAppRecord;
+
+/// Request to get an ExtraApp record by app_id map.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcGetExtraAppRequest {
+    pub app_id: HashMap<String, Option<String>>,
+}
+
+/// Request to save/update an ExtraApp record.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcSaveExtraAppRequest {
+    pub record: ExtraAppRecord,
+}
+
+/// Request to delete an ExtraApp by database id.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcDeleteExtraAppRequest {
+    pub id: String,
+}
+
+// ============================================================================
+// Cloud Config Manager RPC Data Structures
+// ============================================================================
+
+/// Request to apply a specific cloud hub/app config by UUID.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcCloudConfigApplyRequest {
+    pub uuid: String,
+}
+
+/// Request to initialise the CloudConfigGetter with an API URL.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcCloudConfigInitRequest {
+    pub api_url: String,
+}

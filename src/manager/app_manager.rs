@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, Semaphore};
 
+use super::android_api;
 use super::app_status::AppStatus;
 use super::data_getter::DataGetter;
+use super::notification::{notify_if_registered, ManagerEvent};
 use super::updater::get_release_status;
 use super::version_map::VersionMap;
 use crate::database::get_db;
@@ -90,11 +92,21 @@ impl AppManager {
     }
 
     /// Return the current AppStatus for an app.
+    ///
+    /// Queries Kotlin for the locally-installed version via `AndroidApi.get_local_version()`
+    /// if a callback URL has been registered; otherwise local_version is `None`.
     pub async fn get_app_status(&self, record_id: &str) -> AppStatus {
         let app = match self.apps.read().await.get(record_id).cloned() {
             Some(a) => a,
             None => return AppStatus::AppInactive,
         };
+
+        // Query local version from Android via registered callback
+        let local_version: Option<String> = match android_api::get_android_api() {
+            Some(api) => api.get_local_version(&app.app_id).await,
+            None => None,
+        };
+
         let mut maps = self.version_maps.write().await;
         let vm = maps.entry(record_id.to_string()).or_insert_with(|| {
             VersionMap::new(
@@ -102,12 +114,18 @@ impl AppManager {
                 app.include_version_number_field_regex.clone(),
             )
         });
-        get_release_status(vm, None, app.ignore_version_number.as_deref(), true)
+        get_release_status(
+            vm,
+            local_version.as_deref(),
+            app.ignore_version_number.as_deref(),
+            true,
+        )
     }
 
     /// Refresh version data for all saved apps.
     ///
     /// Uses a semaphore (max 10 concurrent hub requests) matching Kotlin's logic.
+    /// Fires `RenewProgress` notifications to Kotlin UI as each app completes.
     pub async fn renew_all(
         &self,
         hubs: &[crate::database::models::hub::HubRecord],
@@ -169,6 +187,12 @@ impl AppManager {
                             )
                         });
                         vm.add_single_release(&hub.uuid, release.clone());
+                        // Notify progress after batch result
+                        let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                        if let Some(ref f) = cb {
+                            f(done, total);
+                        }
+                        notify_if_registered(ManagerEvent::RenewProgress { done, total }).await;
                     } else {
                         need_full.push(app.clone());
                     }
@@ -199,6 +223,7 @@ impl AppManager {
                     if let Some(ref f) = cb {
                         f(done, total);
                     }
+                    notify_if_registered(ManagerEvent::RenewProgress { done, total }).await;
                 }
             });
             handles.push(handle);
