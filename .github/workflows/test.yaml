@@ -27,8 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Install cmake
-        run: cmake --version || (sudo apt-get update && sudo apt-get install -y cmake)
+      - name: Install build dependencies
+        run: |
+          cmake --version && clang --version || (sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev)
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -44,8 +45,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Install cmake
-        run: cmake --version || (sudo apt-get update && sudo apt-get install -y cmake)
+      - name: Install build dependencies
+        run: |
+          cmake --version && clang --version || (sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev)
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable

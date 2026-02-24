@@ -507,6 +507,22 @@ pub async fn run_server(
         Ok::<bool, ErrorObjectOwned>(true)
     })?;
 
+    // manager_check_invalid_applications: Return record IDs of apps whose configured
+    // hub UUIDs are all unknown (no valid hub found). Mirrors Kotlin's
+    // AppManager.check_invalid_applications logic.
+    module.register_async_method("manager_check_invalid_applications", |_, _, _| async move {
+        let app_mgr = get_app_manager().ok_or_else(manager_not_init_err)?;
+        let hub_mgr = get_hub_manager().ok_or_else(manager_not_init_err)?;
+        let hubs = hub_mgr.read().await.get_hub_list().await;
+        let known_uuids: Vec<String> = hubs.into_iter().map(|h| h.uuid).collect();
+        let invalid_ids = app_mgr
+            .read()
+            .await
+            .check_invalid_applications(&known_uuids)
+            .await;
+        Ok::<Vec<String>, ErrorObjectOwned>(invalid_ids)
+    })?;
+
     // ========================================================================
     // Hub Manager RPC Methods
     // ========================================================================
