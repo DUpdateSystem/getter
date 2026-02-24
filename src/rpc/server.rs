@@ -104,8 +104,8 @@ pub async fn run_server(
 
         // Initialize managers (idempotent: only on first call)
         if APP_MANAGER.get().is_none() {
-            let hub_mgr = HubManager::load().map_err(|e| map_manager_err(e))?;
-            let app_mgr = AppManager::load().map_err(|e| map_manager_err(e))?;
+            let hub_mgr = HubManager::load().map_err(map_manager_err)?;
+            let app_mgr = AppManager::load().map_err(map_manager_err)?;
             let _ = HUB_MANAGER.set(Arc::new(RwLock::new(hub_mgr)));
             let _ = APP_MANAGER.set(Arc::new(RwLock::new(app_mgr)));
         }
@@ -465,7 +465,7 @@ pub async fn run_server(
             .await
             .save_app(request.record)
             .await
-            .map_err(|e| map_manager_err(e))?;
+            .map_err(map_manager_err)?;
         Ok::<crate::database::models::app::AppRecord, ErrorObjectOwned>(saved)
     })?;
 
@@ -478,7 +478,7 @@ pub async fn run_server(
             .await
             .remove_app(&request.record_id)
             .await
-            .map_err(|e| map_manager_err(e))?;
+            .map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(deleted)
     })?;
 
@@ -526,7 +526,7 @@ pub async fn run_server(
             .await
             .upsert_hub(request.record)
             .await
-            .map_err(|e| map_manager_err(e))?;
+            .map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(true)
     })?;
 
@@ -539,7 +539,7 @@ pub async fn run_server(
             .await
             .remove_hub(&request.hub_uuid)
             .await
-            .map_err(|e| map_manager_err(e))?;
+            .map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(deleted)
     })?;
 
@@ -563,10 +563,7 @@ pub async fn run_server(
             hub.user_ignore_app_id_list
                 .retain(|id| id != &request.app_id);
         }
-        guard
-            .upsert_hub(hub)
-            .await
-            .map_err(|e| map_manager_err(e))?;
+        guard.upsert_hub(hub).await.map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(true)
     })?;
 
@@ -583,10 +580,7 @@ pub async fn run_server(
             )
         })?;
         hub.applications_mode = if request.enable { 1 } else { 0 };
-        guard
-            .upsert_hub(hub)
-            .await
-            .map_err(|e| map_manager_err(e))?;
+        guard.upsert_hub(hub).await.map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(true)
     })?;
 
@@ -598,7 +592,7 @@ pub async fn run_server(
     module.register_async_method("manager_get_extra_hubs", |_, _, _| async move {
         let extra_hubs = crate::database::get_db()
             .load_extra_hubs()
-            .map_err(|e| map_manager_err(e))?;
+            .map_err(map_manager_err)?;
         Ok::<Vec<crate::database::models::extra_hub::ExtraHubRecord>, ErrorObjectOwned>(extra_hubs)
     })?;
 
@@ -607,7 +601,7 @@ pub async fn run_server(
         let request = params.parse::<RpcSaveExtraHubRequest>()?;
         crate::database::get_db()
             .upsert_extra_hub(&request.record)
-            .map_err(|e| map_manager_err(e))?;
+            .map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(true)
     })?;
 
@@ -616,7 +610,7 @@ pub async fn run_server(
         let request = params.parse::<RpcGetExtraHubRequest>()?;
         let deleted = crate::database::get_db()
             .delete_extra_hub(&request.id)
-            .map_err(|e| map_manager_err(e))?;
+            .map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(deleted)
     })?;
 
@@ -649,7 +643,7 @@ pub async fn run_server(
             let request = params.parse::<RpcGetExtraAppRequest>()?;
             let record = crate::database::get_db()
                 .get_extra_app_by_app_id(&request.app_id)
-                .map_err(|e| map_manager_err(e))?;
+                .map_err(map_manager_err)?;
             Ok::<Option<crate::database::models::extra_app::ExtraAppRecord>, ErrorObjectOwned>(
                 record,
             )
@@ -661,7 +655,7 @@ pub async fn run_server(
         let request = params.parse::<RpcSaveExtraAppRequest>()?;
         crate::database::get_db()
             .upsert_extra_app(&request.record)
-            .map_err(|e| map_manager_err(e))?;
+            .map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(true)
     })?;
 
@@ -670,7 +664,7 @@ pub async fn run_server(
         let request = params.parse::<RpcDeleteExtraAppRequest>()?;
         let deleted = crate::database::get_db()
             .delete_extra_app(&request.id)
-            .map_err(|e| map_manager_err(e))?;
+            .map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(deleted)
     })?;
 
@@ -695,12 +689,7 @@ pub async fn run_server(
                 None::<String>,
             )
         })?;
-        getter
-            .read()
-            .await
-            .renew()
-            .await
-            .map_err(|e| map_manager_err(e))?;
+        getter.read().await.renew().await.map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(true)
     })?;
 
@@ -751,7 +740,7 @@ pub async fn run_server(
                 &mut *hub_mgr.write().await,
             )
             .await
-            .map_err(|e| map_manager_err(e))?;
+            .map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(true)
     })?;
 
@@ -771,7 +760,7 @@ pub async fn run_server(
             .await
             .apply_hub_config(&request.uuid, &mut *hub_mgr.write().await)
             .await
-            .map_err(|e| map_manager_err(e))?;
+            .map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(true)
     })?;
 
@@ -791,7 +780,7 @@ pub async fn run_server(
             .await
             .renew_all_from_cloud(&mut *app_mgr.write().await, &mut *hub_mgr.write().await)
             .await
-            .map_err(|e| map_manager_err(e))?;
+            .map_err(map_manager_err)?;
         Ok::<bool, ErrorObjectOwned>(true)
     })?;
 

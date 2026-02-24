@@ -47,7 +47,7 @@ impl std::hash::Hash for VersionInfo {
 
 impl PartialOrd for VersionInfo {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.compare(other)
+        Some(self.cmp(other))
     }
 }
 

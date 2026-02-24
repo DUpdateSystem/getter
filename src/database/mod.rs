@@ -137,10 +137,14 @@ impl Database {
 static DB: OnceCell<Database> = OnceCell::new();
 
 /// Initialize the global database. Must be called once before `get_db()`.
+/// Idempotent: if already initialized, returns `Ok(())`.
 pub fn init_db(data_dir: &Path) -> Result<()> {
+    if DB.get().is_some() {
+        return Ok(());
+    }
     let db = Database::open(data_dir)?;
-    DB.set(db)
-        .map_err(|_| crate::error::Error::Other("Database already initialized".to_string()))
+    let _ = DB.set(db); // Ignore error if another thread beat us to it
+    Ok(())
 }
 
 /// Get the global database instance. Panics if `init_db` was not called.
