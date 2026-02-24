@@ -116,63 +116,42 @@ pub async fn run_server(
         "check_app_available",
         |params, _context, _extensions| async move {
             let request = params.parse::<RpcAppRequest>()?;
-            if let Some(result) =
+            let result =
                 api::check_app_available(request.hub_uuid, &request.app_data, &request.hub_data)
                     .await
-            {
-                Ok(result)
-            } else {
-                Err(ErrorObjectOwned::owned(
-                    ErrorCode::ParseError.code(),
-                    "Parse params error",
-                    Some(params.as_str().unwrap_or("None").to_string()),
-                ))
-            }
+                    .unwrap_or(false);
+            Ok::<bool, ErrorObjectOwned>(result)
         },
     )?;
     module.register_async_method(
         "get_latest_release",
         |params, _context, _extensions| async move {
-            if let Ok(request) = params.parse::<RpcAppRequest>() {
-                if let Some(result) =
-                    api::get_latest_release(request.hub_uuid, &request.app_data, &request.hub_data)
-                        .await
-                {
-                    Ok(result)
-                } else {
-                    Err(ErrorObjectOwned::borrowed(
-                        ErrorCode::InvalidParams.code(),
-                        "Invalid params",
-                        None,
-                    ))
-                }
+            let request = params.parse::<RpcAppRequest>()?;
+            if let Some(result) =
+                api::get_latest_release(request.hub_uuid, &request.app_data, &request.hub_data)
+                    .await
+            {
+                Ok(result)
             } else {
                 Err(ErrorObjectOwned::owned(
-                    ErrorCode::ParseError.code(),
-                    "Parse params error",
-                    Some(params.as_str().unwrap_or("None").to_string()),
+                    -32001,
+                    "No release found",
+                    None::<String>,
                 ))
             }
         },
     )?;
     module.register_async_method("get_releases", |params, _context, _extensions| async move {
-        if let Ok(request) = params.parse::<RpcAppRequest>() {
-            if let Some(result) =
-                api::get_releases(request.hub_uuid, &request.app_data, &request.hub_data).await
-            {
-                Ok(result)
-            } else {
-                Err(ErrorObjectOwned::borrowed(
-                    ErrorCode::InvalidParams.code(),
-                    "Invalid params",
-                    None,
-                ))
-            }
+        let request = params.parse::<RpcAppRequest>()?;
+        if let Some(result) =
+            api::get_releases(request.hub_uuid, &request.app_data, &request.hub_data).await
+        {
+            Ok(result)
         } else {
             Err(ErrorObjectOwned::owned(
-                ErrorCode::ParseError.code(),
-                "Parse params error",
-                Some(params.as_str().unwrap_or("None").to_string()),
+                -32001,
+                "No releases found",
+                None::<String>,
             ))
         }
     })?;
@@ -189,28 +168,21 @@ pub async fn run_server(
 
     // get_download: Get download info for an app's asset
     module.register_async_method("get_download", |params, _context, _extensions| async move {
-        if let Ok(request) = params.parse::<RpcDownloadInfoRequest>() {
-            if let Some(result) = api::get_download(
-                request.hub_uuid,
-                &request.app_data,
-                &request.hub_data,
-                &request.asset_index,
-            )
-            .await
-            {
-                Ok(result)
-            } else {
-                Err(ErrorObjectOwned::borrowed(
-                    ErrorCode::InvalidParams.code(),
-                    "Invalid params",
-                    None,
-                ))
-            }
+        let request = params.parse::<RpcDownloadInfoRequest>()?;
+        if let Some(result) = api::get_download(
+            request.hub_uuid,
+            &request.app_data,
+            &request.hub_data,
+            &request.asset_index,
+        )
+        .await
+        {
+            Ok(result)
         } else {
             Err(ErrorObjectOwned::owned(
-                ErrorCode::ParseError.code(),
-                "Parse params error",
-                Some(params.as_str().unwrap_or("None").to_string()),
+                -32001,
+                "No download info found",
+                None::<String>,
             ))
         }
     })?;
