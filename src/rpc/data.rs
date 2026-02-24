@@ -249,3 +249,94 @@ impl ToRpcParams for RpcUnregisterDownloaderRequest<'_> {
         to_raw_value(&self).map(Some)
     }
 }
+
+// ============================================================================
+// Manager RPC Data Structures
+// ============================================================================
+
+use crate::database::models::app::AppRecord;
+use crate::database::models::extra_hub::ExtraHubRecord;
+use crate::database::models::hub::HubRecord;
+use crate::manager::app_status::AppStatus;
+
+/// Response wrapping a list of apps with their current status.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AppWithStatus {
+    pub record: AppRecord,
+    pub status: AppStatus,
+}
+
+/// Request to save/update an app record.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcSaveAppRequest {
+    pub record: AppRecord,
+}
+
+/// Request to delete an app by record id.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcDeleteAppRequest {
+    pub record_id: String,
+}
+
+/// Request to get a single app by record id.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcGetAppRequest {
+    pub record_id: String,
+}
+
+/// Request to save/update a hub record.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcSaveHubRequest {
+    pub record: HubRecord,
+}
+
+/// Request to delete a hub by UUID.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcDeleteHubRequest {
+    pub hub_uuid: String,
+}
+
+/// Request to get a hub by UUID.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcGetHubRequest {
+    pub hub_uuid: String,
+}
+
+/// Request to set the applications mode for a hub.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcSetApplicationsModeRequest {
+    pub hub_uuid: String,
+    pub enable: bool,
+}
+
+/// Request to ignore/unignore an app in a hub.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcHubIgnoreAppRequest {
+    pub hub_uuid: String,
+    pub app_id: HashMap<String, Option<String>>,
+    pub ignore: bool,
+}
+
+/// Request to set virtual (installed) apps list from Android.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcSetVirtualAppsRequest {
+    pub apps: Vec<AppRecord>,
+}
+
+/// Request to get app status.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcGetAppStatusRequest {
+    pub record_id: String,
+}
+
+/// Request to save/update an ExtraHub record.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcSaveExtraHubRequest {
+    pub record: ExtraHubRecord,
+}
+
+/// Request to get an ExtraHub by id.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcGetExtraHubRequest {
+    pub id: String,
+}

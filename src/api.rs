@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::cache::init_cache_manager_with_expire;
 use crate::core::config::world::{init_world_list, world_list};
+use crate::database;
 use crate::error::Result;
 use crate::websdk::repo::api;
 
@@ -16,6 +17,8 @@ pub async fn init(data_dir: &Path, cache_dir: &Path, global_expire_time: u64) ->
     // cache
     let local_cache_path = cache_dir.join("local_cache");
     init_cache_manager_with_expire(local_cache_path.as_path(), global_expire_time).await;
+    // database
+    database::init_db(data_dir)?;
     Ok(())
 }
 

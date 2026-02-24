@@ -1,15 +1,47 @@
 use super::data::*;
 use crate::api as api_root;
 use crate::downloader::{DownloadConfig, DownloadTaskManager};
+use crate::manager::app_manager::AppManager;
+use crate::manager::hub_manager::HubManager;
 use crate::websdk::cloud_rules::cloud_rules_manager::CloudRules;
 use crate::websdk::repo::api;
 use jsonrpsee::server::{RpcModule, Server, ServerConfig, ServerHandle};
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
+use once_cell::sync::OnceCell;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
+
+/// Global manager state initialised on first `init` RPC call.
+static APP_MANAGER: OnceCell<Arc<RwLock<AppManager>>> = OnceCell::new();
+static HUB_MANAGER: OnceCell<Arc<RwLock<HubManager>>> = OnceCell::new();
+
+fn get_app_manager() -> Option<Arc<RwLock<AppManager>>> {
+    APP_MANAGER.get().cloned()
+}
+
+fn get_hub_manager() -> Option<Arc<RwLock<HubManager>>> {
+    HUB_MANAGER.get().cloned()
+}
+
+fn manager_not_init_err() -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(
+        ErrorCode::InternalError.code(),
+        "Manager not initialized. Call init first.",
+        None::<String>,
+    )
+}
+
+fn map_manager_err(e: impl std::fmt::Display) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(
+        ErrorCode::InternalError.code(),
+        e.to_string(),
+        None::<String>,
+    )
+}
 
 // Default 2GB size limit for WebSocket messages
 // Can be overridden at runtime by setting GETTER_WS_MAX_MESSAGE_SIZE environment variable
@@ -54,14 +86,23 @@ pub async fn run_server(
         let cache_dir = Path::new(request.cache_path);
         api_root::init(data_dir, cache_dir, request.global_expire_time)
             .await
-            .map(|_| true)
             .map_err(|e| {
                 ErrorObjectOwned::owned(
                     ErrorCode::InternalError.code(),
                     "Internal error",
                     Some(e.to_string()),
                 )
-            })
+            })?;
+
+        // Initialize managers (idempotent: only on first call)
+        if APP_MANAGER.get().is_none() {
+            let hub_mgr = HubManager::load().map_err(|e| map_manager_err(e))?;
+            let app_mgr = AppManager::load().map_err(|e| map_manager_err(e))?;
+            let _ = HUB_MANAGER.set(Arc::new(RwLock::new(hub_mgr)));
+            let _ = APP_MANAGER.set(Arc::new(RwLock::new(app_mgr)));
+        }
+
+        Ok::<bool, ErrorObjectOwned>(true)
     })?;
     module.register_async_method(
         "check_app_available",
@@ -423,6 +464,181 @@ pub async fn run_server(
             }
         },
     )?;
+
+    // ========================================================================
+    // App Manager RPC Methods
+    // ========================================================================
+
+    // manager_get_apps: Get all saved apps
+    module.register_async_method("manager_get_apps", |_, _, _| async move {
+        let mgr = get_app_manager().ok_or_else(manager_not_init_err)?;
+        let apps = mgr.read().await.get_saved_apps().await;
+        Ok::<Vec<crate::database::models::app::AppRecord>, ErrorObjectOwned>(apps)
+    })?;
+
+    // manager_save_app: Insert or update an app record
+    module.register_async_method("manager_save_app", |params, _, _| async move {
+        let request = params.parse::<RpcSaveAppRequest>()?;
+        let mgr = get_app_manager().ok_or_else(manager_not_init_err)?;
+        let saved = mgr
+            .write()
+            .await
+            .save_app(request.record)
+            .await
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<crate::database::models::app::AppRecord, ErrorObjectOwned>(saved)
+    })?;
+
+    // manager_delete_app: Delete an app by record id
+    module.register_async_method("manager_delete_app", |params, _, _| async move {
+        let request = params.parse::<RpcDeleteAppRequest>()?;
+        let mgr = get_app_manager().ok_or_else(manager_not_init_err)?;
+        let deleted = mgr
+            .write()
+            .await
+            .remove_app(&request.record_id)
+            .await
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(deleted)
+    })?;
+
+    // manager_get_app_status: Get AppStatus for a specific app
+    module.register_async_method("manager_get_app_status", |params, _, _| async move {
+        let request = params.parse::<RpcGetAppStatusRequest>()?;
+        let mgr = get_app_manager().ok_or_else(manager_not_init_err)?;
+        let status = mgr.write().await.get_app_status(&request.record_id).await;
+        Ok::<crate::manager::app_status::AppStatus, ErrorObjectOwned>(status)
+    })?;
+
+    // manager_set_virtual_apps: Set installed (virtual) apps from Android
+    module.register_async_method("manager_set_virtual_apps", |params, _, _| async move {
+        let request = params.parse::<RpcSetVirtualAppsRequest>()?;
+        let mgr = get_app_manager().ok_or_else(manager_not_init_err)?;
+        mgr.read().await.set_virtual_apps(request.apps).await;
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // manager_renew_all: Trigger a full update check for all apps
+    module.register_async_method("manager_renew_all", |_, _, _| async move {
+        let app_mgr = get_app_manager().ok_or_else(manager_not_init_err)?;
+        let hub_mgr = get_hub_manager().ok_or_else(manager_not_init_err)?;
+        let hubs = hub_mgr.read().await.get_hub_list().await;
+        app_mgr.read().await.renew_all(&hubs, None).await;
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // ========================================================================
+    // Hub Manager RPC Methods
+    // ========================================================================
+
+    // manager_get_hubs: Get all hubs
+    module.register_async_method("manager_get_hubs", |_, _, _| async move {
+        let mgr = get_hub_manager().ok_or_else(manager_not_init_err)?;
+        let hubs = mgr.read().await.get_hub_list().await;
+        Ok::<Vec<crate::database::models::hub::HubRecord>, ErrorObjectOwned>(hubs)
+    })?;
+
+    // manager_save_hub: Insert or update a hub
+    module.register_async_method("manager_save_hub", |params, _, _| async move {
+        let request = params.parse::<RpcSaveHubRequest>()?;
+        let mgr = get_hub_manager().ok_or_else(manager_not_init_err)?;
+        mgr.write()
+            .await
+            .upsert_hub(request.record)
+            .await
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // manager_delete_hub: Delete a hub by UUID
+    module.register_async_method("manager_delete_hub", |params, _, _| async move {
+        let request = params.parse::<RpcDeleteHubRequest>()?;
+        let mgr = get_hub_manager().ok_or_else(manager_not_init_err)?;
+        let deleted = mgr
+            .write()
+            .await
+            .remove_hub(&request.hub_uuid)
+            .await
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(deleted)
+    })?;
+
+    // manager_hub_ignore_app: Add or remove an app from a hub's ignore list
+    module.register_async_method("manager_hub_ignore_app", |params, _, _| async move {
+        let request = params.parse::<RpcHubIgnoreAppRequest>()?;
+        let mgr = get_hub_manager().ok_or_else(manager_not_init_err)?;
+        let mut guard = mgr.write().await;
+        let mut hub = guard.get_hub(&request.hub_uuid).await.ok_or_else(|| {
+            ErrorObjectOwned::owned(
+                ErrorCode::InvalidParams.code(),
+                "Hub not found",
+                None::<String>,
+            )
+        })?;
+        if request.ignore {
+            if !hub.user_ignore_app_id_list.contains(&request.app_id) {
+                hub.user_ignore_app_id_list.push(request.app_id);
+            }
+        } else {
+            hub.user_ignore_app_id_list
+                .retain(|id| id != &request.app_id);
+        }
+        guard
+            .upsert_hub(hub)
+            .await
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // manager_set_applications_mode: Enable/disable auto app discovery for a hub
+    module.register_async_method("manager_set_applications_mode", |params, _, _| async move {
+        let request = params.parse::<RpcSetApplicationsModeRequest>()?;
+        let mgr = get_hub_manager().ok_or_else(manager_not_init_err)?;
+        let mut guard = mgr.write().await;
+        let mut hub = guard.get_hub(&request.hub_uuid).await.ok_or_else(|| {
+            ErrorObjectOwned::owned(
+                ErrorCode::InvalidParams.code(),
+                "Hub not found",
+                None::<String>,
+            )
+        })?;
+        hub.applications_mode = if request.enable { 1 } else { 0 };
+        guard
+            .upsert_hub(hub)
+            .await
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // ========================================================================
+    // ExtraHub RPC Methods
+    // ========================================================================
+
+    // manager_get_extra_hubs: Get all extra hub configs
+    module.register_async_method("manager_get_extra_hubs", |_, _, _| async move {
+        let extra_hubs = crate::database::get_db()
+            .load_extra_hubs()
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<Vec<crate::database::models::extra_hub::ExtraHubRecord>, ErrorObjectOwned>(extra_hubs)
+    })?;
+
+    // manager_save_extra_hub: Insert or update an extra hub config
+    module.register_async_method("manager_save_extra_hub", |params, _, _| async move {
+        let request = params.parse::<RpcSaveExtraHubRequest>()?;
+        crate::database::get_db()
+            .upsert_extra_hub(&request.record)
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(true)
+    })?;
+
+    // manager_delete_extra_hub: Delete an extra hub by id
+    module.register_async_method("manager_delete_extra_hub", |params, _, _| async move {
+        let request = params.parse::<RpcGetExtraHubRequest>()?;
+        let deleted = crate::database::get_db()
+            .delete_extra_hub(&request.id)
+            .map_err(|e| map_manager_err(e))?;
+        Ok::<bool, ErrorObjectOwned>(deleted)
+    })?;
 
     let addr = server.local_addr()?;
     let handle = server.start(module);

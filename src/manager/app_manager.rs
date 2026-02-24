@@ -10,14 +10,7 @@ use crate::database::get_db;
 use crate::database::models::app::AppRecord;
 use crate::error::Result;
 
-/// Update event emitted when an app's status changes during a renew cycle.
-#[derive(Debug, Clone)]
-pub struct UpdateEvent {
-    pub app_id: String,
-    pub status: AppStatus,
-}
-
-pub type UpdateCallback = Arc<dyn Fn(UpdateEvent) + Send + Sync>;
+pub type UpdateCallback = Arc<dyn Fn(usize, usize) + Send + Sync>;
 
 /// Manages all tracked apps and their version data.
 ///
@@ -30,8 +23,6 @@ pub struct AppManager {
     /// In-memory version maps keyed by app record id
     version_maps: Arc<RwLock<HashMap<String, VersionMap>>>,
     data_getter: Arc<DataGetter>,
-    /// Optional callback invoked on each status change during renew
-    update_callback: Option<UpdateCallback>,
 }
 
 impl AppManager {
@@ -43,12 +34,7 @@ impl AppManager {
             virtual_apps: Arc::new(RwLock::new(vec![])),
             version_maps: Arc::new(RwLock::new(HashMap::new())),
             data_getter: Arc::new(DataGetter::new()),
-            update_callback: None,
         })
-    }
-
-    pub fn set_update_callback(&mut self, cb: UpdateCallback) {
-        self.update_callback = Some(cb);
     }
 
     /// Replace the virtual app list (installed Android packages).
@@ -125,7 +111,7 @@ impl AppManager {
     pub async fn renew_all(
         &self,
         hubs: &[crate::database::models::hub::HubRecord],
-        progress_cb: Option<&dyn Fn(usize, usize)>,
+        progress_cb: Option<UpdateCallback>,
     ) {
         let apps = self.get_saved_apps().await;
         let total = apps.len();
@@ -159,13 +145,9 @@ impl AppManager {
             let hub = hub.clone();
             let getter = self.data_getter.clone();
             let version_maps = self.version_maps.clone();
-            let _apps_map = self.apps.clone();
             let sem = semaphore.clone();
             let completed = completed.clone();
-            let cb_arc: Option<Arc<dyn Fn(usize, usize) + Send + Sync>> = progress_cb.map(|_| {
-                // Can't capture non-Send closure; skip progress in async context
-                Arc::new(|_: usize, _: usize| {}) as Arc<dyn Fn(usize, usize) + Send + Sync>
-            });
+            let cb = progress_cb.clone();
 
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
@@ -213,9 +195,9 @@ impl AppManager {
                         });
                         vm.set_error(&hub.uuid);
                     }
-                    completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    if let Some(ref cb) = cb_arc {
-                        cb(completed.load(std::sync::atomic::Ordering::SeqCst), total);
+                    let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    if let Some(ref f) = cb {
+                        f(done, total);
                     }
                 }
             });
@@ -232,7 +214,6 @@ impl AppManager {
 mod tests {
     use super::*;
     use crate::database;
-    use std::collections::HashMap;
 
     #[test]
     fn test_app_record_save_and_load() {
@@ -251,13 +232,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_version_map_get_status_no_data() {
-        let dir = tempfile::tempdir().unwrap();
-        // Use Database directly to avoid global init conflict
-        let db = database::Database::open(dir.path()).unwrap();
-        let app = AppRecord::new("App".to_string(), HashMap::new());
-        db.upsert_app(&app).unwrap();
-
-        // Simulate with a fresh VersionMap
         let mut vm = VersionMap::new(None, None);
         let status = get_release_status(&mut vm, Some("1.0.0"), None, true);
         // Empty version map + is_saved → NetworkError (no hub_status entries)
