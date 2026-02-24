@@ -1,10 +1,10 @@
 {
-    "labels": [
-      "dependencies"
-    ],
-    "extends": [
-      "config:base",
-      ":gitSignOff"
-    ],
-    "groupName": "all"
-  }
+  "labels": [
+    "dependencies"
+  ],
+  "extends": [
+    "config:recommended",
+    ":gitSignOff"
+  ],
+  "groupName": "all"
+}
