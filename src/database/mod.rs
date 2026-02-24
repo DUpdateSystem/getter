@@ -130,14 +130,14 @@ static DB: OnceCell<Database> = OnceCell::new();
 /// Initialize the global database. Must be called once before `get_db()`.
 pub fn init_db(data_dir: &Path) -> Result<()> {
     let db = Database::open(data_dir)?;
-    DB.set(db).map_err(|_| {
-        crate::error::Error::Other("Database already initialized".to_string())
-    })
+    DB.set(db)
+        .map_err(|_| crate::error::Error::Other("Database already initialized".to_string()))
 }
 
 /// Get the global database instance. Panics if `init_db` was not called.
 pub fn get_db() -> &'static Database {
-    DB.get().expect("Database not initialized. Call init_db() first.")
+    DB.get()
+        .expect("Database not initialized. Call init_db() first.")
 }
 
 #[cfg(test)]
@@ -192,7 +192,10 @@ mod tests {
                 base_version: 6,
                 config_version: 1,
                 uuid: "fd9b2602-62c5-4d55-bd1e-0d6537714ca0".to_string(),
-                info: Info { hub_name: "GitHub".to_string(), hub_icon_url: None },
+                info: Info {
+                    hub_name: "GitHub".to_string(),
+                    hub_icon_url: None,
+                },
                 api_keywords: vec!["owner".to_string(), "repo".to_string()],
                 app_url_templates: vec![],
                 target_check_api: None,
@@ -203,7 +206,9 @@ mod tests {
         assert_eq!(hubs.len(), 1);
         assert_eq!(hubs[0].uuid, "fd9b2602-62c5-4d55-bd1e-0d6537714ca0");
 
-        let deleted = db.delete_hub("fd9b2602-62c5-4d55-bd1e-0d6537714ca0").unwrap();
+        let deleted = db
+            .delete_hub("fd9b2602-62c5-4d55-bd1e-0d6537714ca0")
+            .unwrap();
         assert!(deleted);
         assert!(db.load_hubs().unwrap().is_empty());
     }

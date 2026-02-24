@@ -5,6 +5,7 @@ pub mod database;
 pub mod downloader;
 mod error;
 mod locale;
+pub mod manager;
 pub mod rpc;
 mod utils;
 mod websdk;

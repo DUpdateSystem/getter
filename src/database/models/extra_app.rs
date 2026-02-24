@@ -28,7 +28,10 @@ mod tests {
     fn test_serialization_roundtrip() {
         let record = ExtraAppRecord {
             id: "test-uuid".to_string(),
-            app_id: HashMap::from([("android_app_package".to_string(), Some("com.foo".to_string()))]),
+            app_id: HashMap::from([(
+                "android_app_package".to_string(),
+                Some("com.foo".to_string()),
+            )]),
             mark_version_number: Some("1.2.3".to_string()),
         };
         let json = serde_json::to_string(&record).unwrap();

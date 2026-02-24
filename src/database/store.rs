@@ -162,7 +162,10 @@ mod tests {
     #[test]
     fn test_upsert_and_load() {
         let (store, _tmp) = make_store();
-        let r = TestRecord { id: "1".to_string(), value: "hello".to_string() };
+        let r = TestRecord {
+            id: "1".to_string(),
+            value: "hello".to_string(),
+        };
         store.upsert(&r).unwrap();
         let records: Vec<TestRecord> = store.load_all().unwrap();
         assert_eq!(records.len(), 1);
@@ -172,8 +175,18 @@ mod tests {
     #[test]
     fn test_upsert_updates_existing() {
         let (store, _tmp) = make_store();
-        store.upsert(&TestRecord { id: "1".to_string(), value: "old".to_string() }).unwrap();
-        store.upsert(&TestRecord { id: "1".to_string(), value: "new".to_string() }).unwrap();
+        store
+            .upsert(&TestRecord {
+                id: "1".to_string(),
+                value: "old".to_string(),
+            })
+            .unwrap();
+        store
+            .upsert(&TestRecord {
+                id: "1".to_string(),
+                value: "new".to_string(),
+            })
+            .unwrap();
         let records: Vec<TestRecord> = store.load_all().unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].value, "new");
@@ -183,7 +196,12 @@ mod tests {
     fn test_multiple_records() {
         let (store, _tmp) = make_store();
         for i in 0..5 {
-            store.upsert(&TestRecord { id: i.to_string(), value: format!("v{i}") }).unwrap();
+            store
+                .upsert(&TestRecord {
+                    id: i.to_string(),
+                    value: format!("v{i}"),
+                })
+                .unwrap();
         }
         let records: Vec<TestRecord> = store.load_all().unwrap();
         assert_eq!(records.len(), 5);
@@ -192,8 +210,18 @@ mod tests {
     #[test]
     fn test_delete() {
         let (store, _tmp) = make_store();
-        store.upsert(&TestRecord { id: "1".to_string(), value: "a".to_string() }).unwrap();
-        store.upsert(&TestRecord { id: "2".to_string(), value: "b".to_string() }).unwrap();
+        store
+            .upsert(&TestRecord {
+                id: "1".to_string(),
+                value: "a".to_string(),
+            })
+            .unwrap();
+        store
+            .upsert(&TestRecord {
+                id: "2".to_string(),
+                value: "b".to_string(),
+            })
+            .unwrap();
         let deleted = store.delete::<TestRecord>("1").unwrap();
         assert!(deleted);
         let records: Vec<TestRecord> = store.load_all().unwrap();
@@ -211,7 +239,12 @@ mod tests {
     #[test]
     fn test_find_by_id() {
         let (store, _tmp) = make_store();
-        store.upsert(&TestRecord { id: "42".to_string(), value: "answer".to_string() }).unwrap();
+        store
+            .upsert(&TestRecord {
+                id: "42".to_string(),
+                value: "answer".to_string(),
+            })
+            .unwrap();
         let found: Option<TestRecord> = store.find_by_id("42").unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().value, "answer");
