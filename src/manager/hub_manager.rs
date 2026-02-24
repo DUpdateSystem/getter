@@ -53,6 +53,20 @@ impl HubManager {
             .any(|h| h.applications_mode_enabled())
     }
 
+    /// Update the auth map for a hub identified by UUID and persist the change.
+    ///
+    /// Returns `false` if no hub with the given UUID exists.
+    pub async fn update_auth(&self, uuid: &str, auth: HashMap<String, String>) -> Result<bool> {
+        let mut hubs = self.hubs.write().await;
+        let hub = match hubs.get_mut(uuid) {
+            Some(h) => h,
+            None => return Ok(false),
+        };
+        hub.auth = auth;
+        get_db().upsert_hub(hub)?;
+        Ok(true)
+    }
+
     /// Return hubs whose api_keywords contain any of the given app_id keys.
     pub async fn hubs_for_app(&self, app_id: &HashMap<String, Option<String>>) -> Vec<HubRecord> {
         let app_keys: Vec<&str> = app_id.keys().map(String::as_str).collect();
@@ -96,6 +110,7 @@ mod tests {
                     hub_icon_url: None,
                 },
                 api_keywords: vec!["owner".to_string(), "repo".to_string()],
+                auth_keywords: vec![],
                 app_url_templates: vec![],
                 target_check_api: None,
             },
@@ -124,5 +139,35 @@ mod tests {
         let deleted = db.delete_hub("uuid-2").unwrap();
         assert!(deleted);
         assert!(db.load_hubs().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_update_auth() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::database::init_db(dir.path()).ok();
+
+        // Insert the hub via HubManager so it is in both the global DB and in-memory state.
+        let mgr = HubManager::load().unwrap();
+        let hub = make_hub("uuid-auth");
+        mgr.upsert_hub(hub).await.unwrap();
+
+        let new_auth: HashMap<String, String> =
+            [("token".to_string(), "ghp_test123".to_string())].into();
+        let ok = mgr
+            .update_auth("uuid-auth", new_auth.clone())
+            .await
+            .unwrap();
+        assert!(ok);
+
+        // Verify in-memory state updated.
+        let updated = mgr.get_hub("uuid-auth").await.unwrap();
+        assert_eq!(updated.auth, new_auth);
+
+        // Returns false for unknown UUID.
+        let not_found = mgr
+            .update_auth("no-such-uuid", HashMap::new())
+            .await
+            .unwrap();
+        assert!(!not_found);
     }
 }

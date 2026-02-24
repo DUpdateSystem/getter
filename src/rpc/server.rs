@@ -592,6 +592,19 @@ pub async fn run_server(
         Ok::<bool, ErrorObjectOwned>(true)
     })?;
 
+    // manager_update_hub_auth: Replace the auth map for a hub and persist.
+    module.register_async_method("manager_update_hub_auth", |params, _, _| async move {
+        let request = params.parse::<RpcUpdateHubAuthRequest>()?;
+        let mgr = get_hub_manager().ok_or_else(manager_not_init_err)?;
+        let updated = mgr
+            .read()
+            .await
+            .update_auth(&request.hub_uuid, request.auth)
+            .await
+            .map_err(map_manager_err)?;
+        Ok::<bool, ErrorObjectOwned>(updated)
+    })?;
+
     // manager_delete_hub: Delete a hub by UUID
     module.register_async_method("manager_delete_hub", |params, _, _| async move {
         let request = params.parse::<RpcDeleteHubRequest>()?;

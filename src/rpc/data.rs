@@ -396,3 +396,16 @@ pub struct RpcCloudConfigApplyRequest {
 pub struct RpcCloudConfigInitRequest {
     pub api_url: String,
 }
+
+/// Request to update the auth map for a hub.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcUpdateHubAuthRequest {
+    pub hub_uuid: String,
+    pub auth: HashMap<String, String>,
+}
+
+impl ToRpcParams for RpcUpdateHubAuthRequest {
+    fn to_rpc_params(self) -> Result<Option<Box<serde_json::value::RawValue>>, serde_json::Error> {
+        to_raw_value(&self).map(Some)
+    }
+}

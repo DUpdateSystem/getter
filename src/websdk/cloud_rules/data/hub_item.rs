@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 ///   }
 ///   target_check_api: ""
 ///   api_keywords: []
+///   auth_keywords: []
 ///   app_url_templates": []
 /// }
 /// ```
@@ -34,6 +35,11 @@ pub struct HubItem {
 
     #[serde(rename = "api_keywords", default)]
     pub api_keywords: Vec<String>,
+
+    /// Auth parameter keys required by this hub (e.g. ["token"] for GitHub).
+    /// Used by the UI to provide autocomplete suggestions when editing hub auth.
+    #[serde(rename = "auth_keywords", default)]
+    pub auth_keywords: Vec<String>,
 
     #[serde(rename = "app_url_templates", default)]
     pub app_url_templates: Vec<String>,
@@ -85,9 +91,33 @@ mod tests {
         assert_eq!(hub_item.info.hub_icon_url, Some("".to_string()));
         assert_eq!(hub_item.target_check_api, Some("".to_string()));
         assert_eq!(hub_item.api_keywords, ["owner", "repo"]);
+        // Old config without auth_keywords deserializes to empty vec.
+        assert_eq!(hub_item.auth_keywords, Vec::<String>::new());
         assert_eq!(
             hub_item.app_url_templates[0],
             "https://github.com/%owner/%repo/"
         );
+    }
+
+    #[test]
+    fn test_hub_item_auth_keywords() {
+        let json = r#"
+{
+  "base_version": 5,
+  "config_version": 3,
+  "uuid": "fd9b2602-62c5-4d55-bd1e-0d6537714ca0",
+  "info": { "hub_name": "GitHub" },
+  "api_keywords": ["owner", "repo"],
+  "auth_keywords": ["token"],
+  "app_url_templates": ["https://github.com/%owner/%repo/"]
+}
+        "#;
+        let hub_item: HubItem = serde_json::from_str(json).unwrap();
+        assert_eq!(hub_item.auth_keywords, ["token"]);
+
+        // Round-trip serialization preserves auth_keywords.
+        let serialized = serde_json::to_string(&hub_item).unwrap();
+        let hub_item2: HubItem = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(hub_item2.auth_keywords, ["token"]);
     }
 }

@@ -55,6 +55,7 @@ mod tests {
                     hub_icon_url: None,
                 },
                 api_keywords: vec!["owner".to_string(), "repo".to_string()],
+                auth_keywords: vec![],
                 app_url_templates: vec!["https://github.com/%owner/%repo/".to_string()],
                 target_check_api: None,
             },
