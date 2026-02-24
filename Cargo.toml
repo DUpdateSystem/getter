@@ -35,6 +35,8 @@ uuid = { version = "1.19", features = ["v4", "serde"] }
 parking_lot = "0.12"
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
+jsonl = "4.0"
+file-locker = "1.1"
 
 [dev-dependencies]
 mockito = "1.7.1"
