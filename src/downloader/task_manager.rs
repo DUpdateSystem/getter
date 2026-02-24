@@ -109,7 +109,8 @@ impl DownloadTaskManager {
         hub_uuid: Option<String>,
     ) -> Result<String> {
         let task_id = Uuid::new_v4().to_string();
-        let task = TaskInfo::with_options(task_id.clone(), url, dest_path, headers, cookies, hub_uuid);
+        let task =
+            TaskInfo::with_options(task_id.clone(), url, dest_path, headers, cookies, hub_uuid);
 
         {
             let mut tasks = self.tasks.write();
@@ -698,7 +699,13 @@ mod tests {
 
         // Submit task with headers and cookies
         let task_id = manager
-            .submit_task_with_options(&url, dest.to_str().unwrap(), Some(headers), Some(cookies), None)
+            .submit_task_with_options(
+                &url,
+                dest.to_str().unwrap(),
+                Some(headers),
+                Some(cookies),
+                None,
+            )
             .unwrap();
 
         // Wait for download to complete

@@ -176,29 +176,27 @@ impl Downloader for ExternalRpcDownloader {
                 "timeout_seconds": 30_u64,
             });
 
-            let task_info: ExternalTaskInfo = match self
-                .rpc_call("download_wait_for_change", params)
-                .await
-            {
-                Ok(info) => info,
-                Err(e) => {
-                    // On poll error, try a direct status check
-                    let status_params = serde_json::json!({
-                        "task_id": &external_task_id,
-                    });
-                    match self
-                        .rpc_call::<ExternalTaskInfo>("download_get_status", status_params)
-                        .await
-                    {
-                        Ok(info) => info,
-                        Err(_) => {
-                            // Both failed, clean up and return error
-                            self.task_mapping.write().remove(url);
-                            return Err(e);
+            let task_info: ExternalTaskInfo =
+                match self.rpc_call("download_wait_for_change", params).await {
+                    Ok(info) => info,
+                    Err(e) => {
+                        // On poll error, try a direct status check
+                        let status_params = serde_json::json!({
+                            "task_id": &external_task_id,
+                        });
+                        match self
+                            .rpc_call::<ExternalTaskInfo>("download_get_status", status_params)
+                            .await
+                        {
+                            Ok(info) => info,
+                            Err(_) => {
+                                // Both failed, clean up and return error
+                                self.task_mapping.write().remove(url);
+                                return Err(e);
+                            }
                         }
                     }
-                }
-            };
+                };
 
             // Update progress callback
             if let Some(ref cb) = progress {

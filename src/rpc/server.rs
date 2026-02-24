@@ -197,7 +197,7 @@ pub async fn run_server(
     let download_config = DownloadConfig::from_env();
     let http_downloader = crate::downloader::create_downloader(&download_config);
     let dispatcher = crate::downloader::HubDispatchDownloader::new(http_downloader);
-    
+
     // Clone dispatcher for task manager (HubDispatchDownloader is cheap to clone via Arc internally)
     let task_manager = Arc::new(DownloadTaskManager::new(Box::new(dispatcher.clone())));
 
