@@ -1,4 +1,3 @@
-pub mod api;
 mod cache;
 mod core;
 pub mod database;

@@ -1,5 +1,6 @@
 use super::data::*;
-use crate::api as api_root;
+use crate::cache::init_cache_manager_with_expire;
+use crate::core::config::world::{init_world_list, world_list};
 use crate::database::get_db;
 use crate::database::models::extra_hub::GLOBAL_HUB_ID;
 use crate::downloader::{DownloadConfig, DownloadTaskManager};
@@ -95,15 +96,25 @@ pub async fn run_server(
         let request = params.parse::<RpcInitRequest>()?;
         let data_dir = Path::new(request.data_path);
         let cache_dir = Path::new(request.cache_path);
-        api_root::init(data_dir, cache_dir, request.global_expire_time)
-            .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InternalError.code(),
-                    "Internal error",
-                    Some(e.to_string()),
-                )
-            })?;
+        // Initialize world list, cache, and database.
+        let world_list_path = data_dir.join(world_list::WORLD_CONFIG_LIST_NAME);
+        init_world_list(&world_list_path).await.map_err(|e| {
+            ErrorObjectOwned::owned(
+                ErrorCode::InternalError.code(),
+                "Internal error",
+                Some(e.to_string()),
+            )
+        })?;
+        let local_cache_path = cache_dir.join("local_cache");
+        init_cache_manager_with_expire(local_cache_path.as_path(), request.global_expire_time)
+            .await;
+        crate::database::init_db(data_dir).map_err(|e| {
+            ErrorObjectOwned::owned(
+                ErrorCode::InternalError.code(),
+                "Internal error",
+                Some(e.to_string()),
+            )
+        })?;
 
         // Initialize managers (idempotent: only on first call)
         if APP_MANAGER.get().is_none() {
@@ -541,11 +552,20 @@ pub async fn run_server(
         let hub_mgr = get_hub_manager().ok_or_else(manager_not_init_err)?;
         let hubs = hub_mgr.read().await.get_hub_list().await;
         let known_uuids: Vec<String> = hubs.into_iter().map(|h| h.uuid).collect();
-        let invalid_ids = app_mgr
-            .read()
-            .await
-            .check_invalid_applications(&known_uuids)
-            .await;
+        let mgr = app_mgr.read().await;
+        let invalid_ids = mgr.check_invalid_applications(&known_uuids).await;
+        // Notify Kotlin UI about each invalid app so it can update status.
+        for record_id in &invalid_ids {
+            if let Some(app) = mgr.get_app(record_id).await {
+                notification::notify_if_registered(notification::ManagerEvent::AppStatusChanged {
+                    record_id: record_id.clone(),
+                    app_id: app.app_id.clone(),
+                    old_status: crate::manager::app_status::AppStatus::AppLatest,
+                    new_status: crate::manager::app_status::AppStatus::AppInactive,
+                })
+                .await;
+            }
+        }
         Ok::<Vec<String>, ErrorObjectOwned>(invalid_ids)
     })?;
 

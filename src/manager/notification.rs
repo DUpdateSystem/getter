@@ -21,6 +21,7 @@ pub fn get_notification() -> Option<&'static NotificationDispatcher> {
 pub enum ManagerEvent {
     AppStatusChanged {
         record_id: String,
+        app_id: std::collections::HashMap<String, Option<String>>,
         old_status: AppStatus,
         new_status: AppStatus,
     },
@@ -109,6 +110,10 @@ mod tests {
     fn test_event_serialization_status_changed() {
         let event = ManagerEvent::AppStatusChanged {
             record_id: "abc-123".to_string(),
+            app_id: std::collections::HashMap::from([(
+                "owner".to_string(),
+                Some("alice".to_string()),
+            )]),
             old_status: AppStatus::AppPending,
             new_status: AppStatus::AppOutdated,
         };

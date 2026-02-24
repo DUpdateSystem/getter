@@ -189,20 +189,42 @@ impl AppManager {
 
                     for (app, (_, maybe_release)) in simple_apps.iter().zip(latest_results.iter()) {
                         if let Some(release) = maybe_release {
-                            let mut maps = version_maps.write().await;
-                            let vm = maps.entry(app.id.clone()).or_insert_with(|| {
-                                VersionMap::new(
-                                    app.invalid_version_number_field_regex.clone(),
-                                    app.include_version_number_field_regex.clone(),
+                            let new_status = {
+                                let mut maps = version_maps.write().await;
+                                let vm = maps.entry(app.id.clone()).or_insert_with(|| {
+                                    VersionMap::new(
+                                        app.invalid_version_number_field_regex.clone(),
+                                        app.include_version_number_field_regex.clone(),
+                                    )
+                                });
+                                vm.add_single_release(&hub.uuid, release.clone());
+                                let local_version: Option<String> =
+                                    match android_api::get_android_api() {
+                                        Some(api) => api.get_local_version(&app.app_id).await,
+                                        None => None,
+                                    };
+                                get_release_status(
+                                    vm,
+                                    local_version.as_deref(),
+                                    app.ignore_version_number.as_deref(),
+                                    true,
                                 )
-                            });
-                            vm.add_single_release(&hub.uuid, release.clone());
+                            };
                             let done =
                                 completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                             if let Some(ref f) = cb {
                                 f(done, total);
                             }
                             notify_if_registered(ManagerEvent::RenewProgress { done, total }).await;
+                            if new_status != AppStatus::AppPending {
+                                notify_if_registered(ManagerEvent::AppStatusChanged {
+                                    record_id: app.id.clone(),
+                                    app_id: app.app_id.clone(),
+                                    old_status: AppStatus::AppPending,
+                                    new_status,
+                                })
+                                .await;
+                            }
                         } else {
                             // Batch returned nothing for this app — escalate to full list.
                             need_full.push(app.clone());
@@ -212,7 +234,7 @@ impl AppManager {
 
                 // --- Full release-list path ---
                 for app in need_full {
-                    if let Some(releases) = getter.get_release_list(&hub, &app.app_id).await {
+                    let new_status = {
                         let mut maps = version_maps.write().await;
                         let vm = maps.entry(app.id.clone()).or_insert_with(|| {
                             VersionMap::new(
@@ -220,22 +242,36 @@ impl AppManager {
                                 app.include_version_number_field_regex.clone(),
                             )
                         });
-                        vm.add_release_list(&hub.uuid, releases);
-                    } else {
-                        let mut maps = version_maps.write().await;
-                        let vm = maps.entry(app.id.clone()).or_insert_with(|| {
-                            VersionMap::new(
-                                app.invalid_version_number_field_regex.clone(),
-                                app.include_version_number_field_regex.clone(),
-                            )
-                        });
-                        vm.set_error(&hub.uuid);
-                    }
+                        if let Some(releases) = getter.get_release_list(&hub, &app.app_id).await {
+                            vm.add_release_list(&hub.uuid, releases);
+                        } else {
+                            vm.set_error(&hub.uuid);
+                        }
+                        let local_version: Option<String> = match android_api::get_android_api() {
+                            Some(api) => api.get_local_version(&app.app_id).await,
+                            None => None,
+                        };
+                        get_release_status(
+                            vm,
+                            local_version.as_deref(),
+                            app.ignore_version_number.as_deref(),
+                            true,
+                        )
+                    };
                     let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                     if let Some(ref f) = cb {
                         f(done, total);
                     }
                     notify_if_registered(ManagerEvent::RenewProgress { done, total }).await;
+                    if new_status != AppStatus::AppPending {
+                        notify_if_registered(ManagerEvent::AppStatusChanged {
+                            record_id: app.id.clone(),
+                            app_id: app.app_id.clone(),
+                            old_status: AppStatus::AppPending,
+                            new_status,
+                        })
+                        .await;
+                    }
                 }
             });
             handles.push(handle);
