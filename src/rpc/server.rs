@@ -1,11 +1,14 @@
 use super::data::*;
 use crate::api as api_root;
+use crate::database::get_db;
+use crate::database::models::extra_hub::GLOBAL_HUB_ID;
 use crate::downloader::{DownloadConfig, DownloadTaskManager};
 use crate::manager::android_api;
 use crate::manager::app_manager::AppManager;
 use crate::manager::cloud_config_getter::CloudConfigGetter;
 use crate::manager::hub_manager::HubManager;
 use crate::manager::notification;
+use crate::manager::url_replace::apply_url_replace;
 use crate::websdk::cloud_rules::cloud_rules_manager::CloudRules;
 use crate::websdk::repo::api;
 use jsonrpsee::server::{RpcModule, Server, ServerConfig, ServerHandle};
@@ -166,25 +169,48 @@ pub async fn run_server(
         },
     )?;
 
-    // get_download: Get download info for an app's asset
+    // get_download: Get download info for an app's asset.
+    // After retrieving download URLs from the provider, applies URL replacement
+    // rules from ExtraHub configs (GLOBAL first, then hub-specific), mirroring
+    // Kotlin's URLReplace.replaceURL() in the download pipeline.
     module.register_async_method("get_download", |params, _context, _extensions| async move {
         let request = params.parse::<RpcDownloadInfoRequest>()?;
-        if let Some(result) = api::get_download(
+        let mut items = api::get_download(
             request.hub_uuid,
             &request.app_data,
             &request.hub_data,
             &request.asset_index,
         )
         .await
-        {
-            Ok(result)
-        } else {
-            Err(ErrorObjectOwned::owned(
-                -32001,
-                "No download info found",
-                None::<String>,
-            ))
+        .ok_or_else(|| ErrorObjectOwned::owned(-32001, "No download info found", None::<String>))?;
+
+        // Load URL-replace rules from ExtraHub configs.
+        // Priority: hub-specific rule overrides GLOBAL rule.
+        let db = get_db();
+        let global_extra = db.find_extra_hub(GLOBAL_HUB_ID).unwrap_or(None);
+        let hub_extra = db.find_extra_hub(request.hub_uuid).unwrap_or(None);
+
+        // Apply rules to every download URL in the result.
+        for item in &mut items {
+            // Apply GLOBAL rule first (lower priority)
+            if let Some(ref g) = global_extra {
+                item.url = apply_url_replace(
+                    &item.url,
+                    g.url_replace_search.as_deref(),
+                    g.url_replace_string.as_deref(),
+                );
+            }
+            // Apply hub-specific rule second (higher priority, may override)
+            if let Some(ref h) = hub_extra {
+                item.url = apply_url_replace(
+                    &item.url,
+                    h.url_replace_search.as_deref(),
+                    h.url_replace_string.as_deref(),
+                );
+            }
         }
+
+        Ok::<Vec<DownloadItemData>, ErrorObjectOwned>(items)
     })?;
 
     module.register_async_method(

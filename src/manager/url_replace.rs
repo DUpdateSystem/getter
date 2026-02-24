@@ -121,4 +121,50 @@ mod tests {
         let result = apply_url_replace(url, Some("github.com"), Some("gitlab.com"));
         assert!(result.contains("gitlab.com"));
     }
+
+    // -------------------------------------------------------------------------
+    // Phase 8: chained GLOBAL + hub-specific rules (as applied in get_download)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_global_then_hub_specific_chain() {
+        // Simulate: GLOBAL rule replaces github.com host, then hub rule wraps via template.
+        let url = "https://github.com/owner/repo/releases/download/v1.0/app.apk";
+
+        // Step 1 — GLOBAL rule: replace host with mirror
+        let after_global = apply_url_replace(url, None, Some("https://mirror.example.com"));
+        assert!(after_global.contains("mirror.example.com"));
+        assert!(!after_global.contains("github.com"));
+
+        // Step 2 — hub-specific rule: wrap with proxy template
+        let after_hub = apply_url_replace(
+            &after_global,
+            None,
+            Some("https://proxy.example.com/?url={DOWNLOAD_URL}"),
+        );
+        assert!(after_hub.starts_with("https://proxy.example.com/?url="));
+        assert!(after_hub.contains("mirror.example.com"));
+    }
+
+    #[test]
+    fn test_no_global_rule_hub_rule_applies() {
+        let url = "https://github.com/owner/repo/archive/v2.zip";
+
+        // GLOBAL has no replace rule — url unchanged
+        let after_global = apply_url_replace(url, None, None);
+        assert_eq!(after_global, url);
+
+        // hub-specific regex rule
+        let after_hub =
+            apply_url_replace(&after_global, Some("github\\.com"), Some("gh.example.com"));
+        assert!(after_hub.contains("gh.example.com"));
+    }
+
+    #[test]
+    fn test_both_rules_none_url_unchanged() {
+        let url = "https://github.com/owner/repo/releases/v1.apk";
+        let after_global = apply_url_replace(url, None, None);
+        let after_hub = apply_url_replace(&after_global, None, None);
+        assert_eq!(after_hub, url);
+    }
 }
