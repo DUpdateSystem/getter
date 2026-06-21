@@ -1,0 +1,21 @@
+[package]
+name = "getter-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+getter-core = { path = "../getter-core" }
+getter-storage = { path = "../getter-storage" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+
+[dev-dependencies]
+cucumber = "0.23"
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "bdd_cli"
+harness = false

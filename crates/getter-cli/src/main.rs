@@ -1,4 +1,3 @@
-#[cfg(feature = "cli")]
 fn main() {
     let output = getter_cli::run(std::env::args());
     if !output.stdout.is_empty() {
@@ -8,10 +7,4 @@ fn main() {
         eprint!("{}", output.stderr);
     }
     std::process::exit(output.exit_code.code());
-}
-
-#[cfg(not(feature = "cli"))]
-fn main() {
-    eprintln!("getter binary requires the 'cli' feature");
-    std::process::exit(2);
 }
