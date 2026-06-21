@@ -11,6 +11,7 @@ use std::str::FromStr;
 
 pub mod lua;
 pub mod repository;
+pub mod update;
 
 /// Error returned when parsing or constructing a [`PackageId`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
