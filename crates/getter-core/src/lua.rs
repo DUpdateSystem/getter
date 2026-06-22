@@ -85,19 +85,80 @@ pub fn evaluate_package_source(
 fn configure_package_path(lua: &Lua, repository: &RepositoryLayout) -> mlua::Result<()> {
     let package: Table = lua.globals().get("package")?;
     let current_path: String = package.get("path")?;
-    let root_lib_pattern = repository.root.join("?.lua");
-    let root_nested_lib_pattern = repository.root.join("?/init.lua");
     let lib_pattern = repository.lib_dir.join("?.lua");
     let nested_lib_pattern = repository.lib_dir.join("?/init.lua");
     let new_path = format!(
-        "{};{};{};{};{}",
-        root_lib_pattern.to_string_lossy(),
-        root_nested_lib_pattern.to_string_lossy(),
+        "{};{};{}",
         lib_pattern.to_string_lossy(),
         nested_lib_pattern.to_string_lossy(),
         current_path
     );
-    package.set("path", new_path)
+    package.set("path", new_path)?;
+    install_lib_prefix_searcher(lua, &package, repository.lib_dir.clone())
+}
+
+fn install_lib_prefix_searcher(lua: &Lua, package: &Table, lib_dir: PathBuf) -> mlua::Result<()> {
+    let searchers: Table = package.get("searchers")?;
+    let searcher = lua.create_function(move |lua, module: String| {
+        let Some(module) = module.strip_prefix("lib.") else {
+            return lua
+                .create_string("\n\tconstrained repository lib searcher only handles lib.* modules")
+                .map(Value::String);
+        };
+
+        let Some(relative_module) = module_to_relative_path(module) else {
+            return lua
+                .create_string(format!(
+                    "\n\tinvalid repository lib module name 'lib.{module}'"
+                ))
+                .map(Value::String);
+        };
+
+        let module_path = lib_dir.join(&relative_module).with_extension("lua");
+        let init_path = lib_dir.join(&relative_module).join("init.lua");
+        for candidate in [&module_path, &init_path] {
+            if candidate.is_file() {
+                let source = fs::read_to_string(candidate).map_err(mlua::Error::external)?;
+                let chunk = lua
+                    .load(&source)
+                    .set_name(candidate.to_string_lossy().as_ref());
+                return chunk.into_function().map(Value::Function);
+            }
+        }
+
+        lua.create_string(format!(
+            "\n\tno repository lib module 'lib.{module}' in {}",
+            lib_dir.display()
+        ))
+        .map(Value::String)
+    })?;
+
+    let len = searchers.raw_len();
+    for index in (2..=len).rev() {
+        let value: Value = searchers.raw_get(index)?;
+        searchers.raw_set(index + 1, value)?;
+    }
+    searchers.raw_set(2, searcher)
+}
+
+fn module_to_relative_path(module: &str) -> Option<PathBuf> {
+    let mut path = PathBuf::new();
+    for part in module.split('.') {
+        if part.is_empty()
+            || part == ".."
+            || part.contains('/')
+            || part.contains('\\')
+            || part.contains(std::path::MAIN_SEPARATOR)
+        {
+            return None;
+        }
+        path.push(part);
+    }
+    if path.as_os_str().is_empty() {
+        None
+    } else {
+        Some(path)
+    }
 }
 
 fn install_helpers(lua: &Lua) -> mlua::Result<()> {
@@ -498,5 +559,29 @@ return android.local_app {
         let package = evaluate_package_file(&layout, &package_path).unwrap();
         assert_eq!(package.name, "F-Droid");
         assert_eq!(package.installed.len(), 1);
+    }
+
+    #[test]
+    fn lib_prefixed_searcher_does_not_expose_repository_templates() {
+        let (_temp, layout, package_path) = fixture_repo();
+        fs::write(
+            layout.templates_dir.join("android.lua"),
+            r#"return { leaked = true }"#,
+        )
+        .unwrap();
+        fs::write(
+            &package_path,
+            r#"
+local ok = pcall(require, "templates.android")
+return {
+  id = "android/org.fdroid.fdroid",
+  name = ok and "leaked" or "F-Droid",
+}
+"#,
+        )
+        .unwrap();
+
+        let package = evaluate_package_file(&layout, &package_path).unwrap();
+        assert_eq!(package.name, "F-Droid");
     }
 }
