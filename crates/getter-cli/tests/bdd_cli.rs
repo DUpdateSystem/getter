@@ -376,12 +376,17 @@ fn output_reports_repository_diagnostic(world: &mut CliWorld, code: String) {
     let diagnostics = json["data"]["diagnostics"]
         .as_array()
         .expect("diagnostics array");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic["code"].as_str() == Some(code.as_str())),
-        "diagnostics should contain {code}: {diagnostics:?}"
-    );
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["code"].as_str() == Some(code.as_str()))
+        .unwrap_or_else(|| panic!("diagnostics should contain {code}: {diagnostics:?}"));
+    assert_eq!(diagnostic["severity"], "error");
+    assert!(diagnostic["message"].as_str().is_some());
+    assert!(diagnostic["location"]["path"].as_str().is_some());
+    if code == "package.schema" {
+        assert_eq!(diagnostic["package_id"], "android/org.fdroid.fdroid");
+        assert_eq!(diagnostic["location"]["field"], "name");
+    }
 }
 
 #[then("the output contains the evaluated fixture package")]

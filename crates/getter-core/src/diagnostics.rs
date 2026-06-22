@@ -4,7 +4,7 @@
 //! describe what getter observed; Flutter should only render them.
 
 use crate::lua::{evaluate_package_file, LuaPackageError};
-use crate::repository::{RepositoryLayout, RepositoryLoadError};
+use crate::repository::{package_cache_key, RepositoryLayout, RepositoryLoadError};
 use crate::PackageId;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -72,6 +72,10 @@ pub fn validate_repository_path(path: impl AsRef<Path>) -> RepositoryValidationR
     let mut diagnostics = Vec::new();
     let mut package_count = 0usize;
     for package_file in &layout.packages {
+        if let Err(error) = package_cache_key(&layout, package_file) {
+            diagnostics.push(repository_load_diagnostic(error));
+            continue;
+        }
         match evaluate_package_file(&layout, &package_file.path) {
             Ok(_) => package_count += 1,
             Err(error) => diagnostics.push(lua_diagnostic(error, Some(package_file.id.clone()))),

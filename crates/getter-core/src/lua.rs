@@ -61,6 +61,10 @@ pub fn evaluate_package_source(
         path: path.clone(),
         source,
     })?;
+    remove_unsafe_globals(&lua).map_err(|source| LuaPackageError::Runtime {
+        path: path.clone(),
+        source,
+    })?;
     install_helpers(&lua).map_err(|source| LuaPackageError::Runtime {
         path: path.clone(),
         source,
@@ -92,7 +96,32 @@ fn configure_package_path(lua: &Lua, repository: &RepositoryLayout) -> mlua::Res
         nested_lib_pattern.to_string_lossy()
     );
     package.set("path", new_path)?;
-    install_lib_prefix_searcher(lua, &package, repository.lib_dir.clone())
+    package.set("cpath", "")?;
+    package.set("loadlib", Value::Nil)?;
+    install_lib_prefix_searcher(lua, &package, repository.lib_dir.clone())?;
+    disable_native_module_searchers(&package)
+}
+
+fn disable_native_module_searchers(package: &Table) -> mlua::Result<()> {
+    let searchers: Table = package.get("searchers")?;
+    let len = searchers.raw_len();
+    for index in 4..=len {
+        searchers.raw_set(index, Value::Nil)?;
+    }
+    Ok(())
+}
+
+fn remove_unsafe_globals(lua: &Lua) -> mlua::Result<()> {
+    let globals = lua.globals();
+    let package: Table = globals.get("package")?;
+    let loaded: Table = package.get("loaded")?;
+    for name in ["os", "io", "debug"] {
+        loaded.set(name, Value::Nil)?;
+    }
+    for name in ["os", "io", "debug", "dofile", "loadfile", "package"] {
+        globals.set(name, Value::Nil)?;
+    }
+    Ok(())
 }
 
 fn install_lib_prefix_searcher(lua: &Lua, package: &Table, lib_dir: PathBuf) -> mlua::Result<()> {
@@ -581,6 +610,31 @@ return {
 
         let package = evaluate_package_file(&layout, &package_path).unwrap();
         assert_eq!(package.name, "F-Droid");
+    }
+
+    #[test]
+    fn lua_environment_does_not_expose_process_or_file_system_globals() {
+        let temp = tempfile::tempdir().unwrap();
+        let side_effect = temp.path().join("side-effect");
+        let (_repo_temp, layout, package_path) = fixture_repo();
+        fs::write(
+            &package_path,
+            format!(
+                r#"
+return {{
+  id = "android/org.fdroid.fdroid",
+  name = (os == nil and io == nil and debug == nil and dofile == nil and loadfile == nil and package == nil) and "F-Droid" or "leaked",
+  side_effect = rawget(_G, "os") and os.execute("touch {}"),
+}}
+"#,
+                side_effect.display()
+            ),
+        )
+        .unwrap();
+
+        let package = evaluate_package_file(&layout, &package_path).unwrap();
+        assert_eq!(package.name, "F-Droid");
+        assert!(!side_effect.exists());
     }
 
     #[test]
