@@ -84,14 +84,12 @@ pub fn evaluate_package_source(
 
 fn configure_package_path(lua: &Lua, repository: &RepositoryLayout) -> mlua::Result<()> {
     let package: Table = lua.globals().get("package")?;
-    let current_path: String = package.get("path")?;
     let lib_pattern = repository.lib_dir.join("?.lua");
     let nested_lib_pattern = repository.lib_dir.join("?/init.lua");
     let new_path = format!(
-        "{};{};{}",
+        "{};{}",
         lib_pattern.to_string_lossy(),
-        nested_lib_pattern.to_string_lossy(),
-        current_path
+        nested_lib_pattern.to_string_lossy()
     );
     package.set("path", new_path)?;
     install_lib_prefix_searcher(lua, &package, repository.lib_dir.clone())
@@ -582,6 +580,41 @@ return {
         .unwrap();
 
         let package = evaluate_package_file(&layout, &package_path).unwrap();
+        assert_eq!(package.name, "F-Droid");
+    }
+
+    #[test]
+    fn repository_root_is_not_exposed_even_when_cwd_is_repository_root() {
+        let (_temp, layout, package_path) = fixture_repo();
+        fs::write(
+            layout.root.join("rootleak.lua"),
+            r#"return { leaked = true }"#,
+        )
+        .unwrap();
+        fs::write(
+            layout.templates_dir.join("android.lua"),
+            r#"return { leaked = true }"#,
+        )
+        .unwrap();
+        fs::write(
+            &package_path,
+            r#"
+local root_ok = pcall(require, "rootleak")
+local template_ok = pcall(require, "templates.android")
+return {
+  id = "android/org.fdroid.fdroid",
+  name = (root_ok or template_ok) and "leaked" or "F-Droid",
+}
+"#,
+        )
+        .unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&layout.root).unwrap();
+        let result = evaluate_package_file(&layout, &package_path);
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        let package = result.unwrap();
         assert_eq!(package.name, "F-Droid");
     }
 }
