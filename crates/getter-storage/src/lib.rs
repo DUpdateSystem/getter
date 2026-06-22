@@ -184,6 +184,43 @@ ON CONFLICT(id) DO UPDATE SET
         Ok(())
     }
 
+    pub fn upsert_generated_tracked_package_preserving_user_state(
+        &self,
+        package_id: &PackageId,
+        repository_id: &RepositoryId,
+    ) -> Result<(), StorageError> {
+        self.conn.execute(
+            r#"
+INSERT INTO tracked_packages(
+    package_id,
+    enabled,
+    favorite,
+    ignored_version,
+    repository_id,
+    package_resolution
+)
+VALUES (?1, 1, 0, NULL, ?2, ?3)
+ON CONFLICT(package_id) DO UPDATE SET
+    repository_id = CASE
+        WHEN tracked_packages.package_resolution = 'missing_package_definition'
+        THEN excluded.repository_id
+        ELSE tracked_packages.repository_id
+    END,
+    package_resolution = CASE
+        WHEN tracked_packages.package_resolution = 'missing_package_definition'
+        THEN excluded.package_resolution
+        ELSE tracked_packages.package_resolution
+    END
+"#,
+            params![
+                package_id.to_string(),
+                repository_id.as_str(),
+                StoredPackageResolution::GenerateLocalPackage.as_str(),
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn import_tracked_packages_with_migration_record(
         &self,
         packages: &[TrackedPackageUpsert],
@@ -206,6 +243,27 @@ ON CONFLICT(id) DO UPDATE SET
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn delete_generated_tracked_package(
+        &self,
+        package_id: &PackageId,
+        repository_id: &RepositoryId,
+    ) -> Result<bool, StorageError> {
+        let deleted = self.conn.execute(
+            r#"
+DELETE FROM tracked_packages
+WHERE package_id = ?1
+  AND repository_id = ?2
+  AND package_resolution = ?3
+"#,
+            params![
+                package_id.to_string(),
+                repository_id.as_str(),
+                StoredPackageResolution::GenerateLocalPackage.as_str(),
+            ],
+        )?;
+        Ok(deleted != 0)
     }
 
     pub fn tracked_packages(&self) -> Result<Vec<StoredTrackedPackage>, StorageError> {
@@ -533,6 +591,119 @@ mod tests {
             packages[0].package_resolution,
             StoredPackageResolution::OfficialRepositoryPackage
         );
+    }
+
+    #[test]
+    fn generated_tracking_preserves_existing_user_state_on_conflict() {
+        let db = MainDb::open_in_memory().unwrap();
+        let package_id: PackageId = "android/org.fdroid.fdroid".parse().unwrap();
+        let local_autogen = RepositoryId::new("local_autogen").unwrap();
+        db.upsert_tracked_package(&TrackedPackageUpsert {
+            package_id: package_id.clone(),
+            enabled: false,
+            favorite: true,
+            ignored_version: Some("9.9.9".to_owned()),
+            repository_id: None,
+            package_resolution: StoredPackageResolution::OfficialRepositoryPackage,
+        })
+        .unwrap();
+
+        db.upsert_generated_tracked_package_preserving_user_state(&package_id, &local_autogen)
+            .unwrap();
+
+        let packages = db.tracked_packages().unwrap();
+        assert_eq!(packages.len(), 1);
+        assert!(!packages[0].enabled);
+        assert!(packages[0].favorite);
+        assert_eq!(packages[0].ignored_version.as_deref(), Some("9.9.9"));
+        assert_eq!(packages[0].repository_id, None);
+        assert_eq!(
+            packages[0].package_resolution,
+            StoredPackageResolution::OfficialRepositoryPackage
+        );
+    }
+
+    #[test]
+    fn generated_tracking_fills_unresolved_tracking_metadata() {
+        let db = MainDb::open_in_memory().unwrap();
+        let package_id: PackageId = "android/org.fdroid.fdroid".parse().unwrap();
+        let local_autogen = insert_local_autogen_repo(&db);
+        db.upsert_tracked_package(&TrackedPackageUpsert {
+            package_id: package_id.clone(),
+            enabled: false,
+            favorite: true,
+            ignored_version: Some("9.9.9".to_owned()),
+            repository_id: None,
+            package_resolution: StoredPackageResolution::MissingPackageDefinition,
+        })
+        .unwrap();
+
+        db.upsert_generated_tracked_package_preserving_user_state(&package_id, &local_autogen)
+            .unwrap();
+
+        let packages = db.tracked_packages().unwrap();
+        assert_eq!(packages.len(), 1);
+        assert!(!packages[0].enabled);
+        assert!(packages[0].favorite);
+        assert_eq!(packages[0].ignored_version.as_deref(), Some("9.9.9"));
+        assert_eq!(packages[0].repository_id.as_ref(), Some(&local_autogen));
+        assert_eq!(
+            packages[0].package_resolution,
+            StoredPackageResolution::GenerateLocalPackage
+        );
+    }
+
+    #[test]
+    fn generated_tracking_delete_is_guarded_by_repo_and_resolution() {
+        let db = MainDb::open_in_memory().unwrap();
+        let package_id: PackageId = "android/org.fdroid.fdroid".parse().unwrap();
+        let local_autogen = insert_local_autogen_repo(&db);
+        db.upsert_tracked_package(&TrackedPackageUpsert {
+            package_id: package_id.clone(),
+            enabled: true,
+            favorite: true,
+            ignored_version: Some("9.9.9".to_owned()),
+            repository_id: None,
+            package_resolution: StoredPackageResolution::OfficialRepositoryPackage,
+        })
+        .unwrap();
+
+        assert!(!db
+            .delete_generated_tracked_package(&package_id, &local_autogen)
+            .unwrap());
+        assert_eq!(db.tracked_packages().unwrap().len(), 1);
+
+        db.upsert_tracked_package(&TrackedPackageUpsert {
+            package_id: package_id.clone(),
+            enabled: true,
+            favorite: true,
+            ignored_version: Some("9.9.9".to_owned()),
+            repository_id: None,
+            package_resolution: StoredPackageResolution::MissingPackageDefinition,
+        })
+        .unwrap();
+        db.upsert_generated_tracked_package_preserving_user_state(&package_id, &local_autogen)
+            .unwrap();
+        assert!(db
+            .delete_generated_tracked_package(&package_id, &local_autogen)
+            .unwrap());
+        assert!(db.tracked_packages().unwrap().is_empty());
+    }
+
+    fn insert_local_autogen_repo(db: &MainDb) -> RepositoryId {
+        let local_autogen = RepositoryId::new("local_autogen").unwrap();
+        db.upsert_repository(
+            &RepositoryMetadata {
+                id: local_autogen.clone(),
+                name: "Local Autogen".to_owned(),
+                priority: RepositoryPriority::LOCAL_AUTOGEN,
+                api_version: REPO_API_VERSION_V1.to_owned(),
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        local_autogen
     }
 
     #[test]

@@ -12,6 +12,8 @@ struct CliWorld {
     data_dir: Option<PathBuf>,
     bundle: Option<PathBuf>,
     legacy_db: Option<PathBuf>,
+    inventory: Option<PathBuf>,
+    autogen_preview: Option<PathBuf>,
     fixture_repo_id: Option<String>,
     fixture_repo_path: Option<PathBuf>,
     fixture_package_id: Option<String>,
@@ -107,6 +109,82 @@ fn legacy_room_v17_database_with_only_unsupported_app_rows(world: &mut CliWorld)
     )
     .expect("insert unsupported app row");
     world.legacy_db = Some(legacy_db);
+}
+
+#[given(expr = "an installed inventory with Android app {string} labeled {string}")]
+fn installed_inventory_with_android_app(world: &mut CliWorld, package_name: String, label: String) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let inventory = temp.path().join("installed-inventory.json");
+    fs::write(
+        &inventory,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "format": "upgradeall-installed-inventory",
+            "version": 1,
+            "items": [
+                {
+                    "kind": "android",
+                    "package_name": package_name,
+                    "label": label,
+                    "version_name": "1.0.0",
+                    "version_code": 1,
+                }
+            ]
+        }))
+        .expect("inventory serializes"),
+    )
+    .expect("write inventory");
+    world.inventory = Some(inventory);
+}
+
+#[given("an empty installed inventory")]
+fn empty_installed_inventory(world: &mut CliWorld) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let inventory = temp.path().join("installed-inventory.json");
+    fs::write(
+        &inventory,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "format": "upgradeall-installed-inventory",
+            "version": 1,
+            "items": []
+        }))
+        .expect("inventory serializes"),
+    )
+    .expect("write inventory");
+    world.inventory = Some(inventory);
+}
+
+#[given(expr = "a tampered autogen cleanup preview for package {string}")]
+fn tampered_autogen_cleanup_preview_for_package(world: &mut CliWorld, package_id: String) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let preview = temp.path().join("tampered-cleanup-preview.json");
+    fs::write(
+        &preview,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "operation": "cleanup.preview",
+            "target_repo_id": "local_autogen",
+            "target_repo_path": local_autogen_repo_path(world),
+            "summary": {
+                "candidate_count": 1,
+                "skipped_count": 0,
+                "write_count": 0,
+                "delete_count": 1,
+            },
+            "candidates": [
+                {
+                    "package_id": package_id,
+                    "action": "delete",
+                    "output_relative_path": package_relative_path(&package_id),
+                    "content_hash": "fnv1a64:0000000000000000",
+                    "reason": "not_in_installed_inventory",
+                }
+            ],
+            "skipped": [],
+            "diagnostics": [],
+        }))
+        .expect("preview serializes"),
+    )
+    .expect("write tampered cleanup preview");
+    world.autogen_preview = Some(preview);
 }
 
 #[given(expr = "a fixture Lua repository {string} with package {string}")]
@@ -329,6 +407,113 @@ fn run_getter_legacy_report_list(world: &mut CliWorld) {
     world.json = None;
 }
 
+#[when("I run getter autogen installed preview for that inventory")]
+fn run_getter_autogen_installed_preview(world: &mut CliWorld) {
+    let inventory = world.inventory.as_ref().expect("inventory exists");
+    let output = run_getter(
+        world,
+        [
+            "autogen".to_owned(),
+            "installed".to_owned(),
+            "preview".to_owned(),
+            "--inventory".to_owned(),
+            inventory.to_string_lossy().to_string(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter autogen installed apply for that preview with accept-all")]
+fn run_getter_autogen_installed_apply_accept_all(world: &mut CliWorld) {
+    let preview = world
+        .autogen_preview
+        .as_ref()
+        .expect("autogen preview exists");
+    let output = run_getter(
+        world,
+        [
+            "autogen".to_owned(),
+            "installed".to_owned(),
+            "apply".to_owned(),
+            "--preview".to_owned(),
+            preview.to_string_lossy().to_string(),
+            "--accept-all".to_owned(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter autogen cleanup preview for that inventory")]
+fn run_getter_autogen_cleanup_preview(world: &mut CliWorld) {
+    let inventory = world.inventory.as_ref().expect("inventory exists");
+    let output = run_getter(
+        world,
+        [
+            "autogen".to_owned(),
+            "cleanup".to_owned(),
+            "preview".to_owned(),
+            "--inventory".to_owned(),
+            inventory.to_string_lossy().to_string(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter autogen cleanup apply for that preview with accept-all")]
+fn run_getter_autogen_cleanup_apply_accept_all(world: &mut CliWorld) {
+    let preview = world
+        .autogen_preview
+        .as_ref()
+        .expect("autogen preview exists");
+    let output = run_getter(
+        world,
+        [
+            "autogen".to_owned(),
+            "cleanup".to_owned(),
+            "apply".to_owned(),
+            "--preview".to_owned(),
+            preview.to_string_lossy().to_string(),
+            "--accept-all".to_owned(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter repo validate for local_autogen")]
+fn run_getter_repo_validate_for_local_autogen(world: &mut CliWorld) {
+    let repo_path = local_autogen_repo_path(world);
+    let output = run_getter(
+        world,
+        [
+            "repo".to_owned(),
+            "validate".to_owned(),
+            repo_path.to_string_lossy().to_string(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when(expr = "I run getter package eval for package {string} from local_autogen")]
+fn run_getter_package_eval_from_local_autogen(world: &mut CliWorld, package_id: String) {
+    let output = run_getter(
+        world,
+        [
+            "package".to_owned(),
+            "eval".to_owned(),
+            package_id,
+            "--repo".to_owned(),
+            "local_autogen".to_owned(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
 #[then("the command succeeds")]
 fn command_succeeds(world: &mut CliWorld) {
     let output = world.output.as_ref().expect("command output exists");
@@ -349,6 +534,17 @@ fn command_fails_with_migration_error(world: &mut CliWorld) {
         json["error"]["code"].as_str(),
         Some("migration.invalid_bundle" | "migration.invalid_db" | "migration.unsupported_db")
     ));
+    world.json = Some(json);
+}
+
+#[then("the command fails with an autogen error")]
+fn command_fails_with_autogen_error(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("command output exists");
+    assert_eq!(output.status.code(), Some(1));
+    let json = parse_stdout(output);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["command"], "autogen cleanup apply");
+    assert_eq!(json["error"]["code"], "autogen.error");
     world.json = Some(json);
 }
 
@@ -513,6 +709,164 @@ fn output_contains_named_package(world: &mut CliWorld, package_id: String, packa
     assert_eq!(json["command"], "package eval");
     assert_eq!(json["data"]["package"]["id"], package_id);
     assert_eq!(json["data"]["package"]["name"], package_name);
+}
+
+#[then(expr = "the autogen preview contains candidate {string}")]
+fn autogen_preview_contains_candidate(world: &mut CliWorld, package_id: String) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "autogen installed preview");
+    assert_eq!(json["data"]["operation"], "installed.preview");
+    let candidates = json["data"]["candidates"]
+        .as_array()
+        .expect("candidates array");
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate["package_id"].as_str() == Some(package_id.as_str())),
+        "preview should contain {package_id}: {candidates:?}"
+    );
+}
+
+#[then("the local_autogen repository has not been written")]
+fn local_autogen_repository_has_not_been_written(world: &mut CliWorld) {
+    assert!(
+        !local_autogen_repo_path(world).exists(),
+        "preview must not create local_autogen"
+    );
+}
+
+#[then("I save the autogen preview to a file")]
+fn save_autogen_preview_to_file(world: &mut CliWorld) {
+    let data = current_json(world)
+        .get("data")
+        .expect("autogen command data exists")
+        .clone();
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let preview = temp.path().join("autogen-preview.json");
+    fs::write(
+        &preview,
+        serde_json::to_vec_pretty(&data).expect("preview serializes"),
+    )
+    .expect("write autogen preview");
+    world.autogen_preview = Some(preview);
+}
+
+#[then(expr = "the local_autogen repository contains generated package {string}")]
+fn local_autogen_repository_contains_generated_package(world: &mut CliWorld, package_id: String) {
+    let path = local_autogen_repo_path(world).join(package_relative_path(&package_id));
+    assert!(path.is_file(), "generated package should exist: {path:?}");
+    let content = fs::read_to_string(&path).expect("generated package readable");
+    assert!(content.contains("@generated by UpgradeAll getter local_autogen"));
+}
+
+#[then(expr = "the app list contains autogen tracked package {string}")]
+fn app_list_contains_autogen_tracked_package(world: &mut CliWorld, package_id: String) {
+    let output = run_getter(world, ["app".to_owned(), "list".to_owned()]);
+    assert_success(&output);
+    let json = parse_stdout(&output);
+    let apps = json["data"]["apps"].as_array().expect("apps array");
+    let app = apps
+        .iter()
+        .find(|app| app["id"].as_str() == Some(package_id.as_str()))
+        .unwrap_or_else(|| panic!("app list should contain {package_id}: {apps:?}"));
+    assert_eq!(app["repository_id"], "local_autogen");
+    assert_eq!(app["package_resolution"], "generate_local_package");
+}
+
+#[then(expr = "the autogen preview skips package {string} because repository {string} covers it")]
+fn autogen_preview_skips_package_because_repository_covers_it(
+    world: &mut CliWorld,
+    package_id: String,
+    repository_id: String,
+) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "autogen installed preview");
+    let skipped = json["data"]["skipped"].as_array().expect("skipped array");
+    let skip = skipped
+        .iter()
+        .find(|skip| skip["package_id"].as_str() == Some(package_id.as_str()))
+        .unwrap_or_else(|| panic!("skipped should contain {package_id}: {skipped:?}"));
+    assert_eq!(skip["reason"], "covered_by_higher_priority_repo");
+    assert_eq!(skip["covering_repo_id"], repository_id);
+}
+
+#[then(expr = "the autogen cleanup preview contains delete candidate {string}")]
+fn autogen_cleanup_preview_contains_delete_candidate(world: &mut CliWorld, package_id: String) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "autogen cleanup preview");
+    assert_eq!(json["data"]["operation"], "cleanup.preview");
+    let candidates = json["data"]["candidates"]
+        .as_array()
+        .expect("candidates array");
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate["package_id"].as_str() == Some(package_id.as_str()))
+        .unwrap_or_else(|| {
+            panic!("cleanup candidates should contain {package_id}: {candidates:?}")
+        });
+    assert_eq!(candidate["action"], "delete");
+}
+
+#[then(expr = "the local_autogen repository does not contain generated package {string}")]
+fn local_autogen_repository_does_not_contain_generated_package(
+    world: &mut CliWorld,
+    package_id: String,
+) {
+    let path = local_autogen_repo_path(world).join(package_relative_path(&package_id));
+    assert!(
+        !path.exists(),
+        "generated package should be deleted: {path:?}"
+    );
+}
+
+#[then(expr = "the app list does not contain package {string}")]
+fn app_list_does_not_contain_package(world: &mut CliWorld, package_id: String) {
+    let output = run_getter(world, ["app".to_owned(), "list".to_owned()]);
+    assert_success(&output);
+    let json = parse_stdout(&output);
+    let apps = json["data"]["apps"].as_array().expect("apps array");
+    assert!(
+        apps.iter()
+            .all(|app| app["id"].as_str() != Some(package_id.as_str())),
+        "app list must not contain {package_id}: {apps:?}"
+    );
+}
+
+#[then(expr = "I replace generated autogen package {string} with user-edited content")]
+fn replace_generated_autogen_package_with_user_edited_content(
+    world: &mut CliWorld,
+    package_id: String,
+) {
+    let path = local_autogen_repo_path(world).join(package_relative_path(&package_id));
+    assert!(path.is_file(), "generated package should exist before edit");
+    fs::write(
+        &path,
+        format!(
+            "-- user edited\nreturn package_def {{ id = {id:?}, name = \"Edited Autogen\" }}\n",
+            id = package_id
+        ),
+    )
+    .expect("overwrite generated package with user edit");
+}
+
+#[then(expr = "local repository contains preserved package {string}")]
+fn local_repository_contains_preserved_package(world: &mut CliWorld, package_id: String) {
+    let local_path = world
+        .data_dir
+        .as_ref()
+        .expect("data dir exists")
+        .join("repositories")
+        .join("local")
+        .join(package_relative_path(&package_id));
+    assert!(
+        local_path.is_file(),
+        "modified autogen file should be preserved into local: {local_path:?}"
+    );
+    let content = fs::read_to_string(local_path).expect("preserved local file readable");
+    assert!(content.contains("Edited Autogen"));
 }
 
 #[then("no partially usable imported state is created")]
@@ -683,6 +1037,24 @@ fn current_json(world: &mut CliWorld) -> &Value {
     world
         .json
         .get_or_insert_with(|| parse_stdout(world.output.as_ref().expect("command output exists")))
+}
+
+fn local_autogen_repo_path(world: &CliWorld) -> PathBuf {
+    world
+        .data_dir
+        .as_ref()
+        .expect("data dir exists")
+        .join("repositories")
+        .join("local_autogen")
+}
+
+fn package_relative_path(package_id: &str) -> PathBuf {
+    let (kind, name) = package_id
+        .split_once('/')
+        .expect("test package id has kind/name");
+    PathBuf::from("packages")
+        .join(kind)
+        .join(format!("{name}.lua"))
 }
 
 fn create_fixture_lua_repository(
