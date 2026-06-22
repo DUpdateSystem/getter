@@ -521,6 +521,7 @@ dependencies = [
  "cucumber",
  "getter-core",
  "getter-storage",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -581,6 +582,7 @@ version = "0.1.0"
 dependencies = [
  "getter-core",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "thiserror 1.0.69",
 ]

@@ -1,4 +1,5 @@
 use cucumber::{given, then, when, World as _};
+use rusqlite::Connection;
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
@@ -10,6 +11,7 @@ struct CliWorld {
     temp: Option<TempDir>,
     data_dir: Option<PathBuf>,
     bundle: Option<PathBuf>,
+    legacy_db: Option<PathBuf>,
     fixture_repo_id: Option<String>,
     fixture_repo_path: Option<PathBuf>,
     fixture_package_id: Option<String>,
@@ -63,6 +65,48 @@ fn valid_legacy_export_bundle_with_android_app(world: &mut CliWorld) {
     )
     .expect("write valid bundle");
     world.bundle = Some(bundle);
+}
+
+#[given("a legacy Room v17 database with an Android app and extra app state")]
+fn legacy_room_v17_database_with_android_app(world: &mut CliWorld) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let legacy_db = temp.path().join("app_metadata_database.db");
+    create_fixture_legacy_room_db(&legacy_db, 17, true);
+    world.legacy_db = Some(legacy_db);
+}
+
+#[given("an unsupported legacy Room database")]
+fn unsupported_legacy_room_database(world: &mut CliWorld) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let legacy_db = temp.path().join("app_metadata_database.db");
+    create_fixture_legacy_room_db(&legacy_db, 16, true);
+    world.legacy_db = Some(legacy_db);
+}
+
+#[given("a malformed legacy Room database")]
+fn malformed_legacy_room_database(world: &mut CliWorld) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let legacy_db = temp.path().join("app_metadata_database.db");
+    create_fixture_legacy_room_db(&legacy_db, 17, false);
+    world.legacy_db = Some(legacy_db);
+}
+
+#[given("a legacy Room v17 database with only unsupported app rows")]
+fn legacy_room_v17_database_with_only_unsupported_app_rows(world: &mut CliWorld) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let legacy_db = temp.path().join("app_metadata_database.db");
+    create_fixture_legacy_room_db(&legacy_db, 17, true);
+    let conn = Connection::open(&legacy_db).expect("open legacy Room fixture");
+    conn.execute("DELETE FROM extra_app", [])
+        .expect("delete fixture extra_app");
+    conn.execute("DELETE FROM app", [])
+        .expect("delete fixture app");
+    conn.execute(
+        "INSERT INTO app(id, name, app_id, ignore_version_number, star) VALUES (1, 'Unsupported', ?1, NULL, 0)",
+        [r#"{"unknown_provider":"com.example.unsupported"}"#],
+    )
+    .expect("insert unsupported app row");
+    world.legacy_db = Some(legacy_db);
 }
 
 #[given(expr = "a fixture Lua repository {string} with package {string}")]
@@ -263,6 +307,21 @@ fn run_getter_legacy_import(world: &mut CliWorld) {
     world.json = None;
 }
 
+#[when("I run getter legacy import-room-db for that database")]
+fn run_getter_legacy_import_db(world: &mut CliWorld) {
+    let legacy_db = world.legacy_db.as_ref().expect("legacy db exists");
+    let output = run_getter(
+        world,
+        [
+            "legacy".to_owned(),
+            "import-room-db".to_owned(),
+            legacy_db.to_string_lossy().to_string(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
 #[when("I run getter legacy report-list for that directory")]
 fn run_getter_legacy_report_list(world: &mut CliWorld) {
     let output = run_getter(world, ["legacy".to_owned(), "report-list".to_owned()]);
@@ -282,8 +341,31 @@ fn command_fails_with_migration_error(world: &mut CliWorld) {
     assert_eq!(output.status.code(), Some(20));
     let json = parse_stdout(output);
     assert_eq!(json["ok"], false);
-    assert_eq!(json["command"], "legacy import-room-bundle");
-    assert_eq!(json["error"]["code"], "migration.invalid_bundle");
+    assert!(
+        json["command"] == "legacy import-room-bundle"
+            || json["command"] == "legacy import-room-db"
+    );
+    assert!(matches!(
+        json["error"]["code"].as_str(),
+        Some("migration.invalid_bundle" | "migration.invalid_db" | "migration.unsupported_db")
+    ));
+    world.json = Some(json);
+}
+
+#[then(expr = "the command fails with direct DB migration error {string}")]
+fn command_fails_with_direct_db_migration_error(world: &mut CliWorld, code: String) {
+    let output = world.output.as_ref().expect("command output exists");
+    assert_eq!(output.status.code(), Some(20));
+    let json = parse_stdout(output);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["command"], "legacy import-room-db");
+    assert_eq!(json["error"]["code"], code);
+    let report_path = json["error"]["report_path"]
+        .as_str()
+        .expect("report_path should be a string");
+    let report = fs::read_to_string(report_path).expect("report should be readable");
+    let report_json: Value = serde_json::from_str(&report).expect("report should be JSON");
+    assert_eq!(report_json["code"], code);
     world.json = Some(json);
 }
 
@@ -451,7 +533,10 @@ fn sanitized_migration_report_available(world: &mut CliWorld) {
     let report_json: Value = serde_json::from_str(&report).expect("report should be JSON");
     assert_eq!(report_json["ok"], false);
     assert_eq!(report_json["imported_records"], 0);
-    assert!(report_json.get("bundle_file_name").is_some());
+    assert!(
+        report_json.get("source_file_name").is_some()
+            || report_json.get("bundle_file_name").is_some()
+    );
     assert!(
         report_json.get("raw_bundle").is_none(),
         "report must not include raw bundle content"
@@ -462,8 +547,69 @@ fn sanitized_migration_report_available(world: &mut CliWorld) {
 fn import_reports_one_tracked_app(world: &mut CliWorld) {
     let json = current_json(world);
     assert_eq!(json["ok"], true);
-    assert_eq!(json["command"], "legacy import-room-bundle");
+    assert!(
+        json["command"] == "legacy import-room-bundle"
+            || json["command"] == "legacy import-room-db"
+    );
     assert_eq!(json["data"]["imported_records"], 1);
+    assert_eq!(
+        json["data"]["apps"].as_array().expect("apps array").len(),
+        1
+    );
+}
+
+#[then("the direct migration reports dropped legacy hub warnings")]
+fn direct_migration_reports_dropped_hub_warnings(world: &mut CliWorld) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "legacy import-room-db");
+    assert_eq!(json["data"]["source_counts"]["hub_rows"], 1);
+    assert_eq!(json["data"]["source_counts"]["extra_hub_rows"], 1);
+    let warnings = json["data"]["warnings"].as_array().expect("warnings array");
+    assert!(warnings
+        .iter()
+        .any(|warning| { warning["code"].as_str() == Some("legacy.dropped_hub_rows") }));
+    assert!(warnings
+        .iter()
+        .any(|warning| { warning["code"].as_str() == Some("legacy.dropped_extra_hub_rows") }));
+}
+
+#[then("the direct migration report stays sanitized")]
+fn direct_migration_report_stays_sanitized(world: &mut CliWorld) {
+    let json = current_json(world);
+    let stdout = serde_json::to_string(json).expect("JSON output serializes");
+    assert_sanitized_direct_room_report_text(&stdout);
+    let report_path = json["data"]["report_path"]
+        .as_str()
+        .expect("report_path should be a string");
+    let report = fs::read_to_string(report_path).expect("report should be readable");
+    assert_sanitized_direct_room_report_text(&report);
+    let report_json: Value = serde_json::from_str(&report).expect("report should be JSON");
+    assert_eq!(report_json["source_counts"]["hub_rows"], 1);
+    assert_eq!(report_json["source_counts"]["extra_hub_rows"], 1);
+    assert_report_has_drop_warnings(&report_json);
+}
+
+#[then("the output reports the legacy Room migration was already completed")]
+fn output_reports_legacy_room_migration_already_completed(world: &mut CliWorld) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "legacy import-room-db");
+    assert_eq!(json["data"]["already_imported"], true);
+    assert_eq!(json["data"]["imported_records"], 0);
+    assert_eq!(
+        json["data"]["apps"].as_array().expect("apps array").len(),
+        1
+    );
+}
+
+#[then("the bundle output reports the legacy Room migration was already completed")]
+fn bundle_output_reports_legacy_room_migration_already_completed(world: &mut CliWorld) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "legacy import-room-bundle");
+    assert_eq!(json["data"]["already_imported"], true);
+    assert_eq!(json["data"]["imported_records"], 0);
     assert_eq!(
         json["data"]["apps"].as_array().expect("apps array").len(),
         1
@@ -484,6 +630,21 @@ fn output_lists_migration_report(world: &mut CliWorld, code: String) {
     );
 }
 
+#[then("the direct migration report list stays sanitized")]
+fn direct_migration_report_list_stays_sanitized(world: &mut CliWorld) {
+    let json = current_json(world);
+    let report_list = serde_json::to_string(json).expect("report list serializes");
+    assert_sanitized_direct_room_report_text(&report_list);
+    let reports = json["data"]["reports"].as_array().expect("reports array");
+    let imported = reports
+        .iter()
+        .find(|report| report["code"].as_str() == Some("migration.imported"))
+        .expect("imported report exists");
+    assert_eq!(imported["source_counts"]["hub_rows"], 1);
+    assert_eq!(imported["source_counts"]["extra_hub_rows"], 1);
+    assert_report_has_drop_warnings(imported);
+}
+
 #[then(expr = "the app list contains imported package {string}")]
 fn app_list_contains_imported_package(world: &mut CliWorld, package_id: String) {
     let output = run_getter(world, ["app".to_owned(), "list".to_owned()]);
@@ -497,6 +658,23 @@ fn app_list_contains_imported_package(world: &mut CliWorld, package_id: String) 
     assert_eq!(app["favorite"], true);
     assert_eq!(app["ignored_version"], "1.20.0");
     assert_eq!(app["package_resolution"], "official_repository_package");
+    world.output = Some(output);
+    world.json = Some(json);
+}
+
+#[then(expr = "the app list contains directly imported package {string}")]
+fn app_list_contains_directly_imported_package(world: &mut CliWorld, package_id: String) {
+    let output = run_getter(world, ["app".to_owned(), "list".to_owned()]);
+    assert_success(&output);
+    let json = parse_stdout(&output);
+    let apps = json["data"]["apps"].as_array().expect("apps array");
+    let app = apps
+        .iter()
+        .find(|app| app["id"].as_str() == Some(package_id.as_str()))
+        .unwrap_or_else(|| panic!("app list should contain {package_id}: {apps:?}"));
+    assert_eq!(app["favorite"], true);
+    assert_eq!(app["ignored_version"], "1.20.0");
+    assert_eq!(app["package_resolution"], "missing_package_definition");
     world.output = Some(output);
     world.json = Some(json);
 }
@@ -547,6 +725,96 @@ return package_def {{
     world.fixture_repo_id = Some(repo_id);
     world.fixture_repo_path = Some(repo_path);
     world.fixture_package_id = Some(package_id);
+}
+
+fn create_fixture_legacy_room_db(path: &PathBuf, version: u32, include_app_table: bool) {
+    let conn = Connection::open(path).expect("create legacy Room fixture");
+    conn.pragma_update(None, "user_version", version)
+        .expect("set user_version");
+    if include_app_table {
+        conn.execute_batch(
+            r#"
+CREATE TABLE app (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    app_id TEXT NOT NULL,
+    invalid_version_number_field_regex TEXT,
+    include_version_number_field_regex TEXT,
+    ignore_version_number TEXT,
+    cloud_config TEXT,
+    enable_hub_list TEXT,
+    star INTEGER
+);
+CREATE TABLE extra_app (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT NOT NULL,
+    mark_version_number TEXT
+);
+CREATE TABLE hub (
+    uuid TEXT PRIMARY KEY,
+    hub_config TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    ignore_app_id_list TEXT NOT NULL,
+    applications_mode INTEGER NOT NULL DEFAULT 0,
+    user_ignore_app_id_list TEXT NOT NULL,
+    sort_point INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE extra_hub (
+    id TEXT PRIMARY KEY,
+    enable_global INTEGER NOT NULL DEFAULT 0,
+    url_replace_search TEXT,
+    url_replace_string TEXT
+);
+"#,
+        )
+        .expect("create legacy tables");
+        let app_id = r#"{"android_app_package":"org.fdroid.fdroid"}"#;
+        conn.execute(
+            "INSERT INTO app(id, name, app_id, ignore_version_number, star) VALUES (1, 'F-Droid', ?1, '1.10.0', 1)",
+            [app_id],
+        )
+        .expect("insert app");
+        conn.execute(
+            "INSERT INTO extra_app(id, app_id, mark_version_number) VALUES (1, ?1, '1.20.0')",
+            [app_id],
+        )
+        .expect("insert extra app");
+        conn.execute(
+            "INSERT INTO hub(uuid, hub_config, auth, ignore_app_id_list, user_ignore_app_id_list) VALUES ('legacy-hub', '{\"secret\":\"UA_DIRECT_DB_SENTINEL_SECRET\"}', '{\"token\":\"UA_DIRECT_DB_SENTINEL_TOKEN\"}', '[]', '[]')",
+            [],
+        )
+        .expect("insert hub");
+        conn.execute(
+            "INSERT INTO extra_hub(id, enable_global, url_replace_search, url_replace_string) VALUES ('GLOBAL', 1, 'UA_DIRECT_DB_SENTINEL_SEARCH', 'UA_DIRECT_DB_SENTINEL_REPLACE')",
+            [],
+        )
+        .expect("insert extra hub");
+    }
+}
+
+fn assert_report_has_drop_warnings(report: &Value) {
+    let warnings = report["warnings"].as_array().expect("warnings array");
+    assert!(warnings
+        .iter()
+        .any(|warning| warning["code"].as_str() == Some("legacy.dropped_hub_rows")));
+    assert!(warnings
+        .iter()
+        .any(|warning| warning["code"].as_str() == Some("legacy.dropped_extra_hub_rows")));
+}
+
+fn assert_sanitized_direct_room_report_text(text: &str) {
+    for forbidden in [
+        "UA_DIRECT_DB_SENTINEL_SECRET",
+        "UA_DIRECT_DB_SENTINEL_TOKEN",
+        "UA_DIRECT_DB_SENTINEL_SEARCH",
+        "UA_DIRECT_DB_SENTINEL_REPLACE",
+        "legacy-hub",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "direct Room migration report must not expose {forbidden}: {text}"
+        );
+    }
 }
 
 fn create_custom_fixture_lua_repository(

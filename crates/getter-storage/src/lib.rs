@@ -4,7 +4,7 @@ pub mod legacy_room;
 
 use getter_core::repository::RepositoryMetadata;
 use getter_core::{PackageId, RepositoryId, RepositoryPriority};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Params, Transaction};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -180,33 +180,31 @@ ON CONFLICT(id) DO UPDATE SET
         &self,
         package: &TrackedPackageUpsert,
     ) -> Result<(), StorageError> {
-        self.conn.execute(
+        execute_tracked_package_upsert(&self.conn, package)?;
+        Ok(())
+    }
+
+    pub fn import_tracked_packages_with_migration_record(
+        &self,
+        packages: &[TrackedPackageUpsert],
+        record: &MigrationRecordUpsert<'_>,
+    ) -> Result<(), StorageError> {
+        let tx = self.conn.unchecked_transaction()?;
+        for package in packages {
+            execute_tracked_package_upsert(&tx, package)?;
+        }
+        tx.execute(
             r#"
-INSERT INTO tracked_packages(
-    package_id,
-    enabled,
-    favorite,
-    ignored_version,
-    repository_id,
-    package_resolution
-)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-ON CONFLICT(package_id) DO UPDATE SET
-    enabled = excluded.enabled,
-    favorite = excluded.favorite,
-    ignored_version = excluded.ignored_version,
-    repository_id = excluded.repository_id,
-    package_resolution = excluded.package_resolution
+INSERT INTO migration_records(id, source, report_json)
+VALUES (?1, ?2, ?3)
+ON CONFLICT(id) DO UPDATE SET
+    source = excluded.source,
+    completed_at_unix = unixepoch(),
+    report_json = excluded.report_json
 "#,
-            params![
-                package.package_id.to_string(),
-                bool_to_i64(package.enabled),
-                bool_to_i64(package.favorite),
-                package.ignored_version.as_deref(),
-                package.repository_id.as_ref().map(RepositoryId::as_str),
-                package.package_resolution.as_str(),
-            ],
+            params![record.id, record.source, record.report_json],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -261,6 +259,15 @@ ON CONFLICT(id) DO UPDATE SET
             params![id, source, report_json],
         )?;
         Ok(())
+    }
+
+    pub fn migration_record_exists(&self, id: &str) -> Result<bool, StorageError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM migration_records WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        Ok(count != 0)
     }
 
     pub fn migration_records(&self) -> Result<Vec<StoredMigrationRecord>, StorageError> {
@@ -371,6 +378,13 @@ pub struct StoredMigrationRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MigrationRecordUpsert<'a> {
+    pub id: &'a str,
+    pub source: &'a str,
+    pub report_json: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoredPackageResolution {
     OfficialRepositoryPackage,
     GenerateLocalPackage,
@@ -398,6 +412,55 @@ impl FromStr for StoredPackageResolution {
             other => Err(StorageError::PackageResolution(other.to_owned())),
         }
     }
+}
+
+trait SqlExecutor {
+    fn execute_statement<P: Params>(&self, sql: &str, params: P) -> Result<usize, rusqlite::Error>;
+}
+
+impl SqlExecutor for Connection {
+    fn execute_statement<P: Params>(&self, sql: &str, params: P) -> Result<usize, rusqlite::Error> {
+        self.execute(sql, params)
+    }
+}
+
+impl SqlExecutor for Transaction<'_> {
+    fn execute_statement<P: Params>(&self, sql: &str, params: P) -> Result<usize, rusqlite::Error> {
+        self.execute(sql, params)
+    }
+}
+
+fn execute_tracked_package_upsert(
+    conn: &impl SqlExecutor,
+    package: &TrackedPackageUpsert,
+) -> Result<usize, rusqlite::Error> {
+    conn.execute_statement(
+        r#"
+INSERT INTO tracked_packages(
+    package_id,
+    enabled,
+    favorite,
+    ignored_version,
+    repository_id,
+    package_resolution
+)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+ON CONFLICT(package_id) DO UPDATE SET
+    enabled = excluded.enabled,
+    favorite = excluded.favorite,
+    ignored_version = excluded.ignored_version,
+    repository_id = excluded.repository_id,
+    package_resolution = excluded.package_resolution
+"#,
+        params![
+            package.package_id.to_string(),
+            bool_to_i64(package.enabled),
+            bool_to_i64(package.favorite),
+            package.ignored_version.as_deref(),
+            package.repository_id.as_ref().map(RepositoryId::as_str),
+            package.package_resolution.as_str(),
+        ],
+    )
 }
 
 fn bool_to_i64(value: bool) -> i64 {
@@ -475,6 +538,7 @@ mod tests {
     #[test]
     fn main_db_records_migration_completion() {
         let db = MainDb::open_in_memory().unwrap();
+        assert!(!db.migration_record_exists("legacy-room-v17").unwrap());
         db.insert_migration_record("legacy-room-v17", "legacy-room-bundle", r#"{"ok":true}"#)
             .unwrap();
 
@@ -482,6 +546,7 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].id, "legacy-room-v17");
         assert_eq!(records[0].source, "legacy-room-bundle");
+        assert!(db.migration_record_exists("legacy-room-v17").unwrap());
     }
 
     #[test]

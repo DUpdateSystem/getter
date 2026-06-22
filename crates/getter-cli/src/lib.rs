@@ -9,11 +9,13 @@ use getter_core::lua::evaluate_package_file;
 use getter_core::repository::{RepositoryLayout, RepositoryMetadata};
 use getter_core::{PackageId, RepositoryId, RepositoryPriority};
 use getter_storage::legacy_room::{
-    map_legacy_app, LegacyAppKind, LegacyAppRecord, LegacyExtraAppRecord, LegacyPackageResolution,
+    map_legacy_app, read_legacy_room_database, LegacyAppKind, LegacyAppRecord,
+    LegacyExtraAppRecord, LegacyPackageResolution, LegacyRoomDbImport, LegacyRoomImportWarning,
+    LegacyRoomReadError,
 };
 use getter_storage::{
-    CacheDb, MainDb, StorageError, StoredPackageResolution, StoredRepository, StoredTrackedPackage,
-    TrackedPackageUpsert,
+    CacheDb, MainDb, MigrationRecordUpsert, StorageError, StoredPackageResolution,
+    StoredRepository, StoredTrackedPackage, TrackedPackageUpsert,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -23,6 +25,7 @@ use std::path::{Path, PathBuf};
 const MAIN_DB_FILE: &str = "main.db";
 const CACHE_DB_FILE: &str = "cache.db";
 const MIGRATION_REPORTS_DIR: &str = "migration-reports";
+const LEGACY_ROOM_MIGRATION_ID: &str = "legacy-room-v17";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliInvocation {
@@ -54,6 +57,9 @@ pub enum CliCommand {
     StorageValidate,
     LegacyImportRoomBundle {
         bundle: PathBuf,
+    },
+    LegacyImportRoomDb {
+        db: PathBuf,
     },
     LegacyReportList,
 }
@@ -87,6 +93,10 @@ pub enum CliError {
     InvalidLegacyBundle { report_path: PathBuf },
     #[error("Legacy Room bundle import is not implemented yet")]
     UnsupportedLegacyBundle { report_path: PathBuf },
+    #[error("Legacy Room database is invalid")]
+    InvalidLegacyDb { report_path: PathBuf },
+    #[error("Legacy Room database version is not supported")]
+    UnsupportedLegacyDb { report_path: PathBuf },
 }
 
 impl CliError {
@@ -95,9 +105,10 @@ impl CliError {
             Self::Usage(_) => ExitCode::Usage,
             Self::Storage(_) => ExitCode::Storage,
             Self::Repository(_) | Self::PackageEval(_) => ExitCode::GenericFailure,
-            Self::InvalidLegacyBundle { .. } | Self::UnsupportedLegacyBundle { .. } => {
-                ExitCode::Migration
-            }
+            Self::InvalidLegacyBundle { .. }
+            | Self::UnsupportedLegacyBundle { .. }
+            | Self::InvalidLegacyDb { .. }
+            | Self::UnsupportedLegacyDb { .. } => ExitCode::Migration,
         }
     }
 
@@ -109,6 +120,8 @@ impl CliError {
             Self::PackageEval(_) => "package.eval_error",
             Self::InvalidLegacyBundle { .. } => "migration.invalid_bundle",
             Self::UnsupportedLegacyBundle { .. } => "migration.unsupported_bundle",
+            Self::InvalidLegacyDb { .. } => "migration.invalid_db",
+            Self::UnsupportedLegacyDb { .. } => "migration.unsupported_db",
         }
     }
 
@@ -122,6 +135,8 @@ impl CliError {
             Self::UnsupportedLegacyBundle { .. } => {
                 "Legacy Room bundle import is not implemented yet"
             }
+            Self::InvalidLegacyDb { .. } => "Legacy Room database is invalid",
+            Self::UnsupportedLegacyDb { .. } => "Legacy Room database version is not supported",
         }
     }
 
@@ -131,14 +146,19 @@ impl CliError {
             | Self::Storage(detail)
             | Self::Repository(detail)
             | Self::PackageEval(detail) => Some(detail.as_str()),
-            Self::InvalidLegacyBundle { .. } | Self::UnsupportedLegacyBundle { .. } => None,
+            Self::InvalidLegacyBundle { .. }
+            | Self::UnsupportedLegacyBundle { .. }
+            | Self::InvalidLegacyDb { .. }
+            | Self::UnsupportedLegacyDb { .. } => None,
         }
     }
 
     fn report_path(&self) -> Option<&Path> {
         match self {
             Self::InvalidLegacyBundle { report_path }
-            | Self::UnsupportedLegacyBundle { report_path } => Some(report_path.as_path()),
+            | Self::UnsupportedLegacyBundle { report_path }
+            | Self::InvalidLegacyDb { report_path }
+            | Self::UnsupportedLegacyDb { report_path } => Some(report_path.as_path()),
             Self::Usage(_) | Self::Storage(_) | Self::Repository(_) | Self::PackageEval(_) => None,
         }
     }
@@ -272,6 +292,11 @@ where
                 bundle: PathBuf::from(bundle),
             }
         }
+        [domain, command, db] if domain == "legacy" && command == "import-room-db" => {
+            CliCommand::LegacyImportRoomDb {
+                db: PathBuf::from(db),
+            }
+        }
         [domain, command] if domain == "legacy" && command == "report-list" => {
             CliCommand::LegacyReportList
         }
@@ -367,6 +392,14 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
         }
         CliCommand::LegacyImportRoomBundle { bundle } => {
             let db = open_main_db(&invocation.data_dir)?;
+            if db.migration_record_exists(LEGACY_ROOM_MIGRATION_ID)? {
+                let records = db.tracked_packages()?;
+                return Ok(json!({
+                    "already_imported": true,
+                    "imported_records": 0,
+                    "apps": tracked_packages_json(records),
+                }));
+            }
             let bytes = fs::read(&bundle).map_err(|source| {
                 match create_migration_report(
                     &invocation.data_dir,
@@ -375,6 +408,7 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
                     &format!("failed to read bundle: {source}"),
                     0,
                     0,
+                    &[],
                 ) {
                     Ok(report_path) => CliError::InvalidLegacyBundle { report_path },
                     Err(error) => error,
@@ -388,6 +422,7 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
                     &format!("failed to parse JSON bundle: {source}"),
                     0,
                     0,
+                    &[],
                 ) {
                     Ok(report_path) => CliError::InvalidLegacyBundle { report_path },
                     Err(error) => error,
@@ -404,6 +439,7 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
                     ),
                     0,
                     0,
+                    &[],
                 )?;
                 return Err(CliError::UnsupportedLegacyBundle { report_path });
             }
@@ -415,11 +451,68 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
                 "Legacy Room bundle imported",
                 parsed.apps.len() as u64,
                 parsed.apps.len() as u64,
+                &[],
             )?;
             let records = db.tracked_packages()?;
             Ok(json!({
                 "report_path": report_path,
                 "imported_records": parsed.apps.len(),
+                "apps": tracked_packages_json(records),
+            }))
+        }
+        CliCommand::LegacyImportRoomDb { db: legacy_db } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            if db.migration_record_exists(LEGACY_ROOM_MIGRATION_ID)? {
+                let records = db.tracked_packages()?;
+                return Ok(json!({
+                    "already_imported": true,
+                    "imported_records": 0,
+                    "source_counts": {
+                        "app_rows": 0,
+                        "extra_app_rows": 0,
+                        "hub_rows": 0,
+                        "extra_hub_rows": 0,
+                    },
+                    "warnings": [],
+                    "apps": tracked_packages_json(records),
+                }));
+            }
+            let import = read_legacy_room_database(&legacy_db).map_err(|source| {
+                legacy_db_import_error(&invocation.data_dir, &legacy_db, source)
+            })?;
+            let imported_records = import.apps.len();
+            let source_counts = source_counts_json(&import);
+            let warnings = import_warnings_json(&import.warnings);
+            if import.source_counts.app_rows > 0 && imported_records == 0 {
+                let report_path = create_migration_report_with_source_counts(
+                    &invocation.data_dir,
+                    &legacy_db,
+                    "migration.invalid_db",
+                    "Legacy Room database has app rows but no importable app rows",
+                    0,
+                    0,
+                    &warnings,
+                    Some(&source_counts),
+                )?;
+                return Err(CliError::InvalidLegacyDb { report_path });
+            }
+            import_legacy_room_db(&db, &import)?;
+            let report_path = create_migration_report_with_source_counts(
+                &invocation.data_dir,
+                &legacy_db,
+                "migration.imported",
+                "Legacy Room database imported",
+                imported_records as u64,
+                imported_records as u64,
+                &warnings,
+                Some(&source_counts),
+            )?;
+            let records = db.tracked_packages()?;
+            Ok(json!({
+                "report_path": report_path,
+                "imported_records": imported_records,
+                "source_counts": source_counts,
+                "warnings": warnings,
                 "apps": tracked_packages_json(records),
             }))
         }
@@ -574,10 +667,11 @@ fn tracked_packages_json(packages: Vec<StoredTrackedPackage>) -> Vec<Value> {
 }
 
 fn import_legacy_room_bundle(db: &MainDb, bundle: &LegacyRoomBundle) -> Result<(), CliError> {
+    let mut packages = Vec::new();
     for app in &bundle.apps {
         let mapping = map_legacy_app(
             &LegacyAppRecord {
-                kind: app.kind.to_legacy_kind()?,
+                kind: app.kind.to_legacy_kind(),
                 installed_id: app.installed_id.clone(),
                 official_package_available: app.official_package_available,
                 common_conversion_available: app.common_conversion_available,
@@ -588,14 +682,7 @@ fn import_legacy_room_bundle(db: &MainDb, bundle: &LegacyRoomBundle) -> Result<(
             }),
         )
         .map_err(|source| CliError::Storage(source.to_string()))?;
-        db.upsert_tracked_package(&TrackedPackageUpsert {
-            package_id: mapping.package_id,
-            enabled: true,
-            favorite: mapping.user_state.favorite,
-            ignored_version: mapping.user_state.ignored_version,
-            repository_id: None,
-            package_resolution: stored_resolution(mapping.package_resolution),
-        })?;
+        packages.push(tracked_package_upsert(mapping));
     }
 
     let report_json = json!({
@@ -604,8 +691,56 @@ fn import_legacy_room_bundle(db: &MainDb, bundle: &LegacyRoomBundle) -> Result<(
         "imported_records": bundle.apps.len(),
     })
     .to_string();
-    db.insert_migration_record("legacy-room-v17", "legacy-room-bundle", &report_json)?;
+    db.import_tracked_packages_with_migration_record(
+        &packages,
+        &MigrationRecordUpsert {
+            id: LEGACY_ROOM_MIGRATION_ID,
+            source: "legacy-room-bundle",
+            report_json: &report_json,
+        },
+    )?;
     Ok(())
+}
+
+fn import_legacy_room_db(db: &MainDb, import: &LegacyRoomDbImport) -> Result<(), CliError> {
+    let mut packages = Vec::new();
+    for app in &import.apps {
+        let mapping = map_legacy_app(&app.app, Some(&app.user_state))
+            .map_err(|source| CliError::Storage(source.to_string()))?;
+        packages.push(tracked_package_upsert(mapping));
+    }
+
+    let report_json = json!({
+        "ok": true,
+        "source": "legacy-room-db",
+        "version": import.version,
+        "imported_records": import.apps.len(),
+        "source_counts": source_counts_json(import),
+        "warnings": import_warnings_json(&import.warnings),
+    })
+    .to_string();
+    db.import_tracked_packages_with_migration_record(
+        &packages,
+        &MigrationRecordUpsert {
+            id: LEGACY_ROOM_MIGRATION_ID,
+            source: "legacy-room-db",
+            report_json: &report_json,
+        },
+    )?;
+    Ok(())
+}
+
+fn tracked_package_upsert(
+    mapping: getter_storage::legacy_room::LegacyAppMapping,
+) -> TrackedPackageUpsert {
+    TrackedPackageUpsert {
+        package_id: mapping.package_id,
+        enabled: true,
+        favorite: mapping.user_state.favorite,
+        ignored_version: mapping.user_state.ignored_version,
+        repository_id: None,
+        package_resolution: stored_resolution(mapping.package_resolution),
+    }
 }
 
 fn stored_resolution(resolution: LegacyPackageResolution) -> StoredPackageResolution {
@@ -622,6 +757,54 @@ fn stored_resolution(resolution: LegacyPackageResolution) -> StoredPackageResolu
     }
 }
 
+fn legacy_db_import_error(
+    data_dir: &Path,
+    legacy_db: &Path,
+    source: LegacyRoomReadError,
+) -> CliError {
+    let (code, unsupported) = match source {
+        LegacyRoomReadError::UnsupportedVersion { .. } => ("migration.unsupported_db", true),
+        LegacyRoomReadError::Sqlite(_) | LegacyRoomReadError::MissingRequiredTable(_) => {
+            ("migration.invalid_db", false)
+        }
+    };
+    match create_migration_report_with_source_counts(
+        data_dir,
+        legacy_db,
+        code,
+        &source.to_string(),
+        0,
+        0,
+        &[],
+        None,
+    ) {
+        Ok(report_path) if unsupported => CliError::UnsupportedLegacyDb { report_path },
+        Ok(report_path) => CliError::InvalidLegacyDb { report_path },
+        Err(error) => error,
+    }
+}
+
+fn source_counts_json(import: &LegacyRoomDbImport) -> Value {
+    json!({
+        "app_rows": import.source_counts.app_rows,
+        "extra_app_rows": import.source_counts.extra_app_rows,
+        "hub_rows": import.source_counts.hub_rows,
+        "extra_hub_rows": import.source_counts.extra_hub_rows,
+    })
+}
+
+fn import_warnings_json(warnings: &[LegacyRoomImportWarning]) -> Vec<Value> {
+    warnings
+        .iter()
+        .map(|warning| {
+            json!({
+                "code": warning.code(),
+                "message": warning.message(),
+            })
+        })
+        .collect()
+}
+
 fn main_db_path(data_dir: &Path) -> PathBuf {
     data_dir.join(MAIN_DB_FILE)
 }
@@ -632,11 +815,35 @@ fn cache_db_path(data_dir: &Path) -> PathBuf {
 
 fn create_migration_report(
     data_dir: &Path,
-    bundle: &Path,
+    source_file: &Path,
     code: &str,
     detail: &str,
     imported_records: u64,
     tracked_records: u64,
+    warnings: &[Value],
+) -> Result<PathBuf, CliError> {
+    create_migration_report_with_source_counts(
+        data_dir,
+        source_file,
+        code,
+        detail,
+        imported_records,
+        tracked_records,
+        warnings,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_migration_report_with_source_counts(
+    data_dir: &Path,
+    source_file: &Path,
+    code: &str,
+    detail: &str,
+    imported_records: u64,
+    tracked_records: u64,
+    warnings: &[Value],
+    source_counts: Option<&Value>,
 ) -> Result<PathBuf, CliError> {
     let reports_dir = data_dir.join(MIGRATION_REPORTS_DIR);
     fs::create_dir_all(&reports_dir).map_err(|source| {
@@ -651,13 +858,17 @@ fn create_migration_report(
         message: match code {
             "migration.invalid_bundle" => "Legacy Room export bundle is invalid",
             "migration.unsupported_bundle" => "Legacy Room bundle import is not implemented yet",
-            "migration.imported" => "Legacy Room bundle imported",
+            "migration.invalid_db" => "Legacy Room database is invalid",
+            "migration.unsupported_db" => "Legacy Room database version is not supported",
+            "migration.imported" => "Legacy Room data imported",
             _ => "Legacy migration failed",
         },
-        bundle_file_name: bundle.file_name().and_then(|name| name.to_str()),
+        source_file_name: source_file.file_name().and_then(|name| name.to_str()),
         detail,
         imported_records,
         tracked_records,
+        warnings,
+        source_counts,
     };
     let bytes = serde_json::to_vec_pretty(&report)
         .map_err(|source| CliError::Storage(format!("failed to serialize report: {source}")))?;
@@ -708,9 +919,17 @@ fn list_migration_reports(data_dir: &Path) -> Result<Vec<Value>, CliError> {
                 "ok": report.get("ok").and_then(Value::as_bool).unwrap_or(false),
                 "code": report.get("code").and_then(Value::as_str).unwrap_or("migration.unknown"),
                 "message": report.get("message").and_then(Value::as_str).unwrap_or("Legacy migration report"),
-                "bundle_file_name": report.get("bundle_file_name").and_then(Value::as_str),
+                "source_file_name": report
+                    .get("source_file_name")
+                    .or_else(|| report.get("bundle_file_name"))
+                    .and_then(Value::as_str),
                 "imported_records": report.get("imported_records").and_then(Value::as_u64).unwrap_or(0),
                 "tracked_records": report.get("tracked_records").and_then(Value::as_u64).unwrap_or(0),
+                "warnings": report
+                    .get("warnings")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new())),
+                "source_counts": report.get("source_counts").cloned().unwrap_or(Value::Null),
             }))
         })
         .collect()
@@ -721,10 +940,13 @@ struct MigrationReport<'a> {
     ok: bool,
     code: &'a str,
     message: &'a str,
-    bundle_file_name: Option<&'a str>,
+    source_file_name: Option<&'a str>,
     detail: &'a str,
     imported_records: u64,
     tracked_records: u64,
+    warnings: &'a [Value],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_counts: Option<&'a Value>,
 }
 
 fn success_envelope(command: &str, data: Value) -> String {
@@ -762,7 +984,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|hub list|legacy import-room-bundle <bundle.json>|legacy report-list>\n".to_owned()
+    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|hub list|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -795,11 +1017,11 @@ enum LegacyBundleAppKind {
 }
 
 impl LegacyBundleAppKind {
-    fn to_legacy_kind(&self) -> Result<LegacyAppKind, CliError> {
-        Ok(match self {
+    const fn to_legacy_kind(&self) -> LegacyAppKind {
+        match self {
             Self::Android => LegacyAppKind::Android,
             Self::Magisk => LegacyAppKind::Magisk,
-        })
+        }
     }
 }
 
@@ -816,6 +1038,7 @@ impl CliCommand {
             Self::PackageEval { .. } => "package eval",
             Self::StorageValidate => "storage validate",
             Self::LegacyImportRoomBundle { .. } => "legacy import-room-bundle",
+            Self::LegacyImportRoomDb { .. } => "legacy import-room-db",
             Self::LegacyReportList => "legacy report-list",
         }
     }
