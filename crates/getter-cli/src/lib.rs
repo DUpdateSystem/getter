@@ -696,7 +696,6 @@ fn list_migration_reports(data_dir: &Path) -> Result<Vec<Value>, CliError> {
                 "bundle_file_name": report.get("bundle_file_name").and_then(Value::as_str),
                 "imported_records": report.get("imported_records").and_then(Value::as_u64).unwrap_or(0),
                 "tracked_records": report.get("tracked_records").and_then(Value::as_u64).unwrap_or(0),
-                "report_path": path,
             }))
         })
         .collect()
