@@ -14,6 +14,7 @@ struct CliWorld {
     legacy_db: Option<PathBuf>,
     inventory: Option<PathBuf>,
     autogen_preview: Option<PathBuf>,
+    update_fixture: Option<PathBuf>,
     fixture_repo_id: Option<String>,
     fixture_repo_path: Option<PathBuf>,
     fixture_package_id: Option<String>,
@@ -185,6 +186,79 @@ fn tampered_autogen_cleanup_preview_for_package(world: &mut CliWorld, package_id
     )
     .expect("write tampered cleanup preview");
     world.autogen_preview = Some(preview);
+}
+
+#[given(
+    expr = "an offline update fixture for package {string} installed version {string} with candidate versions {string}"
+)]
+fn offline_update_fixture_with_installed_version(
+    world: &mut CliWorld,
+    package_id: String,
+    installed_version: String,
+    versions: String,
+) {
+    write_offline_update_fixture(world, package_id, Some(installed_version), None, versions);
+}
+
+#[given(
+    expr = "an offline update fixture for package {string} installed version {string} ignored version {string} with candidate versions {string}"
+)]
+fn offline_update_fixture_with_ignored_version(
+    world: &mut CliWorld,
+    package_id: String,
+    installed_version: String,
+    ignored_version: String,
+    versions: String,
+) {
+    write_offline_update_fixture(
+        world,
+        package_id,
+        Some(installed_version),
+        Some(ignored_version),
+        versions,
+    );
+}
+
+#[given(
+    expr = "an offline update fixture for package {string} without installed version with candidate versions {string}"
+)]
+fn offline_update_fixture_without_installed_version(
+    world: &mut CliWorld,
+    package_id: String,
+    versions: String,
+) {
+    write_offline_update_fixture(world, package_id, None, None, versions);
+}
+
+#[given(
+    expr = "an offline update fixture for package {string} installed version {string} with artifactless candidate version {string}"
+)]
+fn offline_update_fixture_with_artifactless_candidate(
+    world: &mut CliWorld,
+    package_id: String,
+    installed_version: String,
+    candidate_version: String,
+) {
+    write_offline_update_fixture_with_candidates(
+        world,
+        package_id,
+        Some(installed_version),
+        None,
+        vec![serde_json::json!({
+            "version": candidate_version,
+            "channel": "stable",
+            "source": "offline-fixture",
+            "artifacts": [],
+        })],
+    );
+}
+
+#[given("a malformed offline update fixture")]
+fn malformed_offline_update_fixture(world: &mut CliWorld) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let fixture = temp.path().join("malformed-update-fixture.json");
+    fs::write(&fixture, "not-json").expect("write malformed fixture");
+    world.update_fixture = Some(fixture);
 }
 
 #[given(expr = "a fixture Lua repository {string} with package {string}")]
@@ -407,6 +481,25 @@ fn run_getter_legacy_report_list(world: &mut CliWorld) {
     world.json = None;
 }
 
+#[when("I run getter update check for that fixture")]
+fn run_getter_update_check(world: &mut CliWorld) {
+    let fixture = world
+        .update_fixture
+        .as_ref()
+        .expect("update fixture exists");
+    let output = run_getter(
+        world,
+        [
+            "update".to_owned(),
+            "check".to_owned(),
+            "--fixture".to_owned(),
+            fixture.to_string_lossy().to_string(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
 #[when("I run getter autogen installed preview for that inventory")]
 fn run_getter_autogen_installed_preview(world: &mut CliWorld) {
     let inventory = world.inventory.as_ref().expect("inventory exists");
@@ -545,6 +638,17 @@ fn command_fails_with_autogen_error(world: &mut CliWorld) {
     assert_eq!(json["ok"], false);
     assert_eq!(json["command"], "autogen cleanup apply");
     assert_eq!(json["error"]["code"], "autogen.error");
+    world.json = Some(json);
+}
+
+#[then("the command fails with an update check error")]
+fn command_fails_with_update_check_error(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("command output exists");
+    assert_eq!(output.status.code(), Some(1));
+    let json = parse_stdout(output);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["command"], "update check");
+    assert_eq!(json["error"]["code"], "update.check_error");
     world.json = Some(json);
 }
 
@@ -709,6 +813,44 @@ fn output_contains_named_package(world: &mut CliWorld, package_id: String, packa
     assert_eq!(json["command"], "package eval");
     assert_eq!(json["data"]["package"]["id"], package_id);
     assert_eq!(json["data"]["package"]["name"], package_name);
+}
+
+#[then(expr = "the update check status is {string}")]
+fn update_check_status_is(world: &mut CliWorld, status: String) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "update check");
+    assert_eq!(json["data"]["network_required"], false);
+    assert_eq!(json["data"]["status"], status);
+}
+
+#[then(expr = "the selected update version is {string}")]
+fn selected_update_version_is(world: &mut CliWorld, version: String) {
+    let json = current_json(world);
+    assert_eq!(json["data"]["selected"]["candidate"]["version"], version);
+}
+
+#[then(expr = "the update check actions download file {string} and request installer {string}")]
+fn update_check_actions_download_and_install(
+    world: &mut CliWorld,
+    file_name: String,
+    installer: String,
+) {
+    let json = current_json(world);
+    let actions = json["data"]["actions"].as_array().expect("actions array");
+    assert_eq!(actions.len(), 2);
+    assert_eq!(actions[0]["type"], "download");
+    assert_eq!(actions[0]["file_name"], file_name);
+    assert_eq!(actions[1]["type"], "install");
+    assert_eq!(actions[1]["installer"], installer);
+    assert_eq!(actions[1]["file"], file_name);
+}
+
+#[then("the update check has no selected update")]
+fn update_check_has_no_selected_update(world: &mut CliWorld) {
+    let json = current_json(world);
+    assert!(json["data"]["selected"].is_null());
+    assert_eq!(json["data"]["actions"], Value::Array(Vec::new()));
 }
 
 #[then(expr = "the autogen preview contains candidate {string}")]
@@ -1097,6 +1239,66 @@ return package_def {{
     world.fixture_repo_id = Some(repo_id);
     world.fixture_repo_path = Some(repo_path);
     world.fixture_package_id = Some(package_id);
+}
+
+fn write_offline_update_fixture(
+    world: &mut CliWorld,
+    package_id: String,
+    installed_version: Option<String>,
+    ignored_version: Option<String>,
+    versions: String,
+) {
+    let candidates: Vec<Value> = versions
+        .split(',')
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .map(|version| {
+            serde_json::json!({
+                "version": version,
+                "channel": "stable",
+                "source": "offline-fixture",
+                "artifacts": [
+                    {
+                        "name": "APK",
+                        "url": format!("https://example.invalid/{version}.apk"),
+                        "file_name": "app.apk",
+                    }
+                ],
+            })
+        })
+        .collect();
+    write_offline_update_fixture_with_candidates(
+        world,
+        package_id,
+        installed_version,
+        ignored_version,
+        candidates,
+    );
+}
+
+fn write_offline_update_fixture_with_candidates(
+    world: &mut CliWorld,
+    package_id: String,
+    installed_version: Option<String>,
+    ignored_version: Option<String>,
+    candidates: Vec<Value>,
+) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let fixture = temp.path().join("offline-update-fixture.json");
+    fs::write(
+        &fixture,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "format": "getter-offline-update-check",
+            "version": 1,
+            "package_id": package_id,
+            "installed_version": installed_version,
+            "ignored_version": ignored_version,
+            "candidates": candidates,
+        }))
+        .expect("fixture serializes"),
+    )
+    .expect("write offline update fixture");
+    world.update_fixture = Some(fixture);
 }
 
 fn create_fixture_legacy_room_db(path: &PathBuf, version: u32, include_app_table: bool) {

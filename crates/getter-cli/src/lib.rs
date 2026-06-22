@@ -13,6 +13,7 @@ use getter_core::autogen::{
 use getter_core::diagnostics::validate_repository_path;
 use getter_core::lua::evaluate_package_file;
 use getter_core::repository::{RepositoryLayout, RepositoryMetadata, REPO_API_VERSION_V1};
+use getter_core::update::{run_offline_update_check, OfflineUpdateCheckFixture};
 use getter_core::{PackageId, RepositoryId, RepositoryPriority};
 use getter_storage::legacy_room::{
     map_legacy_app, read_legacy_room_database, LegacyAppKind, LegacyAppRecord,
@@ -63,6 +64,9 @@ pub enum CliCommand {
         repo_id: Option<RepositoryId>,
     },
     StorageValidate,
+    UpdateCheck {
+        fixture: PathBuf,
+    },
     AutogenInstalledPreview {
         inventory: PathBuf,
     },
@@ -117,6 +121,8 @@ pub enum CliError {
     Repository(String),
     #[error("package evaluation error: {0}")]
     PackageEval(String),
+    #[error("update check error: {0}")]
+    Update(String),
     #[error("autogen error: {0}")]
     Autogen(String),
     #[error("Legacy Room export bundle is invalid")]
@@ -134,7 +140,7 @@ impl CliError {
         match self {
             Self::Usage(_) => ExitCode::Usage,
             Self::Storage(_) => ExitCode::Storage,
-            Self::Repository(_) | Self::PackageEval(_) | Self::Autogen(_) => {
+            Self::Repository(_) | Self::PackageEval(_) | Self::Update(_) | Self::Autogen(_) => {
                 ExitCode::GenericFailure
             }
             Self::InvalidLegacyBundle { .. }
@@ -150,6 +156,7 @@ impl CliError {
             Self::Storage(_) => "storage.error",
             Self::Repository(_) => "repository.error",
             Self::PackageEval(_) => "package.eval_error",
+            Self::Update(_) => "update.check_error",
             Self::Autogen(_) => "autogen.error",
             Self::InvalidLegacyBundle { .. } => "migration.invalid_bundle",
             Self::UnsupportedLegacyBundle { .. } => "migration.unsupported_bundle",
@@ -164,6 +171,7 @@ impl CliError {
             Self::Storage(_) => "Getter storage operation failed",
             Self::Repository(_) => "Getter repository operation failed",
             Self::PackageEval(_) => "Getter package evaluation failed",
+            Self::Update(_) => "Getter update check failed",
             Self::Autogen(_) => "Getter autogen operation failed",
             Self::InvalidLegacyBundle { .. } => "Legacy Room export bundle is invalid",
             Self::UnsupportedLegacyBundle { .. } => {
@@ -180,6 +188,7 @@ impl CliError {
             | Self::Storage(detail)
             | Self::Repository(detail)
             | Self::PackageEval(detail)
+            | Self::Update(detail)
             | Self::Autogen(detail) => Some(detail.as_str()),
             Self::InvalidLegacyBundle { .. }
             | Self::UnsupportedLegacyBundle { .. }
@@ -198,6 +207,7 @@ impl CliError {
             | Self::Storage(_)
             | Self::Repository(_)
             | Self::PackageEval(_)
+            | Self::Update(_)
             | Self::Autogen(_) => None,
         }
     }
@@ -325,6 +335,13 @@ where
         }
         [domain, command] if domain == "storage" && command == "validate" => {
             CliCommand::StorageValidate
+        }
+        [domain, command, flag, fixture]
+            if domain == "update" && command == "check" && flag == "--fixture" =>
+        {
+            CliCommand::UpdateCheck {
+                fixture: PathBuf::from(fixture),
+            }
         }
         [domain, subject, action, flag, inventory]
             if domain == "autogen"
@@ -470,6 +487,16 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
                 "main_db": main_db_path(&invocation.data_dir),
                 "cache_db": cache_db_path(&invocation.data_dir),
             }))
+        }
+        CliCommand::UpdateCheck { fixture } => {
+            open_initialized_storage(&invocation.data_dir)?;
+            let fixture = read_update_check_fixture(&fixture)?;
+            serde_json::to_value(run_offline_update_check(fixture).map_err(|source| {
+                CliError::Update(format!("offline update check failed: {source}"))
+            })?)
+            .map_err(|source| {
+                CliError::Update(format!("failed to serialize update check: {source}"))
+            })
         }
         CliCommand::AutogenInstalledPreview { inventory } => {
             let db = open_main_db(&invocation.data_dir)?;
@@ -752,6 +779,17 @@ fn read_installed_inventory(path: &Path) -> Result<InstalledInventory, CliError>
         .map_err(|source| CliError::Autogen(format!("failed to read inventory: {source}")))?;
     serde_json::from_slice(&bytes)
         .map_err(|source| CliError::Autogen(format!("failed to parse inventory JSON: {source}")))
+}
+
+fn read_update_check_fixture(path: &Path) -> Result<OfflineUpdateCheckFixture, CliError> {
+    let bytes = fs::read(path).map_err(|source| {
+        CliError::Update(format!("failed to read update check fixture: {source}"))
+    })?;
+    serde_json::from_slice(&bytes).map_err(|source| {
+        CliError::Update(format!(
+            "failed to parse update check fixture JSON: {source}"
+        ))
+    })
 }
 
 fn build_local_autogen_plan(
@@ -1684,7 +1722,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|hub list|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\n".to_owned()
+    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|hub list|update check --fixture <fixture.json>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1737,6 +1775,7 @@ impl CliCommand {
             Self::RepoValidate { .. } => "repo validate",
             Self::PackageEval { .. } => "package eval",
             Self::StorageValidate => "storage validate",
+            Self::UpdateCheck { .. } => "update check",
             Self::AutogenInstalledPreview { .. } => "autogen installed preview",
             Self::AutogenInstalledApply { .. } => "autogen installed apply",
             Self::AutogenCleanupPreview { .. } => "autogen cleanup preview",

@@ -1,13 +1,198 @@
 //! Update selection helpers owned by getter core.
 
-use crate::{PackageId, SelectedUpdate, UpdateArtifact, UpdateCandidate};
+use crate::{
+    PackageId, PackageKind, SelectedUpdate, UpdateAction, UpdateArtifact, UpdateCandidate,
+};
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
+pub const OFFLINE_UPDATE_CHECK_FORMAT: &str = "getter-offline-update-check";
+pub const OFFLINE_UPDATE_CHECK_VERSION: u32 = 1;
+
 /// User state that affects update selection.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateSelectionPolicy {
     /// Candidate version the user chose to ignore/mark as skipped.
+    #[serde(default)]
     pub ignored_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflineUpdateCheckFixture {
+    pub format: String,
+    pub version: u32,
+    pub package_id: PackageId,
+    #[serde(default)]
+    pub installed_version: Option<String>,
+    #[serde(default)]
+    pub ignored_version: Option<String>,
+    #[serde(default)]
+    pub candidates: Vec<UpdateCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflineUpdateCheckResult {
+    pub network_required: bool,
+    pub package_id: PackageId,
+    #[serde(default)]
+    pub installed_version: Option<String>,
+    pub policy: UpdateSelectionPolicy,
+    pub status: UpdateCheckStatus,
+    #[serde(default)]
+    pub selected: Option<SelectedUpdate>,
+    pub actions: Vec<UpdateAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateCheckStatus {
+    UpdateAvailable,
+    UpToDate,
+    NoCandidates,
+    Ignored,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum OfflineUpdateCheckError {
+    #[error("unsupported update check fixture format '{0}'")]
+    UnsupportedFormat(String),
+    #[error("unsupported update check fixture version {found}; expected {expected}")]
+    UnsupportedVersion { found: u32, expected: u32 },
+    #[error("selected update candidate '{version}' has no actionable artifacts")]
+    MissingSelectedArtifact { version: String },
+}
+
+pub fn run_offline_update_check(
+    fixture: OfflineUpdateCheckFixture,
+) -> Result<OfflineUpdateCheckResult, OfflineUpdateCheckError> {
+    if fixture.format != OFFLINE_UPDATE_CHECK_FORMAT {
+        return Err(OfflineUpdateCheckError::UnsupportedFormat(fixture.format));
+    }
+    if fixture.version != OFFLINE_UPDATE_CHECK_VERSION {
+        return Err(OfflineUpdateCheckError::UnsupportedVersion {
+            found: fixture.version,
+            expected: OFFLINE_UPDATE_CHECK_VERSION,
+        });
+    }
+
+    let policy = UpdateSelectionPolicy {
+        ignored_version: fixture.ignored_version,
+    };
+    check_updates_offline(
+        fixture.package_id,
+        fixture.installed_version,
+        fixture.candidates,
+        policy,
+    )
+}
+
+pub fn check_updates_offline(
+    package_id: PackageId,
+    installed_version: Option<String>,
+    candidates: Vec<UpdateCandidate>,
+    policy: UpdateSelectionPolicy,
+) -> Result<OfflineUpdateCheckResult, OfflineUpdateCheckError> {
+    let selected = select_update(
+        package_id.clone(),
+        installed_version.as_deref(),
+        &candidates,
+        &policy,
+    );
+    let status = update_check_status(
+        selected.as_ref(),
+        installed_version.as_deref(),
+        &candidates,
+        &policy,
+    );
+    let actions = match selected.as_ref() {
+        Some(selected) => {
+            if selected.artifact.is_none() {
+                return Err(OfflineUpdateCheckError::MissingSelectedArtifact {
+                    version: selected.candidate.version.clone(),
+                });
+            }
+            update_actions_for_selected(selected)
+        }
+        None => Vec::new(),
+    };
+
+    Ok(OfflineUpdateCheckResult {
+        network_required: false,
+        package_id,
+        installed_version,
+        policy,
+        status,
+        selected,
+        actions,
+    })
+}
+
+pub fn update_actions_for_selected(selected: &SelectedUpdate) -> Vec<UpdateAction> {
+    let Some(artifact) = selected.artifact.as_ref() else {
+        return Vec::new();
+    };
+    let file_name = artifact_file_name(artifact);
+    vec![
+        UpdateAction::Download {
+            url: artifact.url.clone(),
+            file_name: file_name.clone(),
+        },
+        UpdateAction::Install {
+            installer: installer_for_package_kind(selected.package_id.kind()).to_owned(),
+            file: file_name,
+        },
+    ]
+}
+
+fn artifact_file_name(artifact: &UpdateArtifact) -> String {
+    artifact
+        .file_name
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| artifact.name.clone())
+}
+
+fn installer_for_package_kind(kind: PackageKind) -> &'static str {
+    match kind {
+        PackageKind::Android => "android_package",
+        PackageKind::Magisk => "magisk_module",
+        PackageKind::Generic => "generic_file",
+    }
+}
+
+fn update_check_status(
+    selected: Option<&SelectedUpdate>,
+    installed_version: Option<&str>,
+    candidates: &[UpdateCandidate],
+    policy: &UpdateSelectionPolicy,
+) -> UpdateCheckStatus {
+    if candidates.is_empty() {
+        UpdateCheckStatus::NoCandidates
+    } else if selected.is_some() {
+        UpdateCheckStatus::UpdateAvailable
+    } else if ignored_candidate_would_have_been_update(installed_version, candidates, policy) {
+        UpdateCheckStatus::Ignored
+    } else {
+        UpdateCheckStatus::UpToDate
+    }
+}
+
+fn ignored_candidate_would_have_been_update(
+    installed_version: Option<&str>,
+    candidates: &[UpdateCandidate],
+    policy: &UpdateSelectionPolicy,
+) -> bool {
+    let Some(ignored) = policy.ignored_version.as_deref() else {
+        return false;
+    };
+
+    candidates.iter().any(|candidate| {
+        compare_versions(&candidate.version, ignored) == Ordering::Equal
+            && installed_version.is_none_or(|installed| {
+                compare_versions(&candidate.version, installed) == Ordering::Greater
+            })
+    })
 }
 
 /// Compare human-facing version strings using a deterministic token ordering.
@@ -255,6 +440,136 @@ mod tests {
             selected.artifact.as_ref().unwrap().file_name.as_deref(),
             Some("app.apk")
         );
+    }
+
+    #[test]
+    fn offline_update_check_reports_update_available_with_actions() {
+        let result = run_offline_update_check(OfflineUpdateCheckFixture {
+            format: OFFLINE_UPDATE_CHECK_FORMAT.to_owned(),
+            version: OFFLINE_UPDATE_CHECK_VERSION,
+            package_id: "android/org.fdroid.fdroid".parse().unwrap(),
+            installed_version: Some("1.0.0".to_owned()),
+            ignored_version: None,
+            candidates: vec![candidate("1.0.1"), candidate("1.2.0")],
+        })
+        .unwrap();
+
+        assert_eq!(result.status, UpdateCheckStatus::UpdateAvailable);
+        assert_eq!(result.selected.as_ref().unwrap().candidate.version, "1.2.0");
+        assert_eq!(
+            result.actions,
+            vec![
+                UpdateAction::Download {
+                    url: "https://example.invalid/1.2.0.apk".to_owned(),
+                    file_name: "app.apk".to_owned()
+                },
+                UpdateAction::Install {
+                    installer: "android_package".to_owned(),
+                    file: "app.apk".to_owned()
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn offline_update_check_reports_up_to_date() {
+        let result = check_updates_offline(
+            "android/org.fdroid.fdroid".parse().unwrap(),
+            Some("2.0.0".to_owned()),
+            vec![candidate("1.9.0"), candidate("2.0.0")],
+            UpdateSelectionPolicy::default(),
+        )
+        .unwrap();
+
+        assert_eq!(result.status, UpdateCheckStatus::UpToDate);
+        assert!(result.selected.is_none());
+        assert!(result.actions.is_empty());
+    }
+
+    #[test]
+    fn offline_update_check_reports_ignored_when_only_update_is_ignored() {
+        let result = check_updates_offline(
+            "android/org.fdroid.fdroid".parse().unwrap(),
+            Some("1.0.0".to_owned()),
+            vec![candidate("1.2.0")],
+            UpdateSelectionPolicy {
+                ignored_version: Some("1.2.0".to_owned()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.status, UpdateCheckStatus::Ignored);
+        assert!(result.selected.is_none());
+    }
+
+    #[test]
+    fn offline_update_check_falls_back_below_ignored_latest() {
+        let result = check_updates_offline(
+            "android/org.fdroid.fdroid".parse().unwrap(),
+            Some("1.0.0".to_owned()),
+            vec![candidate("1.1.0"), candidate("1.2.0")],
+            UpdateSelectionPolicy {
+                ignored_version: Some("1.2.0".to_owned()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.status, UpdateCheckStatus::UpdateAvailable);
+        assert_eq!(result.selected.as_ref().unwrap().candidate.version, "1.1.0");
+    }
+
+    #[test]
+    fn offline_update_check_reports_no_candidates() {
+        let result = check_updates_offline(
+            "android/org.fdroid.fdroid".parse().unwrap(),
+            Some("1.0.0".to_owned()),
+            Vec::new(),
+            UpdateSelectionPolicy::default(),
+        )
+        .unwrap();
+
+        assert_eq!(result.status, UpdateCheckStatus::NoCandidates);
+        assert!(result.selected.is_none());
+        assert!(result.actions.is_empty());
+    }
+
+    #[test]
+    fn offline_update_check_rejects_selected_candidate_without_artifacts() {
+        let error = check_updates_offline(
+            "android/org.fdroid.fdroid".parse().unwrap(),
+            Some("1.0.0".to_owned()),
+            vec![UpdateCandidate {
+                version: "1.2.0".to_owned(),
+                channel: None,
+                source: None,
+                artifacts: Vec::new(),
+            }],
+            UpdateSelectionPolicy::default(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            OfflineUpdateCheckError::MissingSelectedArtifact { .. }
+        ));
+    }
+
+    #[test]
+    fn offline_update_check_rejects_wrong_contract() {
+        let error = run_offline_update_check(OfflineUpdateCheckFixture {
+            format: "wrong".to_owned(),
+            version: OFFLINE_UPDATE_CHECK_VERSION,
+            package_id: "android/org.fdroid.fdroid".parse().unwrap(),
+            installed_version: None,
+            ignored_version: None,
+            candidates: Vec::new(),
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            OfflineUpdateCheckError::UnsupportedFormat(_)
+        ));
     }
 
     fn candidate(version: &str) -> UpdateCandidate {
