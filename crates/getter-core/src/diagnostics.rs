@@ -168,12 +168,20 @@ fn lua_diagnostic(
             fallback_package_id,
         ),
         LuaPackageError::Schema { path, message } => {
-            diagnostic("package.schema", message, path, None, fallback_package_id)
+            let field = schema_field_from_message(&message);
+            diagnostic("package.schema", message, path, field, fallback_package_id)
         }
         LuaPackageError::Domain { path, message } => {
             diagnostic("package.domain", message, path, None, fallback_package_id)
         }
     }
+}
+
+fn schema_field_from_message(message: &str) -> Option<String> {
+    let marker = "field '";
+    let start = message.find(marker)? + marker.len();
+    let end = message[start..].find('\'')?;
+    Some(message[start..start + end].to_owned())
 }
 
 fn diagnostic(
@@ -263,6 +271,10 @@ api_version = "getter.repo.v1"
         let report = validate_repository_path(temp.path());
         assert!(!report.valid);
         assert_eq!(report.diagnostics[0].code, "package.schema");
+        assert_eq!(
+            report.diagnostics[0].location.field.as_deref(),
+            Some("name")
+        );
         assert_eq!(
             report.diagnostics[0]
                 .package_id
