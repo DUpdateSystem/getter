@@ -4,7 +4,9 @@
 //! behavior lives in split crates such as `getter-core` and `getter-storage`;
 //! Android/Flutter hosts embed this crate through a stable facade.
 
+#[cfg(feature = "domain")]
 pub use getter_core as core;
+#[cfg(feature = "domain")]
 pub use getter_storage as storage;
 
 #[cfg(feature = "rustls-platform-verifier")]

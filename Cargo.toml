@@ -21,7 +21,8 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["cli"]
+default = ["cli", "domain"]
+domain = ["dep:getter-core", "dep:getter-storage"]
 cli = ["dep:getter-cli"]
 rustls-platform-verifier = ["dep:rustls-platform-verifier"]
 rustls-platform-verifier-android = ["rustls-platform-verifier", "rustls-platform-verifier/jni"]
@@ -29,8 +30,8 @@ webpki-roots = []
 native-tokio = []
 
 [dependencies]
-getter-core = { path = "crates/getter-core" }
-getter-storage = { path = "crates/getter-storage" }
+getter-core = { path = "crates/getter-core", optional = true }
+getter-storage = { path = "crates/getter-storage", optional = true }
 getter-cli = { path = "crates/getter-cli", optional = true }
 thiserror = "1"
 tokio = { version = "1", features = ["net"] }
