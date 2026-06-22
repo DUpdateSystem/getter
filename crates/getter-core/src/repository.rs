@@ -105,7 +105,7 @@ impl RepositoryLayout {
 
         let mut packages = Vec::new();
         collect_package_files(&packages_dir, &packages_dir, &mut packages)?;
-        packages.sort_by(|a, b| a.id.to_string().cmp(&b.id.to_string()));
+        packages.sort_by_key(|package| package.id.to_string());
 
         Ok(Self {
             root,
@@ -224,7 +224,7 @@ pub fn package_id_from_path(
         })
 }
 
-pub fn highest_priority<'a, T, F>(items: &'a [T], priority: F) -> Option<&'a T>
+pub fn highest_priority<T, F>(items: &[T], priority: F) -> Option<&T>
 where
     F: Fn(&T) -> RepositoryPriority,
 {
