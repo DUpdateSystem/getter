@@ -85,10 +85,14 @@ pub fn evaluate_package_source(
 fn configure_package_path(lua: &Lua, repository: &RepositoryLayout) -> mlua::Result<()> {
     let package: Table = lua.globals().get("package")?;
     let current_path: String = package.get("path")?;
+    let root_lib_pattern = repository.root.join("?.lua");
+    let root_nested_lib_pattern = repository.root.join("?/init.lua");
     let lib_pattern = repository.lib_dir.join("?.lua");
     let nested_lib_pattern = repository.lib_dir.join("?/init.lua");
     let new_path = format!(
-        "{};{};{}",
+        "{};{};{};{};{}",
+        root_lib_pattern.to_string_lossy(),
+        root_nested_lib_pattern.to_string_lossy(),
         lib_pattern.to_string_lossy(),
         nested_lib_pattern.to_string_lossy(),
         current_path
@@ -444,6 +448,44 @@ return {
             &package_path,
             r#"
 local android = require("android")
+return android.local_app {
+  id = "android/org.fdroid.fdroid",
+  name = "F-Droid",
+  package_name = "org.fdroid.fdroid",
+}
+"#,
+        )
+        .unwrap();
+
+        let package = evaluate_package_file(&layout, &package_path).unwrap();
+        assert_eq!(package.name, "F-Droid");
+        assert_eq!(package.installed.len(), 1);
+    }
+
+    #[test]
+    fn require_can_load_repository_lib_modules_with_lib_prefix() {
+        let (_temp, layout, package_path) = fixture_repo();
+        fs::write(
+            layout.lib_dir.join("android.lua"),
+            r#"
+return {
+  local_app = function(input)
+    return {
+      id = input.id,
+      name = input.name,
+      installed = {
+        { kind = "android_package", package_name = input.package_name },
+      },
+    }
+  end
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &package_path,
+            r#"
+local android = require("lib.android")
 return android.local_app {
   id = "android/org.fdroid.fdroid",
   name = "F-Droid",
