@@ -1,7 +1,7 @@
 //! Repository layout loading for Lua package repositories.
 
 use crate::{PackageId, PackageIdError, RepositoryId, RepositoryIdError, RepositoryPriority};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -29,6 +29,14 @@ pub struct RepositoryMetadata {
 pub struct PackageFile {
     pub id: PackageId,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepositoryPackageCacheKey {
+    pub repository_id: RepositoryId,
+    pub package_id: PackageId,
+    pub api_version: String,
+    pub package_file_hash: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -67,6 +75,12 @@ pub enum RepositoryLoadError {
         path: PathBuf,
         #[source]
         source: PackageIdError,
+    },
+    #[error("failed to hash package file {path}: {source}")]
+    HashPackageFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
     },
 }
 
@@ -224,6 +238,36 @@ pub fn package_id_from_path(
         })
 }
 
+pub fn package_cache_key(
+    repository: &RepositoryLayout,
+    package: &PackageFile,
+) -> Result<RepositoryPackageCacheKey, RepositoryLoadError> {
+    Ok(RepositoryPackageCacheKey {
+        repository_id: repository.metadata.id.clone(),
+        package_id: package.id.clone(),
+        api_version: repository.metadata.api_version.clone(),
+        package_file_hash: package_file_content_hash(&package.path)?,
+    })
+}
+
+pub fn package_file_content_hash(path: impl AsRef<Path>) -> Result<String, RepositoryLoadError> {
+    let path = path.as_ref();
+    let bytes = fs::read(path).map_err(|source| RepositoryLoadError::HashPackageFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(format!("{:016x}", fnv1a64(&bytes)))
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 pub fn highest_priority<T, F>(items: &[T], priority: F) -> Option<&T>
 where
     F: Fn(&T) -> RepositoryPriority,
@@ -273,6 +317,46 @@ api_version = "getter.repo.v1"
             layout.packages[0].id.to_string(),
             "android/org.fdroid.fdroid"
         );
+    }
+
+    #[test]
+    fn package_cache_key_changes_when_package_file_content_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(
+            root.join("repo.toml"),
+            r#"id = "official"
+name = "UpgradeAll Official"
+priority = 0
+api_version = "getter.repo.v1"
+"#,
+        )
+        .unwrap();
+        fs::create_dir(root.join("packages")).unwrap();
+        fs::create_dir(root.join("packages/android")).unwrap();
+        fs::create_dir(root.join("lib")).unwrap();
+        fs::create_dir(root.join("templates")).unwrap();
+        let package_path = root.join("packages/android/org.fdroid.fdroid.lua");
+        fs::write(
+            &package_path,
+            r#"return { id = "android/org.fdroid.fdroid", name = "F-Droid" }"#,
+        )
+        .unwrap();
+        let layout = RepositoryLayout::load(root).unwrap();
+        let first = package_cache_key(&layout, &layout.packages[0]).unwrap();
+
+        fs::write(
+            &package_path,
+            r#"return { id = "android/org.fdroid.fdroid", name = "F-Droid Nightly" }"#,
+        )
+        .unwrap();
+        let layout = RepositoryLayout::load(root).unwrap();
+        let second = package_cache_key(&layout, &layout.packages[0]).unwrap();
+
+        assert_eq!(first.repository_id.as_str(), "official");
+        assert_eq!(first.package_id.to_string(), "android/org.fdroid.fdroid");
+        assert_eq!(first.api_version, REPO_API_VERSION_V1);
+        assert_ne!(first.package_file_hash, second.package_file_hash);
     }
 
     #[test]

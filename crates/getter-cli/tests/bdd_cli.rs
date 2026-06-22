@@ -80,6 +80,61 @@ fn fixture_lua_repository_named(
     create_fixture_lua_repository(world, repo_id, package_id, package_name);
 }
 
+#[given(expr = "a fixture Lua repository {string} with invalid Lua package {string}")]
+fn fixture_lua_repository_invalid_lua(world: &mut CliWorld, repo_id: String, package_id: String) {
+    create_custom_fixture_lua_repository(
+        world,
+        repo_id,
+        package_id.clone(),
+        format!("return package_def {{ id = \"{package_id}\", name = "),
+    );
+}
+
+#[given(expr = "a fixture Lua repository {string} with schema-invalid package {string}")]
+fn fixture_lua_repository_invalid_schema(
+    world: &mut CliWorld,
+    repo_id: String,
+    package_id: String,
+) {
+    create_custom_fixture_lua_repository(
+        world,
+        repo_id,
+        package_id.clone(),
+        format!("return {{ id = \"{package_id}\" }}"),
+    );
+}
+
+#[given(expr = "a fixture Lua repository {string} with mismatched package path {string}")]
+fn fixture_lua_repository_mismatched_path(
+    world: &mut CliWorld,
+    repo_id: String,
+    package_id: String,
+) {
+    create_custom_fixture_lua_repository(
+        world,
+        repo_id,
+        package_id,
+        "return { id = \"android/com.termux\", name = \"Termux\" }".to_owned(),
+    );
+}
+
+#[given(expr = "an incomplete Lua repository {string}")]
+fn incomplete_lua_repository(world: &mut CliWorld, repo_id: String) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let repo_path = temp.path().join(format!("repo-{repo_id}"));
+    fs::create_dir_all(&repo_path).expect("create incomplete repo dir");
+    fs::write(
+        repo_path.join("repo.toml"),
+        format!(
+            "id = \"{repo_id}\"\nname = \"Fixture {repo_id}\"\npriority = 0\napi_version = \"getter.repo.v1\"\n"
+        ),
+    )
+    .expect("write repo.toml");
+    world.fixture_repo_id = Some(repo_id);
+    world.fixture_repo_path = Some(repo_path);
+    world.fixture_package_id = None;
+}
+
 #[when("I run getter init for that directory")]
 fn run_getter_init(world: &mut CliWorld) {
     let output = run_getter(world, ["init".to_owned()]);
@@ -139,6 +194,24 @@ fn run_getter_repo_eval(world: &mut CliWorld) {
     let output = run_getter(
         world,
         ["repo".to_owned(), "eval".to_owned(), repo_id.to_owned()],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter repo validate for that repository")]
+fn run_getter_repo_validate(world: &mut CliWorld) {
+    let repo_path = world
+        .fixture_repo_path
+        .as_ref()
+        .expect("fixture repo path exists");
+    let output = run_getter(
+        world,
+        [
+            "repo".to_owned(),
+            "validate".to_owned(),
+            repo_path.to_string_lossy().to_string(),
+        ],
     );
     world.output = Some(output);
     world.json = None;
@@ -280,6 +353,35 @@ fn output_contains_added_repository(world: &mut CliWorld) {
     assert_eq!(json["ok"], true);
     assert_eq!(json["command"], "repo add");
     assert_eq!(json["data"]["repository"]["id"], repo_id);
+}
+
+#[then("the output reports a valid repository without network")]
+fn output_reports_valid_repository_without_network(world: &mut CliWorld) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "repo validate");
+    assert_eq!(json["data"]["valid"], true);
+    assert_eq!(json["data"]["network_required"], false);
+    assert_eq!(json["data"]["diagnostics"], Value::Array(Vec::new()));
+    assert_eq!(json["data"]["package_count"], 1);
+}
+
+#[then(expr = "the output reports repository diagnostic {string}")]
+fn output_reports_repository_diagnostic(world: &mut CliWorld, code: String) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "repo validate");
+    assert_eq!(json["data"]["valid"], false);
+    assert_eq!(json["data"]["network_required"], false);
+    let diagnostics = json["data"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"].as_str() == Some(code.as_str())),
+        "diagnostics should contain {code}: {diagnostics:?}"
+    );
 }
 
 #[then("the output contains the evaluated fixture package")]
@@ -434,6 +536,38 @@ return package_def {{
 }}
 "#
         ),
+    )
+    .expect("write package Lua");
+
+    world.fixture_repo_id = Some(repo_id);
+    world.fixture_repo_path = Some(repo_path);
+    world.fixture_package_id = Some(package_id);
+}
+
+fn create_custom_fixture_lua_repository(
+    world: &mut CliWorld,
+    repo_id: String,
+    package_id: String,
+    package_source: String,
+) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let repo_path = temp.path().join(format!("repo-{repo_id}"));
+    let package_name_path = package_id
+        .strip_prefix("android/")
+        .expect("fixture package id should be android package id");
+    fs::create_dir_all(repo_path.join("packages/android")).expect("create packages dir");
+    fs::create_dir(repo_path.join("lib")).expect("create lib dir");
+    fs::create_dir(repo_path.join("templates")).expect("create templates dir");
+    fs::write(
+        repo_path.join("repo.toml"),
+        format!(
+            "id = \"{repo_id}\"\nname = \"Fixture {repo_id}\"\npriority = 0\napi_version = \"getter.repo.v1\"\n"
+        ),
+    )
+    .expect("write repo.toml");
+    fs::write(
+        repo_path.join(format!("packages/android/{package_name_path}.lua")),
+        package_source,
     )
     .expect("write package Lua");
 

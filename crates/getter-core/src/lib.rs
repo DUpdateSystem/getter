@@ -9,6 +9,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
 
+pub mod diagnostics;
 pub mod lua;
 pub mod repository;
 pub mod update;

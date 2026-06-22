@@ -4,6 +4,7 @@
 //! while durable state is initialized through `getter-storage` so the command
 //! surface exercises the same Rust-owned SQLite direction used by embedders.
 
+use getter_core::diagnostics::validate_repository_path;
 use getter_core::lua::evaluate_package_file;
 use getter_core::repository::{RepositoryLayout, RepositoryMetadata};
 use getter_core::{PackageId, RepositoryId, RepositoryPriority};
@@ -42,6 +43,9 @@ pub enum CliCommand {
     },
     RepoEval {
         id: RepositoryId,
+    },
+    RepoValidate {
+        path: PathBuf,
     },
     PackageEval {
         package_id: PackageId,
@@ -241,6 +245,11 @@ where
         [domain, command, id] if domain == "repo" && command == "eval" => CliCommand::RepoEval {
             id: parse_repository_id(id)?,
         },
+        [domain, command, path] if domain == "repo" && command == "validate" => {
+            CliCommand::RepoValidate {
+                path: PathBuf::from(path),
+            }
+        }
         [domain, command, package_id] if domain == "package" && command == "eval" => {
             CliCommand::PackageEval {
                 package_id: parse_package_id(package_id)?,
@@ -330,6 +339,12 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
                 "repository": repository_json(repo),
                 "packages": packages,
             }))
+        }
+        CliCommand::RepoValidate { path } => {
+            open_initialized_storage(&invocation.data_dir)?;
+            serde_json::to_value(validate_repository_path(path)).map_err(|source| {
+                CliError::Repository(format!("failed to serialize validation report: {source}"))
+            })
         }
         CliCommand::PackageEval {
             package_id,
@@ -747,7 +762,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|package eval <package-id> [--repo <repo-id>]|storage validate|hub list|legacy import-room-bundle <bundle.json>>\n".to_owned()
+    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|hub list|legacy import-room-bundle <bundle.json>|legacy report-list>\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -797,6 +812,7 @@ impl CliCommand {
             Self::RepoList => "repo list",
             Self::RepoAdd { .. } => "repo add",
             Self::RepoEval { .. } => "repo eval",
+            Self::RepoValidate { .. } => "repo validate",
             Self::PackageEval { .. } => "package eval",
             Self::StorageValidate => "storage validate",
             Self::LegacyImportRoomBundle { .. } => "legacy import-room-bundle",
