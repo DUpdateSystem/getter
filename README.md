@@ -10,7 +10,7 @@ This repository is intentionally usable outside the UpgradeAll UI. The UpgradeAl
 - Package IDs are readable, for example `android/org.fdroid.fdroid`.
 - Lua package repositories use `repo.toml` plus `packages/`, `lib/`, and `templates/` directories.
 - SQLite storage uses a main DB and a separate cache DB.
-- `getter-cli` exposes JSON command contracts for init, app list, repository registration/evaluation, package evaluation, storage validation, and legacy bridge-bundle import.
+- `getter-cli` exposes JSON command contracts for init, app list, repository registration/evaluation, package evaluation, storage validation, legacy bridge-bundle import, and sanitized legacy report listing.
 
 ## Verify
 

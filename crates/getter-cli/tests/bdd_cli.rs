@@ -190,6 +190,13 @@ fn run_getter_legacy_import(world: &mut CliWorld) {
     world.json = None;
 }
 
+#[when("I run getter legacy report-list for that directory")]
+fn run_getter_legacy_report_list(world: &mut CliWorld) {
+    let output = run_getter(world, ["legacy".to_owned(), "report-list".to_owned()]);
+    world.output = Some(output);
+    world.json = None;
+}
+
 #[then("the command succeeds")]
 fn command_succeeds(world: &mut CliWorld) {
     let output = world.output.as_ref().expect("command output exists");
@@ -353,6 +360,20 @@ fn import_reports_one_tracked_app(world: &mut CliWorld) {
     assert_eq!(
         json["data"]["apps"].as_array().expect("apps array").len(),
         1
+    );
+}
+
+#[then(expr = "the output lists migration report {string}")]
+fn output_lists_migration_report(world: &mut CliWorld, code: String) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "legacy report-list");
+    let reports = json["data"]["reports"].as_array().expect("reports array");
+    assert!(
+        reports
+            .iter()
+            .any(|report| report["code"].as_str() == Some(code.as_str())),
+        "reports should contain {code}: {reports:?}"
     );
 }
 

@@ -16,3 +16,5 @@ Feature: Legacy import failure recovery
     And the output is valid JSON
     And the import reports one tracked app
     And the app list contains imported package "android/org.fdroid.fdroid"
+    When I run getter legacy report-list for that directory
+    Then the output lists migration report "migration.imported"

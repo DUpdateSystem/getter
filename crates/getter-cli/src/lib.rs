@@ -51,6 +51,7 @@ pub enum CliCommand {
     LegacyImportRoomBundle {
         bundle: PathBuf,
     },
+    LegacyReportList,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,6 +263,9 @@ where
                 bundle: PathBuf::from(bundle),
             }
         }
+        [domain, command] if domain == "legacy" && command == "report-list" => {
+            CliCommand::LegacyReportList
+        }
         _ => {
             return Err(CliError::Usage(format!(
                 "unsupported command: {}",
@@ -403,6 +407,10 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
                 "imported_records": parsed.apps.len(),
                 "apps": tracked_packages_json(records),
             }))
+        }
+        CliCommand::LegacyReportList => {
+            open_initialized_storage(&invocation.data_dir)?;
+            Ok(json!({ "reports": list_migration_reports(&invocation.data_dir)? }))
         }
     }
 }
@@ -647,6 +655,53 @@ fn report_file_name(code: &str) -> String {
     format!("{}.json", code.replace('.', "-"))
 }
 
+fn list_migration_reports(data_dir: &Path) -> Result<Vec<Value>, CliError> {
+    let reports_dir = data_dir.join(MIGRATION_REPORTS_DIR);
+    if !reports_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut report_paths = fs::read_dir(&reports_dir)
+        .map_err(|source| CliError::Storage(format!("failed to read migration reports: {source}")))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| {
+            CliError::Storage(format!("failed to read migration report entry: {source}"))
+        })?;
+    report_paths.retain(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "json")
+    });
+    report_paths.sort();
+
+    report_paths
+        .into_iter()
+        .map(|path| {
+            let bytes = fs::read(&path).map_err(|source| {
+                CliError::Storage(format!(
+                    "failed to read migration report '{}': {source}",
+                    path.display()
+                ))
+            })?;
+            let report: Value = serde_json::from_slice(&bytes).map_err(|source| {
+                CliError::Storage(format!(
+                    "failed to parse migration report '{}': {source}",
+                    path.display()
+                ))
+            })?;
+            Ok(json!({
+                "ok": report.get("ok").and_then(Value::as_bool).unwrap_or(false),
+                "code": report.get("code").and_then(Value::as_str).unwrap_or("migration.unknown"),
+                "message": report.get("message").and_then(Value::as_str).unwrap_or("Legacy migration report"),
+                "bundle_file_name": report.get("bundle_file_name").and_then(Value::as_str),
+                "imported_records": report.get("imported_records").and_then(Value::as_u64).unwrap_or(0),
+                "tracked_records": report.get("tracked_records").and_then(Value::as_u64).unwrap_or(0),
+                "report_path": path,
+            }))
+        })
+        .collect()
+}
+
 #[derive(Debug, Serialize)]
 struct MigrationReport<'a> {
     ok: bool,
@@ -746,6 +801,7 @@ impl CliCommand {
             Self::PackageEval { .. } => "package eval",
             Self::StorageValidate => "storage validate",
             Self::LegacyImportRoomBundle { .. } => "legacy import-room-bundle",
+            Self::LegacyReportList => "legacy report-list",
         }
     }
 }
