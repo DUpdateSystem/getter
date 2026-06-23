@@ -7,6 +7,8 @@
 #[cfg(feature = "domain")]
 pub use getter_core as core;
 #[cfg(feature = "domain")]
+pub use getter_operations as operations;
+#[cfg(feature = "domain")]
 pub use getter_storage as storage;
 
 #[cfg(feature = "rustls-platform-verifier")]

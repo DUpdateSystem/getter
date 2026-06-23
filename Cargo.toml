@@ -10,6 +10,7 @@ members = [
     "crates/getter-storage",
     "crates/getter-providers",
     "crates/getter-downloader",
+    "crates/getter-operations",
     "crates/getter-plugin-api",
     "crates/getter-rpc",
     "crates/getter-cli",
@@ -22,7 +23,8 @@ edition = "2021"
 
 [features]
 default = ["cli", "domain"]
-domain = ["dep:getter-core", "dep:getter-storage"]
+domain = ["dep:getter-core", "dep:getter-storage", "dep:getter-operations"]
+lua = ["getter-core/lua"]
 cli = ["dep:getter-cli"]
 rustls-platform-verifier = ["dep:rustls-platform-verifier"]
 rustls-platform-verifier-android = ["rustls-platform-verifier", "rustls-platform-verifier/jni"]
@@ -30,8 +32,9 @@ webpki-roots = []
 native-tokio = []
 
 [dependencies]
-getter-core = { path = "crates/getter-core", optional = true }
+getter-core = { path = "crates/getter-core", default-features = false, optional = true }
 getter-storage = { path = "crates/getter-storage", optional = true }
+getter-operations = { path = "crates/getter-operations", optional = true }
 getter-cli = { path = "crates/getter-cli", optional = true }
 thiserror = "1"
 tokio = { version = "1", features = ["net"] }

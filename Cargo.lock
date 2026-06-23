@@ -508,6 +508,7 @@ version = "0.1.0"
 dependencies = [
  "getter-cli",
  "getter-core",
+ "getter-operations",
  "getter-storage",
  "rustls-platform-verifier",
  "thiserror 1.0.69",
@@ -521,6 +522,7 @@ dependencies = [
  "cucumber",
  "getter-core",
  "getter-downloader",
+ "getter-operations",
  "getter-storage",
  "rusqlite",
  "serde",
@@ -556,6 +558,16 @@ name = "getter-ffi"
 version = "0.1.0"
 dependencies = [
  "getter-core",
+]
+
+[[package]]
+name = "getter-operations"
+version = "0.1.0"
+dependencies = [
+ "getter-core",
+ "getter-storage",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

@@ -10,7 +10,9 @@ use std::fmt;
 use std::str::FromStr;
 
 pub mod autogen;
+#[cfg(feature = "lua")]
 pub mod diagnostics;
+#[cfg(feature = "lua")]
 pub mod lua;
 pub mod repository;
 pub mod task;
