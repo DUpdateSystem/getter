@@ -5,3 +5,5 @@ edition.workspace = true
 
 [dependencies]
 getter-core = { path = "../getter-core" }
+getter-storage = { path = "../getter-storage" }
+thiserror = "1"

@@ -15,6 +15,10 @@ struct CliWorld {
     inventory: Option<PathBuf>,
     autogen_preview: Option<PathBuf>,
     update_fixture: Option<PathBuf>,
+    task_request: Option<PathBuf>,
+    remembered_task_id: Option<String>,
+    remembered_event_cursor: Option<u64>,
+    remembered_handoff_id: Option<String>,
     fixture_repo_id: Option<String>,
     fixture_repo_path: Option<PathBuf>,
     fixture_package_id: Option<String>,
@@ -261,6 +265,44 @@ fn malformed_offline_update_fixture(world: &mut CliWorld) {
     world.update_fixture = Some(fixture);
 }
 
+#[given(expr = "an offline download request for package {string}")]
+fn offline_download_request_for_package(world: &mut CliWorld, package_id: String) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let request = temp.path().join("download-request.json");
+    fs::write(
+        &request,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "format": "getter-download-request",
+            "version": 1,
+            "package_id": package_id,
+            "executor": "fake",
+            "actions": [
+                {
+                    "type": "download",
+                    "url": "https://example.invalid/app.apk",
+                    "file_name": "app.apk"
+                },
+                {
+                    "type": "install",
+                    "installer": "android_package",
+                    "file": "app.apk"
+                }
+            ]
+        }))
+        .expect("request serializes"),
+    )
+    .expect("write download request");
+    world.task_request = Some(request);
+}
+
+#[given("a malformed offline download request")]
+fn malformed_offline_download_request(world: &mut CliWorld) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let request = temp.path().join("malformed-download-request.json");
+    fs::write(&request, "not-json").expect("write malformed request");
+    world.task_request = Some(request);
+}
+
 #[given(expr = "a fixture Lua repository {string} with package {string}")]
 fn fixture_lua_repository(world: &mut CliWorld, repo_id: String, package_id: String) {
     create_fixture_lua_repository(world, repo_id, package_id, "F-Droid".to_owned());
@@ -500,6 +542,99 @@ fn run_getter_update_check(world: &mut CliWorld) {
     world.json = None;
 }
 
+#[when("I run getter task submit for that request")]
+fn run_getter_task_submit(world: &mut CliWorld) {
+    let request = world.task_request.as_ref().expect("task request exists");
+    let output = run_getter(
+        world,
+        [
+            "task".to_owned(),
+            "submit".to_owned(),
+            "--request".to_owned(),
+            request.to_string_lossy().to_string(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter task list")]
+fn run_getter_task_list(world: &mut CliWorld) {
+    let output = run_getter(world, ["task".to_owned(), "list".to_owned()]);
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter task cancel for the remembered task")]
+fn run_getter_task_cancel(world: &mut CliWorld) {
+    let task_id = world
+        .remembered_task_id
+        .as_ref()
+        .expect("remembered task id exists")
+        .clone();
+    let output = run_getter(world, ["task".to_owned(), "cancel".to_owned(), task_id]);
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter task run for the remembered task")]
+fn run_getter_task_run(world: &mut CliWorld) {
+    let task_id = world
+        .remembered_task_id
+        .as_ref()
+        .expect("remembered task id exists")
+        .clone();
+    let output = run_getter(world, ["task".to_owned(), "run".to_owned(), task_id]);
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when(expr = "I run getter task events after {int} limit {int}")]
+fn run_getter_task_events_after_limit(world: &mut CliWorld, after: u64, limit: u64) {
+    let output = run_getter(
+        world,
+        [
+            "task".to_owned(),
+            "events".to_owned(),
+            "--after".to_owned(),
+            after.to_string(),
+            "--limit".to_owned(),
+            limit.to_string(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when(expr = "I run getter task events after the remembered cursor limit {int}")]
+fn run_getter_task_events_after_remembered_cursor(world: &mut CliWorld, limit: u64) {
+    let after = world
+        .remembered_event_cursor
+        .expect("remembered event cursor exists");
+    run_getter_task_events_after_limit(world, after, limit);
+}
+
+#[when(expr = "I run getter task install-result {string} for the remembered handoff")]
+fn run_getter_task_install_result(world: &mut CliWorld, status: String) {
+    let handoff_id = world
+        .remembered_handoff_id
+        .as_ref()
+        .expect("remembered handoff id exists")
+        .clone();
+    let output = run_getter(
+        world,
+        [
+            "task".to_owned(),
+            "install-result".to_owned(),
+            handoff_id,
+            "--status".to_owned(),
+            status,
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
 #[when("I run getter autogen installed preview for that inventory")]
 fn run_getter_autogen_installed_preview(world: &mut CliWorld) {
     let inventory = world.inventory.as_ref().expect("inventory exists");
@@ -652,6 +787,26 @@ fn command_fails_with_update_check_error(world: &mut CliWorld) {
     world.json = Some(json);
 }
 
+#[then("the command fails with a download task error")]
+fn command_fails_with_download_task_error(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("command output exists");
+    assert_eq!(output.status.code(), Some(40));
+    let json = parse_stdout(output);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "download.task_error");
+    world.json = Some(json);
+}
+
+#[then("the command fails with a CLI usage error")]
+fn command_fails_with_cli_usage_error(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("command output exists");
+    assert_eq!(output.status.code(), Some(2));
+    let json = parse_stdout(output);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "cli.usage");
+    world.json = Some(json);
+}
+
 #[then(expr = "the command fails with direct DB migration error {string}")]
 fn command_fails_with_direct_db_migration_error(world: &mut CliWorld, code: String) {
     let output = world.output.as_ref().expect("command output exists");
@@ -712,6 +867,110 @@ fn output_contains_empty_repository_list(world: &mut CliWorld) {
     assert_eq!(json["ok"], true);
     assert_eq!(json["command"], "repo list");
     assert_eq!(json["data"]["repositories"], Value::Array(Vec::new()));
+}
+
+#[then("I remember the submitted task id")]
+fn remember_submitted_task_id(world: &mut CliWorld) {
+    let json = current_json(world);
+    assert_eq!(json["command"], "task submit");
+    let task_id = json["data"]["task"]["id"]
+        .as_str()
+        .expect("task id should be a string")
+        .to_owned();
+    world.remembered_task_id = Some(task_id);
+}
+
+#[then(expr = "the task list contains the remembered task with status {string}")]
+fn task_list_contains_remembered_task_with_status(world: &mut CliWorld, status: String) {
+    let task_id = world
+        .remembered_task_id
+        .as_ref()
+        .expect("remembered task id exists")
+        .clone();
+    let json = current_json(world);
+    assert_eq!(json["command"], "task list");
+    let tasks = json["data"]["tasks"].as_array().expect("tasks array");
+    let task = tasks
+        .iter()
+        .find(|task| task["id"].as_str() == Some(task_id.as_str()))
+        .unwrap_or_else(|| panic!("task list should contain {task_id}: {tasks:?}"));
+    assert_eq!(task["status"], status);
+}
+
+#[then(expr = "the task cancel result has status {string} and changed true")]
+fn task_cancel_result_changed_true(world: &mut CliWorld, status: String) {
+    let json = current_json(world);
+    assert_eq!(json["command"], "task cancel");
+    assert_eq!(json["data"]["status"], status);
+    assert_eq!(json["data"]["changed"], true);
+}
+
+#[then(expr = "the task cancel result has status {string} and changed false")]
+fn task_cancel_result_changed_false(world: &mut CliWorld, status: String) {
+    let json = current_json(world);
+    assert_eq!(json["command"], "task cancel");
+    assert_eq!(json["data"]["status"], status);
+    assert_eq!(json["data"]["changed"], false);
+}
+
+#[then(expr = "the task run result has status {string} and install handoff {string}")]
+fn task_run_result_has_status_and_install_handoff(
+    world: &mut CliWorld,
+    status: String,
+    handoff_status: String,
+) {
+    let json = current_json(world);
+    assert_eq!(json["command"], "task run");
+    assert_eq!(json["data"]["task"]["status"], status);
+    assert_eq!(json["data"]["install_handoff"]["status"], handoff_status);
+}
+
+#[then(expr = "the task events output contains {int} events and has more events")]
+fn task_events_output_contains_events_and_has_more(world: &mut CliWorld, count: usize) {
+    let json = current_json(world);
+    assert_eq!(json["command"], "task events");
+    assert_eq!(json["data"]["events"].as_array().unwrap().len(), count);
+    assert_eq!(json["data"]["has_more"], true);
+}
+
+#[then("I remember the next event cursor")]
+fn remember_next_event_cursor(world: &mut CliWorld) {
+    let json = current_json(world);
+    world.remembered_event_cursor = Some(
+        json["data"]["next_cursor"]
+            .as_u64()
+            .expect("next cursor should be a u64"),
+    );
+}
+
+#[then(expr = "the task events output contains event {string}")]
+fn task_events_output_contains_event(world: &mut CliWorld, kind: String) {
+    let json = current_json(world);
+    let events = json["data"]["events"].as_array().expect("events array");
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"].as_str() == Some(kind.as_str())),
+        "events should contain {kind}: {events:?}"
+    );
+}
+
+#[then("I remember the install handoff id")]
+fn remember_install_handoff_id(world: &mut CliWorld) {
+    let json = current_json(world);
+    world.remembered_handoff_id = Some(
+        json["data"]["install_handoff"]["id"]
+            .as_str()
+            .expect("handoff id should be a string")
+            .to_owned(),
+    );
+}
+
+#[then(expr = "the install result output has status {string}")]
+fn install_result_output_has_status(world: &mut CliWorld, status: String) {
+    let json = current_json(world);
+    assert_eq!(json["command"], "task install-result");
+    assert_eq!(json["data"]["handoff"]["status"], status);
 }
 
 #[then("the output reports valid storage")]

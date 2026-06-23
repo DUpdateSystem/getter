@@ -13,8 +13,15 @@ use getter_core::autogen::{
 use getter_core::diagnostics::validate_repository_path;
 use getter_core::lua::evaluate_package_file;
 use getter_core::repository::{RepositoryLayout, RepositoryMetadata, REPO_API_VERSION_V1};
+use getter_core::task::{
+    DownloadTaskRequest, InstallHandoffStatus, TaskEventPage, DOWNLOAD_REQUEST_FORMAT,
+    DOWNLOAD_REQUEST_VERSION,
+};
 use getter_core::update::{run_offline_update_check, OfflineUpdateCheckFixture};
 use getter_core::{PackageId, RepositoryId, RepositoryPriority};
+use getter_downloader::{
+    cancel_download_task, record_install_result, run_fake_download_task, submit_fake_download_task,
+};
 use getter_storage::legacy_room::{
     map_legacy_app, read_legacy_room_database, LegacyAppKind, LegacyAppRecord,
     LegacyExtraAppRecord, LegacyPackageResolution, LegacyRoomDbImport, LegacyRoomImportWarning,
@@ -67,6 +74,24 @@ pub enum CliCommand {
     UpdateCheck {
         fixture: PathBuf,
     },
+    TaskSubmit {
+        request: PathBuf,
+    },
+    TaskRun {
+        task_id: String,
+    },
+    TaskList,
+    TaskCancel {
+        task_id: String,
+    },
+    TaskEvents {
+        after: u64,
+        limit: usize,
+    },
+    TaskInstallResult {
+        handoff_id: String,
+        status: InstallHandoffStatus,
+    },
     AutogenInstalledPreview {
         inventory: PathBuf,
     },
@@ -103,6 +128,7 @@ pub enum ExitCode {
     Usage = 2,
     Storage = 10,
     Migration = 20,
+    Download = 40,
 }
 
 impl ExitCode {
@@ -123,6 +149,8 @@ pub enum CliError {
     PackageEval(String),
     #[error("update check error: {0}")]
     Update(String),
+    #[error("download task error: {0}")]
+    Download(String),
     #[error("autogen error: {0}")]
     Autogen(String),
     #[error("Legacy Room export bundle is invalid")]
@@ -143,6 +171,7 @@ impl CliError {
             Self::Repository(_) | Self::PackageEval(_) | Self::Update(_) | Self::Autogen(_) => {
                 ExitCode::GenericFailure
             }
+            Self::Download(_) => ExitCode::Download,
             Self::InvalidLegacyBundle { .. }
             | Self::UnsupportedLegacyBundle { .. }
             | Self::InvalidLegacyDb { .. }
@@ -157,6 +186,7 @@ impl CliError {
             Self::Repository(_) => "repository.error",
             Self::PackageEval(_) => "package.eval_error",
             Self::Update(_) => "update.check_error",
+            Self::Download(_) => "download.task_error",
             Self::Autogen(_) => "autogen.error",
             Self::InvalidLegacyBundle { .. } => "migration.invalid_bundle",
             Self::UnsupportedLegacyBundle { .. } => "migration.unsupported_bundle",
@@ -172,6 +202,7 @@ impl CliError {
             Self::Repository(_) => "Getter repository operation failed",
             Self::PackageEval(_) => "Getter package evaluation failed",
             Self::Update(_) => "Getter update check failed",
+            Self::Download(_) => "Getter download task operation failed",
             Self::Autogen(_) => "Getter autogen operation failed",
             Self::InvalidLegacyBundle { .. } => "Legacy Room export bundle is invalid",
             Self::UnsupportedLegacyBundle { .. } => {
@@ -189,6 +220,7 @@ impl CliError {
             | Self::Repository(detail)
             | Self::PackageEval(detail)
             | Self::Update(detail)
+            | Self::Download(detail)
             | Self::Autogen(detail) => Some(detail.as_str()),
             Self::InvalidLegacyBundle { .. }
             | Self::UnsupportedLegacyBundle { .. }
@@ -208,6 +240,7 @@ impl CliError {
             | Self::Repository(_)
             | Self::PackageEval(_)
             | Self::Update(_)
+            | Self::Download(_)
             | Self::Autogen(_) => None,
         }
     }
@@ -341,6 +374,41 @@ where
         {
             CliCommand::UpdateCheck {
                 fixture: PathBuf::from(fixture),
+            }
+        }
+        [domain, command, flag, request]
+            if domain == "task" && command == "submit" && flag == "--request" =>
+        {
+            CliCommand::TaskSubmit {
+                request: PathBuf::from(request),
+            }
+        }
+        [domain, command, task_id] if domain == "task" && command == "run" => CliCommand::TaskRun {
+            task_id: task_id.clone(),
+        },
+        [domain, command] if domain == "task" && command == "list" => CliCommand::TaskList,
+        [domain, command, task_id] if domain == "task" && command == "cancel" => {
+            CliCommand::TaskCancel {
+                task_id: task_id.clone(),
+            }
+        }
+        [domain, command, after_flag, after, limit_flag, limit]
+            if domain == "task"
+                && command == "events"
+                && after_flag == "--after"
+                && limit_flag == "--limit" =>
+        {
+            CliCommand::TaskEvents {
+                after: parse_u64(after, "--after")?,
+                limit: parse_positive_usize(limit, "--limit")?,
+            }
+        }
+        [domain, command, handoff_id, status_flag, status]
+            if domain == "task" && command == "install-result" && status_flag == "--status" =>
+        {
+            CliCommand::TaskInstallResult {
+                handoff_id: handoff_id.clone(),
+                status: parse_install_handoff_status(status)?,
             }
         }
         [domain, subject, action, flag, inventory]
@@ -497,6 +565,46 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
             .map_err(|source| {
                 CliError::Update(format!("failed to serialize update check: {source}"))
             })
+        }
+        CliCommand::TaskSubmit { request } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            let request = read_download_task_request(&request)?;
+            serde_json::to_value(submit_fake_download_task(&db, request).map_err(|source| {
+                CliError::Download(format!("offline task submit failed: {source}"))
+            })?)
+            .map_err(|source| CliError::Download(format!("failed to serialize task: {source}")))
+        }
+        CliCommand::TaskRun { task_id } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            serde_json::to_value(run_fake_download_task(&db, &task_id).map_err(|source| {
+                CliError::Download(format!("offline task run failed: {source}"))
+            })?)
+            .map_err(|source| CliError::Download(format!("failed to serialize task: {source}")))
+        }
+        CliCommand::TaskList => {
+            let db = open_main_db(&invocation.data_dir)?;
+            Ok(json!({ "tasks": db.download_tasks()? }))
+        }
+        CliCommand::TaskCancel { task_id } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            serde_json::to_value(cancel_download_task(&db, &task_id).map_err(|source| {
+                CliError::Download(format!("offline task cancel failed: {source}"))
+            })?)
+            .map_err(|source| CliError::Download(format!("failed to serialize task: {source}")))
+        }
+        CliCommand::TaskEvents { after, limit } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            let events: TaskEventPage = db.task_events_after(after, limit)?;
+            serde_json::to_value(events).map_err(|source| {
+                CliError::Download(format!("failed to serialize task events: {source}"))
+            })
+        }
+        CliCommand::TaskInstallResult { handoff_id, status } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            serde_json::to_value(record_install_result(&db, &handoff_id, status).map_err(
+                |source| CliError::Download(format!("offline install result failed: {source}")),
+            )?)
+            .map_err(|source| CliError::Download(format!("failed to serialize handoff: {source}")))
         }
         CliCommand::AutogenInstalledPreview { inventory } => {
             let db = open_main_db(&invocation.data_dir)?;
@@ -686,6 +794,38 @@ fn parse_package_id(value: &str) -> Result<PackageId, CliError> {
         .map_err(|source: getter_core::PackageIdError| CliError::Usage(source.to_string()))
 }
 
+fn parse_u64(value: &str, flag: &str) -> Result<u64, CliError> {
+    value
+        .parse()
+        .map_err(|source| CliError::Usage(format!("invalid {flag} value '{value}': {source}")))
+}
+
+fn parse_usize(value: &str, flag: &str) -> Result<usize, CliError> {
+    value
+        .parse()
+        .map_err(|source| CliError::Usage(format!("invalid {flag} value '{value}': {source}")))
+}
+
+fn parse_positive_usize(value: &str, flag: &str) -> Result<usize, CliError> {
+    let parsed = parse_usize(value, flag)?;
+    if parsed == 0 {
+        return Err(CliError::Usage(format!("{flag} must be greater than zero")));
+    }
+    Ok(parsed)
+}
+
+fn parse_install_handoff_status(value: &str) -> Result<InstallHandoffStatus, CliError> {
+    match value {
+        "accepted" => Ok(InstallHandoffStatus::Accepted),
+        "succeeded" => Ok(InstallHandoffStatus::Succeeded),
+        "failed" => Ok(InstallHandoffStatus::Failed),
+        "canceled" => Ok(InstallHandoffStatus::Canceled),
+        _ => Err(CliError::Usage(format!(
+            "invalid install result status '{value}'; expected accepted, succeeded, failed, or canceled"
+        ))),
+    }
+}
+
 fn parse_priority(value: &str) -> Result<RepositoryPriority, CliError> {
     value
         .parse::<i32>()
@@ -790,6 +930,27 @@ fn read_update_check_fixture(path: &Path) -> Result<OfflineUpdateCheckFixture, C
             "failed to parse update check fixture JSON: {source}"
         ))
     })
+}
+
+fn read_download_task_request(path: &Path) -> Result<DownloadTaskRequest, CliError> {
+    let bytes = fs::read(path)
+        .map_err(|source| CliError::Download(format!("failed to read task request: {source}")))?;
+    let request: DownloadTaskRequest = serde_json::from_slice(&bytes).map_err(|source| {
+        CliError::Download(format!("failed to parse task request JSON: {source}"))
+    })?;
+    if request.format != DOWNLOAD_REQUEST_FORMAT {
+        return Err(CliError::Download(format!(
+            "unsupported download request format '{}'",
+            request.format
+        )));
+    }
+    if request.version != DOWNLOAD_REQUEST_VERSION {
+        return Err(CliError::Download(format!(
+            "unsupported download request version {}; expected {}",
+            request.version, DOWNLOAD_REQUEST_VERSION
+        )));
+    }
+    Ok(request)
 }
 
 fn build_local_autogen_plan(
@@ -1722,7 +1883,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|hub list|update check --fixture <fixture.json>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\n".to_owned()
+    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|hub list|update check --fixture <fixture.json>|task submit --request <request.json>|task run <task-id>|task list|task cancel <task-id>|task events --after <cursor> --limit <n>|task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1776,6 +1937,12 @@ impl CliCommand {
             Self::PackageEval { .. } => "package eval",
             Self::StorageValidate => "storage validate",
             Self::UpdateCheck { .. } => "update check",
+            Self::TaskSubmit { .. } => "task submit",
+            Self::TaskRun { .. } => "task run",
+            Self::TaskList => "task list",
+            Self::TaskCancel { .. } => "task cancel",
+            Self::TaskEvents { .. } => "task events",
+            Self::TaskInstallResult { .. } => "task install-result",
             Self::AutogenInstalledPreview { .. } => "autogen installed preview",
             Self::AutogenInstalledApply { .. } => "autogen installed apply",
             Self::AutogenCleanupPreview { .. } => "autogen cleanup preview",

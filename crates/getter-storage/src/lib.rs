@@ -3,8 +3,13 @@
 pub mod legacy_room;
 
 use getter_core::repository::RepositoryMetadata;
-use getter_core::{PackageId, RepositoryId, RepositoryPriority};
-use rusqlite::{params, Connection, Params, Transaction};
+use getter_core::task::{
+    DownloadTaskRequest, DownloadTaskStatus, DownloadTaskSummary, InstallHandoffStatus,
+    InstallHandoffSummary, TaskCancelResult, TaskEvent, TaskEventKind, TaskEventPage,
+    TaskModelError,
+};
+use getter_core::{PackageId, RepositoryId, RepositoryPriority, UpdateAction};
+use rusqlite::{params, Connection, OptionalExtension, Params, Transaction};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -18,6 +23,20 @@ pub enum StorageError {
     RepositoryId(#[from] getter_core::RepositoryIdError),
     #[error("invalid package resolution in database: {0}")]
     PackageResolution(String),
+    #[error("invalid task state in database: {0}")]
+    TaskState(String),
+    #[error("download task not found: {0}")]
+    TaskNotFound(String),
+    #[error("install handoff not found: {0}")]
+    InstallHandoffNotFound(String),
+    #[error("invalid install handoff transition for {handoff_id}: {reason}")]
+    InvalidInstallHandoffTransition { handoff_id: String, reason: String },
+    #[error("invalid task transition for {task_id}: {reason}")]
+    InvalidTaskTransition { task_id: String, reason: String },
+    #[error("invalid task request: {0}")]
+    InvalidTaskRequest(String),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 pub struct MainDb {
@@ -78,6 +97,43 @@ CREATE TABLE IF NOT EXISTS migration_records (
     completed_at_unix INTEGER NOT NULL DEFAULT (unixepoch()),
     report_json TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS download_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT UNIQUE,
+    package_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    executor TEXT NOT NULL,
+    actions_json TEXT NOT NULL,
+    download_file_name TEXT NOT NULL,
+    downloaded_file TEXT,
+    failure_message TEXT,
+    install_handoff_id TEXT,
+    created_at_unix INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at_unix INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS task_events (
+    cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT,
+    message TEXT,
+    created_at_unix INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS install_handoffs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    handoff_id TEXT UNIQUE,
+    task_id TEXT NOT NULL,
+    package_id TEXT NOT NULL,
+    installer TEXT NOT NULL,
+    file TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message TEXT,
+    created_at_unix INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at_unix INTEGER NOT NULL DEFAULT (unixepoch())
+);
 "#,
         )?;
         self.ensure_column("tracked_packages", "ignored_version", "TEXT")?;
@@ -88,6 +144,10 @@ CREATE TABLE IF NOT EXISTS migration_records (
         )?;
         self.conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(id) VALUES ('main-v1')",
+            [],
+        )?;
+        self.conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(id) VALUES ('main-task-v1')",
             [],
         )?;
         Ok(())
@@ -345,6 +405,375 @@ ON CONFLICT(id) DO UPDATE SET
         }
         Ok(records)
     }
+
+    pub fn create_download_task(
+        &self,
+        request: &DownloadTaskRequest,
+    ) -> Result<DownloadTaskSummary, StorageError> {
+        let download_file_name = match request.download_action() {
+            Some(UpdateAction::Download { file_name, .. }) => file_name.clone(),
+            _ => {
+                return Err(StorageError::InvalidTaskRequest(
+                    "download task request must include a download action".to_owned(),
+                ))
+            }
+        };
+        let actions_json = serde_json::to_string(&request.actions)?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            r#"
+INSERT INTO download_tasks(package_id, status, executor, actions_json, download_file_name)
+VALUES (?1, ?2, ?3, ?4, ?5)
+"#,
+            params![
+                request.package_id.to_string(),
+                DownloadTaskStatus::Queued.as_str(),
+                request.executor.as_str(),
+                actions_json,
+                download_file_name,
+            ],
+        )?;
+        let row_id = tx.last_insert_rowid();
+        let task_id = format!("task-{row_id}");
+        tx.execute(
+            "UPDATE download_tasks SET task_id = ?1 WHERE id = ?2",
+            params![task_id, row_id],
+        )?;
+        insert_task_event_with_executor(
+            &tx,
+            &task_id,
+            TaskEventKind::TaskCreated,
+            Some(DownloadTaskStatus::Queued),
+            Some("Task queued"),
+        )?;
+        tx.commit()?;
+        self.download_task(&task_id)
+    }
+
+    pub fn download_task(&self, task_id: &str) -> Result<DownloadTaskSummary, StorageError> {
+        let mut stmt = self.conn.prepare(
+            r#"
+SELECT task_id, package_id, status, executor, actions_json, download_file_name,
+       downloaded_file, failure_message, install_handoff_id
+FROM download_tasks
+WHERE task_id = ?1
+"#,
+        )?;
+        let row = stmt
+            .query_row([task_id], |row| {
+                Ok(DownloadTaskRow {
+                    task_id: row.get(0)?,
+                    package_id: row.get(1)?,
+                    status: row.get(2)?,
+                    executor: row.get(3)?,
+                    actions_json: row.get(4)?,
+                    download_file_name: row.get(5)?,
+                    downloaded_file: row.get(6)?,
+                    failure_message: row.get(7)?,
+                    install_handoff_id: row.get(8)?,
+                })
+            })
+            .optional()?;
+        row.map(download_task_from_row)
+            .transpose()?
+            .ok_or_else(|| StorageError::TaskNotFound(task_id.to_owned()))
+    }
+
+    pub fn download_tasks(&self) -> Result<Vec<DownloadTaskSummary>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            r#"
+SELECT task_id, package_id, status, executor, actions_json, download_file_name,
+       downloaded_file, failure_message, install_handoff_id
+FROM download_tasks
+ORDER BY id ASC
+"#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DownloadTaskRow {
+                task_id: row.get(0)?,
+                package_id: row.get(1)?,
+                status: row.get(2)?,
+                executor: row.get(3)?,
+                actions_json: row.get(4)?,
+                download_file_name: row.get(5)?,
+                downloaded_file: row.get(6)?,
+                failure_message: row.get(7)?,
+                install_handoff_id: row.get(8)?,
+            })
+        })?;
+        let mut tasks = Vec::new();
+        for row in rows {
+            tasks.push(download_task_from_row(row?)?);
+        }
+        Ok(tasks)
+    }
+
+    pub fn start_download_task(&self, task_id: &str) -> Result<DownloadTaskSummary, StorageError> {
+        let task = self.download_task(task_id)?;
+        match task.status {
+            DownloadTaskStatus::Queued => {
+                self.update_download_task_status(
+                    task_id,
+                    DownloadTaskStatus::Running,
+                    None,
+                    None,
+                    TaskEventKind::TaskStarted,
+                    "Task started",
+                )?;
+                self.download_task(task_id)
+            }
+            DownloadTaskStatus::Running => Ok(task),
+            status => Err(StorageError::InvalidTaskTransition {
+                task_id: task_id.to_owned(),
+                reason: format!("cannot start task with status {}", status.as_str()),
+            }),
+        }
+    }
+
+    pub fn succeed_download_task(
+        &self,
+        task_id: &str,
+    ) -> Result<DownloadTaskSummary, StorageError> {
+        let task = self.download_task(task_id)?;
+        match task.status {
+            DownloadTaskStatus::Queued | DownloadTaskStatus::Running => {
+                self.update_download_task_status(
+                    task_id,
+                    DownloadTaskStatus::Succeeded,
+                    Some(&task.download_file_name),
+                    None,
+                    TaskEventKind::TaskSucceeded,
+                    "Task succeeded",
+                )?;
+                self.download_task(task_id)
+            }
+            status => Err(StorageError::InvalidTaskTransition {
+                task_id: task_id.to_owned(),
+                reason: format!("cannot succeed task with status {}", status.as_str()),
+            }),
+        }
+    }
+
+    pub fn cancel_download_task(&self, task_id: &str) -> Result<TaskCancelResult, StorageError> {
+        let task = self.download_task(task_id)?;
+        match task.status {
+            DownloadTaskStatus::Queued | DownloadTaskStatus::Running => {
+                self.update_download_task_status(
+                    task_id,
+                    DownloadTaskStatus::Canceled,
+                    None,
+                    None,
+                    TaskEventKind::TaskCanceled,
+                    "Task canceled",
+                )?;
+                Ok(TaskCancelResult {
+                    task_id: task_id.to_owned(),
+                    status: DownloadTaskStatus::Canceled,
+                    changed: true,
+                })
+            }
+            DownloadTaskStatus::Canceled => Ok(TaskCancelResult {
+                task_id: task_id.to_owned(),
+                status: DownloadTaskStatus::Canceled,
+                changed: false,
+            }),
+            status => Err(StorageError::InvalidTaskTransition {
+                task_id: task_id.to_owned(),
+                reason: format!("cannot cancel task with status {}", status.as_str()),
+            }),
+        }
+    }
+
+    pub fn create_install_handoff_for_task(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<InstallHandoffSummary>, StorageError> {
+        let task = self.download_task(task_id)?;
+        if task.status != DownloadTaskStatus::Succeeded {
+            return Err(StorageError::InvalidTaskTransition {
+                task_id: task_id.to_owned(),
+                reason: format!(
+                    "cannot request install handoff for task with status {}",
+                    task.status.as_str()
+                ),
+            });
+        }
+        if let Some(existing) = task.install_handoff_id.as_deref() {
+            return Ok(Some(self.install_handoff(existing)?));
+        }
+        let Some(UpdateAction::Install { installer, file }) = task
+            .actions
+            .iter()
+            .find(|action| matches!(action, UpdateAction::Install { .. }))
+        else {
+            return Ok(None);
+        };
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            r#"
+INSERT INTO install_handoffs(task_id, package_id, installer, file, status)
+VALUES (?1, ?2, ?3, ?4, ?5)
+"#,
+            params![
+                task_id,
+                task.package_id.to_string(),
+                installer,
+                file,
+                InstallHandoffStatus::Requested.as_str(),
+            ],
+        )?;
+        let row_id = tx.last_insert_rowid();
+        let handoff_id = format!("handoff-{row_id}");
+        tx.execute(
+            "UPDATE install_handoffs SET handoff_id = ?1 WHERE id = ?2",
+            params![handoff_id, row_id],
+        )?;
+        tx.execute(
+            "UPDATE download_tasks SET install_handoff_id = ?1, updated_at_unix = unixepoch() WHERE task_id = ?2",
+            params![handoff_id, task_id],
+        )?;
+        insert_task_event_with_executor(
+            &tx,
+            task_id,
+            TaskEventKind::InstallHandoffRequested,
+            Some(task.status),
+            Some("Install handoff requested"),
+        )?;
+        tx.commit()?;
+        Ok(Some(self.install_handoff(&handoff_id)?))
+    }
+
+    pub fn install_handoff(&self, handoff_id: &str) -> Result<InstallHandoffSummary, StorageError> {
+        let mut stmt = self.conn.prepare(
+            r#"
+SELECT handoff_id, task_id, package_id, installer, file, status, message
+FROM install_handoffs
+WHERE handoff_id = ?1
+"#,
+        )?;
+        let row = stmt
+            .query_row([handoff_id], |row| {
+                Ok(InstallHandoffRow {
+                    handoff_id: row.get(0)?,
+                    task_id: row.get(1)?,
+                    package_id: row.get(2)?,
+                    installer: row.get(3)?,
+                    file: row.get(4)?,
+                    status: row.get(5)?,
+                    message: row.get(6)?,
+                })
+            })
+            .optional()?;
+        row.map(install_handoff_from_row)
+            .transpose()?
+            .ok_or_else(|| StorageError::InstallHandoffNotFound(handoff_id.to_owned()))
+    }
+
+    pub fn record_install_result(
+        &self,
+        handoff_id: &str,
+        status: InstallHandoffStatus,
+        message: Option<&str>,
+    ) -> Result<InstallHandoffSummary, StorageError> {
+        if status == InstallHandoffStatus::Requested {
+            return Err(StorageError::InvalidInstallHandoffTransition {
+                handoff_id: handoff_id.to_owned(),
+                reason: "requested is getter-created state, not a platform install result"
+                    .to_owned(),
+            });
+        }
+        let handoff = self.install_handoff(handoff_id)?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            r#"
+UPDATE install_handoffs
+SET status = ?1, message = ?2, updated_at_unix = unixepoch()
+WHERE handoff_id = ?3
+"#,
+            params![status.as_str(), message, handoff_id],
+        )?;
+        insert_task_event_with_executor(
+            &tx,
+            &handoff.task_id,
+            TaskEventKind::InstallResultRecorded,
+            None,
+            Some("Install result recorded"),
+        )?;
+        tx.commit()?;
+        self.install_handoff(handoff_id)
+    }
+
+    pub fn task_events_after(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<TaskEventPage, StorageError> {
+        let fetch_limit = limit.saturating_add(1) as i64;
+        let mut stmt = self.conn.prepare(
+            r#"
+SELECT cursor, task_id, kind, status, message
+FROM task_events
+WHERE cursor > ?1
+ORDER BY cursor ASC
+LIMIT ?2
+"#,
+        )?;
+        let rows = stmt.query_map(params![after as i64, fetch_limit], |row| {
+            Ok(TaskEventRow {
+                cursor: row.get(0)?,
+                task_id: row.get(1)?,
+                kind: row.get(2)?,
+                status: row.get(3)?,
+                message: row.get(4)?,
+            })
+        })?;
+        let mut events = Vec::new();
+        for row in rows {
+            events.push(task_event_from_row(row?)?);
+        }
+        let has_more = events.len() > limit;
+        if has_more {
+            events.truncate(limit);
+        }
+        let next_cursor = events.last().map(|event| event.cursor).unwrap_or(after);
+        Ok(TaskEventPage {
+            events,
+            next_cursor,
+            has_more,
+        })
+    }
+
+    fn update_download_task_status(
+        &self,
+        task_id: &str,
+        status: DownloadTaskStatus,
+        downloaded_file: Option<&str>,
+        failure_message: Option<&str>,
+        event_kind: TaskEventKind,
+        event_message: &str,
+    ) -> Result<(), StorageError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            r#"
+UPDATE download_tasks
+SET status = ?1,
+    downloaded_file = COALESCE(?2, downloaded_file),
+    failure_message = ?3,
+    updated_at_unix = unixepoch()
+WHERE task_id = ?4
+"#,
+            params![status.as_str(), downloaded_file, failure_message, task_id],
+        )?;
+        insert_task_event_with_executor(
+            &tx,
+            task_id,
+            event_kind,
+            Some(status),
+            Some(event_message),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 impl CacheDb {
@@ -433,6 +862,36 @@ pub struct StoredMigrationRecord {
     pub id: String,
     pub source: String,
     pub report_json: String,
+}
+
+struct DownloadTaskRow {
+    task_id: String,
+    package_id: String,
+    status: String,
+    executor: String,
+    actions_json: String,
+    download_file_name: String,
+    downloaded_file: Option<String>,
+    failure_message: Option<String>,
+    install_handoff_id: Option<String>,
+}
+
+struct TaskEventRow {
+    cursor: i64,
+    task_id: String,
+    kind: String,
+    status: Option<String>,
+    message: Option<String>,
+}
+
+struct InstallHandoffRow {
+    handoff_id: String,
+    task_id: String,
+    package_id: String,
+    installer: String,
+    file: String,
+    status: String,
+    message: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -529,10 +988,84 @@ fn bool_to_i64(value: bool) -> i64 {
     }
 }
 
+fn download_task_from_row(row: DownloadTaskRow) -> Result<DownloadTaskSummary, StorageError> {
+    Ok(DownloadTaskSummary {
+        id: row.task_id,
+        package_id: row.package_id.parse()?,
+        status: row
+            .status
+            .parse()
+            .map_err(|error: TaskModelError| StorageError::TaskState(error.to_string()))?,
+        executor: row
+            .executor
+            .parse()
+            .map_err(|error: TaskModelError| StorageError::TaskState(error.to_string()))?,
+        actions: serde_json::from_str(&row.actions_json)?,
+        download_file_name: row.download_file_name,
+        downloaded_file: row.downloaded_file,
+        failure_message: row.failure_message,
+        install_handoff_id: row.install_handoff_id,
+    })
+}
+
+fn task_event_from_row(row: TaskEventRow) -> Result<TaskEvent, StorageError> {
+    Ok(TaskEvent {
+        cursor: row.cursor as u64,
+        task_id: row.task_id,
+        kind: row
+            .kind
+            .parse()
+            .map_err(|error: TaskModelError| StorageError::TaskState(error.to_string()))?,
+        status: row
+            .status
+            .map(|status| status.parse())
+            .transpose()
+            .map_err(|error: TaskModelError| StorageError::TaskState(error.to_string()))?,
+        message: row.message,
+    })
+}
+
+fn install_handoff_from_row(row: InstallHandoffRow) -> Result<InstallHandoffSummary, StorageError> {
+    Ok(InstallHandoffSummary {
+        id: row.handoff_id,
+        task_id: row.task_id,
+        package_id: row.package_id.parse()?,
+        installer: row.installer,
+        file: row.file,
+        status: row
+            .status
+            .parse()
+            .map_err(|error: TaskModelError| StorageError::TaskState(error.to_string()))?,
+        message: row.message,
+    })
+}
+
+fn insert_task_event_with_executor(
+    conn: &impl SqlExecutor,
+    task_id: &str,
+    kind: TaskEventKind,
+    status: Option<DownloadTaskStatus>,
+    message: Option<&str>,
+) -> Result<usize, rusqlite::Error> {
+    conn.execute_statement(
+        r#"
+INSERT INTO task_events(task_id, kind, status, message)
+VALUES (?1, ?2, ?3, ?4)
+"#,
+        params![
+            task_id,
+            kind.as_str(),
+            status.map(DownloadTaskStatus::as_str),
+            message,
+        ],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use getter_core::repository::REPO_API_VERSION_V1;
+    use getter_core::task::TaskExecutor;
 
     #[test]
     fn main_db_stores_repository_registry_ordered_by_priority() {
@@ -718,6 +1251,143 @@ mod tests {
         assert_eq!(records[0].id, "legacy-room-v17");
         assert_eq!(records[0].source, "legacy-room-bundle");
         assert!(db.migration_record_exists("legacy-room-v17").unwrap());
+    }
+
+    #[test]
+    fn task_lifecycle_persists_across_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("main.db");
+        {
+            let db = MainDb::open(&db_path).unwrap();
+            let task = db.create_download_task(&download_request()).unwrap();
+            assert_eq!(task.id, "task-1");
+            assert_eq!(task.status, DownloadTaskStatus::Queued);
+        }
+
+        let db = MainDb::open(&db_path).unwrap();
+        let tasks = db.download_tasks().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "task-1");
+        assert_eq!(tasks[0].package_id.to_string(), "android/org.fdroid.fdroid");
+        assert_eq!(tasks[0].status, DownloadTaskStatus::Queued);
+    }
+
+    #[test]
+    fn task_cancel_is_persistent_and_idempotent_before_terminal_state() {
+        let db = MainDb::open_in_memory().unwrap();
+        let task = db.create_download_task(&download_request()).unwrap();
+
+        let first = db.cancel_download_task(&task.id).unwrap();
+        assert!(first.changed);
+        assert_eq!(first.status, DownloadTaskStatus::Canceled);
+        let second = db.cancel_download_task(&task.id).unwrap();
+        assert!(!second.changed);
+        assert_eq!(
+            db.download_task(&task.id).unwrap().status,
+            DownloadTaskStatus::Canceled
+        );
+    }
+
+    #[test]
+    fn task_cancel_after_success_is_rejected() {
+        let db = MainDb::open_in_memory().unwrap();
+        let task = db.create_download_task(&download_request()).unwrap();
+        db.start_download_task(&task.id).unwrap();
+        db.succeed_download_task(&task.id).unwrap();
+
+        let error = db.cancel_download_task(&task.id).unwrap_err();
+        assert!(matches!(error, StorageError::InvalidTaskTransition { .. }));
+    }
+
+    #[test]
+    fn task_events_are_pollable_with_cursor_and_limit() {
+        let db = MainDb::open_in_memory().unwrap();
+        let task = db.create_download_task(&download_request()).unwrap();
+        db.start_download_task(&task.id).unwrap();
+        db.succeed_download_task(&task.id).unwrap();
+
+        let first_page = db.task_events_after(0, 2).unwrap();
+        assert_eq!(first_page.events.len(), 2);
+        assert!(first_page.has_more);
+        assert_eq!(first_page.events[0].kind, TaskEventKind::TaskCreated);
+        assert_eq!(first_page.events[1].kind, TaskEventKind::TaskStarted);
+
+        let second_page = db.task_events_after(first_page.next_cursor, 2).unwrap();
+        assert_eq!(second_page.events.len(), 1);
+        assert!(!second_page.has_more);
+        assert_eq!(second_page.events[0].kind, TaskEventKind::TaskSucceeded);
+    }
+
+    #[test]
+    fn install_handoff_result_is_recorded() {
+        let db = MainDb::open_in_memory().unwrap();
+        let task = db.create_download_task(&download_request()).unwrap();
+        db.start_download_task(&task.id).unwrap();
+        db.succeed_download_task(&task.id).unwrap();
+        let handoff = db
+            .create_install_handoff_for_task(&task.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(handoff.id, "handoff-1");
+        assert_eq!(handoff.status, InstallHandoffStatus::Requested);
+
+        let updated = db
+            .record_install_result(&handoff.id, InstallHandoffStatus::Succeeded, Some("ok"))
+            .unwrap();
+        assert_eq!(updated.status, InstallHandoffStatus::Succeeded);
+        assert_eq!(updated.message.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn install_result_rejects_getter_created_requested_state() {
+        let db = MainDb::open_in_memory().unwrap();
+        let task = db.create_download_task(&download_request()).unwrap();
+        db.start_download_task(&task.id).unwrap();
+        db.succeed_download_task(&task.id).unwrap();
+        let handoff = db
+            .create_install_handoff_for_task(&task.id)
+            .unwrap()
+            .unwrap();
+
+        let error = db
+            .record_install_result(&handoff.id, InstallHandoffStatus::Requested, None)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            StorageError::InvalidInstallHandoffTransition { .. }
+        ));
+    }
+
+    #[test]
+    fn task_request_requires_download_action() {
+        let db = MainDb::open_in_memory().unwrap();
+        let mut request = download_request();
+        request.actions = vec![UpdateAction::Install {
+            installer: "android_package".to_owned(),
+            file: "app.apk".to_owned(),
+        }];
+
+        let error = db.create_download_task(&request).unwrap_err();
+        assert!(matches!(error, StorageError::InvalidTaskRequest(_)));
+    }
+
+    fn download_request() -> DownloadTaskRequest {
+        DownloadTaskRequest {
+            format: getter_core::task::DOWNLOAD_REQUEST_FORMAT.to_owned(),
+            version: getter_core::task::DOWNLOAD_REQUEST_VERSION,
+            package_id: "android/org.fdroid.fdroid".parse().unwrap(),
+            executor: TaskExecutor::Fake,
+            actions: vec![
+                UpdateAction::Download {
+                    url: "https://example.invalid/app.apk".to_owned(),
+                    file_name: "app.apk".to_owned(),
+                },
+                UpdateAction::Install {
+                    installer: "android_package".to_owned(),
+                    file: "app.apk".to_owned(),
+                },
+            ],
+        }
     }
 
     #[test]

@@ -520,6 +520,7 @@ version = "0.1.0"
 dependencies = [
  "cucumber",
  "getter-core",
+ "getter-downloader",
  "getter-storage",
  "rusqlite",
  "serde",
@@ -546,6 +547,8 @@ name = "getter-downloader"
 version = "0.1.0"
 dependencies = [
  "getter-core",
+ "getter-storage",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

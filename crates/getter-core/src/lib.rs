@@ -13,6 +13,7 @@ pub mod autogen;
 pub mod diagnostics;
 pub mod lua;
 pub mod repository;
+pub mod task;
 pub mod update;
 
 /// Error returned when parsing or constructing a [`PackageId`].
