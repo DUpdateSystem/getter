@@ -6,3 +6,4 @@
 //! generated package files, manifests, and tracked state live here.
 
 pub mod autogen;
+pub mod legacy_room;
