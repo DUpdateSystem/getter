@@ -8,6 +8,7 @@ use getter_core::autogen::InstalledInventory;
 use getter_core::diagnostics::validate_repository_path;
 use getter_core::lua::evaluate_package_file;
 use getter_core::repository::{RepositoryLayout, RepositoryMetadata};
+use getter_core::runtime::{GetterRuntime, SealedActionPlan};
 use getter_core::task::{
     DownloadTaskRequest, InstallHandoffStatus, TaskEventPage, DOWNLOAD_REQUEST_FORMAT,
     DOWNLOAD_REQUEST_VERSION,
@@ -19,6 +20,7 @@ use getter_downloader::{
 };
 use getter_operations::autogen::{self, AutogenAcceptance, AutogenOperationError};
 use getter_operations::legacy_room::{self, LegacyRoomOperationError};
+use getter_operations::runtime as runtime_operations;
 use getter_storage::legacy_room::{
     map_legacy_app, LegacyAppKind, LegacyAppRecord, LegacyExtraAppRecord, LegacyPackageResolution,
 };
@@ -74,23 +76,26 @@ pub enum CliCommand {
     UpdateCheck {
         fixture: PathBuf,
     },
-    TaskSubmit {
+    DebugFakeTaskSubmit {
         request: PathBuf,
     },
-    TaskRun {
+    DebugFakeTaskRun {
         task_id: String,
     },
-    TaskList,
-    TaskCancel {
+    DebugFakeTaskList,
+    DebugFakeTaskCancel {
         task_id: String,
     },
-    TaskEvents {
+    DebugFakeTaskEvents {
         after: u64,
         limit: usize,
     },
-    TaskInstallResult {
+    DebugFakeTaskInstallResult {
         handoff_id: String,
         status: InstallHandoffStatus,
+    },
+    RuntimeScript {
+        script: PathBuf,
     },
     AutogenInstalledPreview {
         inventory: PathBuf,
@@ -145,6 +150,8 @@ pub enum CliError {
     Update(String),
     #[error("download task error: {0}")]
     Download(String),
+    #[error("runtime error: {0}")]
+    Runtime(String),
     #[error("autogen error: {0}")]
     Autogen(String),
     #[error("Legacy Room export bundle is invalid")]
@@ -162,9 +169,11 @@ impl CliError {
         match self {
             Self::Usage(_) => ExitCode::Usage,
             Self::Storage(_) => ExitCode::Storage,
-            Self::Repository(_) | Self::PackageEval(_) | Self::Update(_) | Self::Autogen(_) => {
-                ExitCode::GenericFailure
-            }
+            Self::Repository(_)
+            | Self::PackageEval(_)
+            | Self::Update(_)
+            | Self::Runtime(_)
+            | Self::Autogen(_) => ExitCode::GenericFailure,
             Self::Download(_) => ExitCode::Download,
             Self::InvalidLegacyBundle { .. }
             | Self::UnsupportedLegacyBundle { .. }
@@ -181,6 +190,7 @@ impl CliError {
             Self::PackageEval(_) => "package.eval_error",
             Self::Update(_) => "update.check_error",
             Self::Download(_) => "download.task_error",
+            Self::Runtime(_) => "runtime.error",
             Self::Autogen(_) => "autogen.error",
             Self::InvalidLegacyBundle { .. } => "migration.invalid_bundle",
             Self::UnsupportedLegacyBundle { .. } => "migration.unsupported_bundle",
@@ -197,6 +207,7 @@ impl CliError {
             Self::PackageEval(_) => "Getter package evaluation failed",
             Self::Update(_) => "Getter update check failed",
             Self::Download(_) => "Getter download task operation failed",
+            Self::Runtime(_) => "Getter runtime operation failed",
             Self::Autogen(_) => "Getter autogen operation failed",
             Self::InvalidLegacyBundle { .. } => "Legacy Room export bundle is invalid",
             Self::UnsupportedLegacyBundle { .. } => {
@@ -215,6 +226,7 @@ impl CliError {
             | Self::PackageEval(detail)
             | Self::Update(detail)
             | Self::Download(detail)
+            | Self::Runtime(detail)
             | Self::Autogen(detail) => Some(detail.as_str()),
             Self::InvalidLegacyBundle { .. }
             | Self::UnsupportedLegacyBundle { .. }
@@ -235,6 +247,7 @@ impl CliError {
             | Self::PackageEval(_)
             | Self::Update(_)
             | Self::Download(_)
+            | Self::Runtime(_)
             | Self::Autogen(_) => None,
         }
     }
@@ -405,39 +418,63 @@ where
                 fixture: PathBuf::from(fixture),
             }
         }
-        [domain, command, flag, request]
-            if domain == "task" && command == "submit" && flag == "--request" =>
+        [domain, subject, command, flag, request]
+            if domain == "debug"
+                && subject == "fake-task"
+                && command == "submit"
+                && flag == "--request" =>
         {
-            CliCommand::TaskSubmit {
+            CliCommand::DebugFakeTaskSubmit {
                 request: PathBuf::from(request),
             }
         }
-        [domain, command, task_id] if domain == "task" && command == "run" => CliCommand::TaskRun {
-            task_id: task_id.clone(),
-        },
-        [domain, command] if domain == "task" && command == "list" => CliCommand::TaskList,
-        [domain, command, task_id] if domain == "task" && command == "cancel" => {
-            CliCommand::TaskCancel {
+        [domain, subject, command, task_id]
+            if domain == "debug" && subject == "fake-task" && command == "run" =>
+        {
+            CliCommand::DebugFakeTaskRun {
                 task_id: task_id.clone(),
             }
         }
-        [domain, command, after_flag, after, limit_flag, limit]
-            if domain == "task"
+        [domain, subject, command]
+            if domain == "debug" && subject == "fake-task" && command == "list" =>
+        {
+            CliCommand::DebugFakeTaskList
+        }
+        [domain, subject, command, task_id]
+            if domain == "debug" && subject == "fake-task" && command == "cancel" =>
+        {
+            CliCommand::DebugFakeTaskCancel {
+                task_id: task_id.clone(),
+            }
+        }
+        [domain, subject, command, after_flag, after, limit_flag, limit]
+            if domain == "debug"
+                && subject == "fake-task"
                 && command == "events"
                 && after_flag == "--after"
                 && limit_flag == "--limit" =>
         {
-            CliCommand::TaskEvents {
+            CliCommand::DebugFakeTaskEvents {
                 after: parse_u64(after, "--after")?,
                 limit: parse_positive_usize(limit, "--limit")?,
             }
         }
-        [domain, command, handoff_id, status_flag, status]
-            if domain == "task" && command == "install-result" && status_flag == "--status" =>
+        [domain, subject, command, handoff_id, status_flag, status]
+            if domain == "debug"
+                && subject == "fake-task"
+                && command == "install-result"
+                && status_flag == "--status" =>
         {
-            CliCommand::TaskInstallResult {
+            CliCommand::DebugFakeTaskInstallResult {
                 handoff_id: handoff_id.clone(),
                 status: parse_install_handoff_status(status)?,
+            }
+        }
+        [domain, command, flag, script]
+            if domain == "runtime" && command == "script" && flag == "--script" =>
+        {
+            CliCommand::RuntimeScript {
+                script: PathBuf::from(script),
             }
         }
         [domain, subject, action, flag, inventory]
@@ -608,46 +645,49 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
                 CliError::Update(format!("failed to serialize update check: {source}"))
             })
         }
-        CliCommand::TaskSubmit { request } => {
+        CliCommand::DebugFakeTaskSubmit { request } => {
             let db = open_main_db(&invocation.data_dir)?;
             let request = read_download_task_request(&request)?;
             serde_json::to_value(submit_fake_download_task(&db, request).map_err(|source| {
-                CliError::Download(format!("offline task submit failed: {source}"))
+                CliError::Download(format!("offline fake task submit failed: {source}"))
             })?)
             .map_err(|source| CliError::Download(format!("failed to serialize task: {source}")))
         }
-        CliCommand::TaskRun { task_id } => {
+        CliCommand::DebugFakeTaskRun { task_id } => {
             let db = open_main_db(&invocation.data_dir)?;
             serde_json::to_value(run_fake_download_task(&db, &task_id).map_err(|source| {
-                CliError::Download(format!("offline task run failed: {source}"))
+                CliError::Download(format!("offline fake task run failed: {source}"))
             })?)
             .map_err(|source| CliError::Download(format!("failed to serialize task: {source}")))
         }
-        CliCommand::TaskList => {
+        CliCommand::DebugFakeTaskList => {
             let db = open_main_db(&invocation.data_dir)?;
             Ok(json!({ "tasks": db.download_tasks()? }))
         }
-        CliCommand::TaskCancel { task_id } => {
+        CliCommand::DebugFakeTaskCancel { task_id } => {
             let db = open_main_db(&invocation.data_dir)?;
             serde_json::to_value(cancel_download_task(&db, &task_id).map_err(|source| {
-                CliError::Download(format!("offline task cancel failed: {source}"))
+                CliError::Download(format!("offline fake task cancel failed: {source}"))
             })?)
             .map_err(|source| CliError::Download(format!("failed to serialize task: {source}")))
         }
-        CliCommand::TaskEvents { after, limit } => {
+        CliCommand::DebugFakeTaskEvents { after, limit } => {
             let db = open_main_db(&invocation.data_dir)?;
             let events: TaskEventPage = db.task_events_after(after, limit)?;
             serde_json::to_value(events).map_err(|source| {
-                CliError::Download(format!("failed to serialize task events: {source}"))
+                CliError::Download(format!("failed to serialize fake task events: {source}"))
             })
         }
-        CliCommand::TaskInstallResult { handoff_id, status } => {
+        CliCommand::DebugFakeTaskInstallResult { handoff_id, status } => {
             let db = open_main_db(&invocation.data_dir)?;
             serde_json::to_value(record_install_result(&db, &handoff_id, status).map_err(
-                |source| CliError::Download(format!("offline install result failed: {source}")),
+                |source| {
+                    CliError::Download(format!("offline fake install result failed: {source}"))
+                },
             )?)
             .map_err(|source| CliError::Download(format!("failed to serialize handoff: {source}")))
         }
+        CliCommand::RuntimeScript { script } => run_runtime_script(&script),
         CliCommand::AutogenInstalledPreview { inventory } => {
             let db = open_main_db(&invocation.data_dir)?;
             let inventory = read_installed_inventory(&inventory)?;
@@ -954,6 +994,227 @@ fn read_download_task_request(path: &Path) -> Result<DownloadTaskRequest, CliErr
     Ok(request)
 }
 
+#[derive(Debug, Deserialize)]
+struct RuntimeScript {
+    steps: Vec<RuntimeScriptStep>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeScriptStep {
+    operation: String,
+    #[serde(default)]
+    payload: Value,
+    #[serde(default)]
+    plan: Option<SealedActionPlan>,
+}
+
+fn run_runtime_script(path: &Path) -> Result<Value, CliError> {
+    let bytes = fs::read(path)
+        .map_err(|source| CliError::Runtime(format!("failed to read runtime script: {source}")))?;
+    let script: RuntimeScript = serde_json::from_slice(&bytes).map_err(|source| {
+        CliError::Runtime(format!("failed to parse runtime script JSON: {source}"))
+    })?;
+    let mut runtime = GetterRuntime::new();
+    let mut context = RuntimeScriptContext::default();
+    let mut outputs = Vec::new();
+    for step in script.steps {
+        let data = execute_runtime_script_step(&mut runtime, &mut context, step)?;
+        outputs.push(data);
+    }
+    Ok(json!({ "steps": outputs }))
+}
+
+#[derive(Default)]
+struct RuntimeScriptContext {
+    last_action_id: Option<String>,
+    last_task_id: Option<String>,
+}
+
+fn execute_runtime_script_step(
+    runtime: &mut GetterRuntime,
+    context: &mut RuntimeScriptContext,
+    step: RuntimeScriptStep,
+) -> Result<Value, CliError> {
+    let operation = step.operation.as_str();
+    let data = match operation {
+        "issue_action" => {
+            let plan = match step.plan {
+                Some(plan) => plan,
+                None => serde_json::from_value(step.payload).map_err(|source| {
+                    CliError::Runtime(format!("failed to parse issue_action plan: {source}"))
+                })?,
+            };
+            runtime_operations::issue_action(runtime, plan)
+        }
+        "submit_action" => runtime_json_operation(
+            runtime,
+            runtime_operations::submit_action_json,
+            default_action_payload(context, step.payload)?,
+        )?,
+        "task_get" => runtime_json_query_operation(
+            runtime,
+            runtime_operations::task_get_json,
+            default_task_payload(context, step.payload)?,
+        )?,
+        "task_list" => runtime_json_query_operation(
+            runtime,
+            runtime_operations::task_list_json,
+            empty_object_payload(step.payload),
+        )?,
+        "task_start" => runtime_json_operation(
+            runtime,
+            runtime_operations::task_start_json,
+            default_task_payload(context, step.payload)?,
+        )?,
+        "task_download_progress" => runtime_json_operation(
+            runtime,
+            runtime_operations::task_download_progress_json,
+            default_task_payload(context, step.payload)?,
+        )?,
+        "task_complete_download" => runtime_json_operation(
+            runtime,
+            runtime_operations::task_complete_download_json,
+            default_task_payload(context, step.payload)?,
+        )?,
+        "task_pause" => runtime_json_operation(
+            runtime,
+            runtime_operations::task_pause_json,
+            default_task_payload(context, step.payload)?,
+        )?,
+        "task_resume" => runtime_json_operation(
+            runtime,
+            runtime_operations::task_resume_json,
+            default_task_payload(context, step.payload)?,
+        )?,
+        "task_user_result" => runtime_json_operation(
+            runtime,
+            runtime_operations::task_user_result_json,
+            default_task_payload(context, step.payload)?,
+        )?,
+        "task_cancel" => runtime_json_operation(
+            runtime,
+            runtime_operations::task_cancel_json,
+            default_task_payload(context, step.payload)?,
+        )?,
+        "task_retry" => runtime_json_operation(
+            runtime,
+            runtime_operations::task_retry_json,
+            default_task_payload(context, step.payload)?,
+        )?,
+        "task_remove" => runtime_json_operation(
+            runtime,
+            runtime_operations::task_remove_json,
+            default_task_payload(context, step.payload)?,
+        )?,
+        "task_clean" => runtime_json_operation(
+            runtime,
+            runtime_operations::task_clean_json,
+            empty_object_payload(step.payload),
+        )?,
+        other => {
+            return Err(CliError::Runtime(format!(
+                "unsupported runtime script operation '{other}'"
+            )))
+        }
+    };
+    remember_runtime_script_ids(context, &data);
+    Ok(json!({ "operation": operation, "data": data }))
+}
+
+fn runtime_json_operation(
+    runtime: &mut GetterRuntime,
+    operation: fn(
+        &mut GetterRuntime,
+        &str,
+    ) -> Result<Value, runtime_operations::RuntimeOperationError>,
+    payload: Value,
+) -> Result<Value, CliError> {
+    let payload = serde_json::to_string(&payload).map_err(|source| {
+        CliError::Runtime(format!("failed to serialize runtime request: {source}"))
+    })?;
+    operation(runtime, &payload).map_err(|source| CliError::Runtime(source.to_string()))
+}
+
+fn runtime_json_query_operation(
+    runtime: &GetterRuntime,
+    operation: fn(&GetterRuntime, &str) -> Result<Value, runtime_operations::RuntimeOperationError>,
+    payload: Value,
+) -> Result<Value, CliError> {
+    let payload = serde_json::to_string(&payload).map_err(|source| {
+        CliError::Runtime(format!("failed to serialize runtime request: {source}"))
+    })?;
+    operation(runtime, &payload).map_err(|source| CliError::Runtime(source.to_string()))
+}
+
+fn empty_object_payload(payload: Value) -> Value {
+    if payload.is_null() {
+        json!({})
+    } else {
+        payload
+    }
+}
+
+fn default_action_payload(
+    context: &RuntimeScriptContext,
+    payload: Value,
+) -> Result<Value, CliError> {
+    if payload.is_null() {
+        let action_id = context.last_action_id.as_ref().ok_or_else(|| {
+            CliError::Runtime("runtime script has no previous action_id".to_owned())
+        })?;
+        return Ok(json!({ "action_id": action_id }));
+    }
+    replace_runtime_script_tokens(context, payload)
+}
+
+fn default_task_payload(context: &RuntimeScriptContext, payload: Value) -> Result<Value, CliError> {
+    if payload.is_null() {
+        let task_id = context.last_task_id.as_ref().ok_or_else(|| {
+            CliError::Runtime("runtime script has no previous task_id".to_owned())
+        })?;
+        return Ok(json!({ "task_id": task_id }));
+    }
+    replace_runtime_script_tokens(context, payload)
+}
+
+fn replace_runtime_script_tokens(
+    context: &RuntimeScriptContext,
+    payload: Value,
+) -> Result<Value, CliError> {
+    match payload {
+        Value::String(value) if value == "$last_action_id" => {
+            Ok(Value::String(context.last_action_id.clone().ok_or_else(
+                || CliError::Runtime("runtime script has no previous action_id".to_owned()),
+            )?))
+        }
+        Value::String(value) if value == "$last_task_id" => {
+            Ok(Value::String(context.last_task_id.clone().ok_or_else(
+                || CliError::Runtime("runtime script has no previous task_id".to_owned()),
+            )?))
+        }
+        Value::Array(values) => values
+            .into_iter()
+            .map(|value| replace_runtime_script_tokens(context, value))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        Value::Object(values) => values
+            .into_iter()
+            .map(|(key, value)| Ok((key, replace_runtime_script_tokens(context, value)?)))
+            .collect::<Result<serde_json::Map<_, _>, CliError>>()
+            .map(Value::Object),
+        other => Ok(other),
+    }
+}
+
+fn remember_runtime_script_ids(context: &mut RuntimeScriptContext, data: &Value) {
+    if let Some(action_id) = data.get("action_id").and_then(Value::as_str) {
+        context.last_action_id = Some(action_id.to_owned());
+    }
+    if let Some(task_id) = data.get("task_id").and_then(Value::as_str) {
+        context.last_task_id = Some(task_id.to_owned());
+    }
+}
+
 fn repo_path(repo: &StoredRepository) -> Result<PathBuf, CliError> {
     repo.path
         .as_ref()
@@ -1214,7 +1475,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|task submit --request <request.json>|task run <task-id>|task list|task cancel <task-id>|task events --after <cursor> --limit <n>|task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\n".to_owned()
+    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1270,12 +1531,13 @@ impl CliCommand {
             Self::VersionPin { .. } => "version pin",
             Self::VersionUnpin { .. } => "version unpin",
             Self::UpdateCheck { .. } => "update check",
-            Self::TaskSubmit { .. } => "task submit",
-            Self::TaskRun { .. } => "task run",
-            Self::TaskList => "task list",
-            Self::TaskCancel { .. } => "task cancel",
-            Self::TaskEvents { .. } => "task events",
-            Self::TaskInstallResult { .. } => "task install-result",
+            Self::DebugFakeTaskSubmit { .. } => "debug fake-task submit",
+            Self::DebugFakeTaskRun { .. } => "debug fake-task run",
+            Self::DebugFakeTaskList => "debug fake-task list",
+            Self::DebugFakeTaskCancel { .. } => "debug fake-task cancel",
+            Self::DebugFakeTaskEvents { .. } => "debug fake-task events",
+            Self::DebugFakeTaskInstallResult { .. } => "debug fake-task install-result",
+            Self::RuntimeScript { .. } => "runtime script",
             Self::AutogenInstalledPreview { .. } => "autogen installed preview",
             Self::AutogenInstalledApply { .. } => "autogen installed apply",
             Self::AutogenCleanupPreview { .. } => "autogen cleanup preview",
@@ -1334,6 +1596,167 @@ mod tests {
             CliCommand::VersionUnpin {
                 package_id: "android/org.fdroid.fdroid".parse().unwrap(),
             }
+        );
+    }
+
+    #[test]
+    fn old_task_namespace_is_not_public_cli_surface() {
+        let output = run(["getter", "--data-dir", "/tmp/ua-getter", "task", "list"]);
+        assert_eq!(output.exit_code, ExitCode::Usage);
+        let json: Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(json["error"]["code"], "cli.usage");
+    }
+
+    #[test]
+    fn parses_runtime_script_command() {
+        let parsed = parse_args([
+            "getter",
+            "--data-dir",
+            "/tmp/ua-getter",
+            "runtime",
+            "script",
+            "--script",
+            "/tmp/runtime-script.json",
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed.command,
+            CliCommand::RuntimeScript {
+                script: PathBuf::from("/tmp/runtime-script.json"),
+            }
+        );
+    }
+
+    #[test]
+    fn run_runtime_script_exercises_in_memory_task_remove_and_clean() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("getter-data");
+        let script = temp.path().join("runtime-script.json");
+        fs::write(
+            &script,
+            serde_json::to_vec_pretty(&json!({
+                "steps": [
+                    {
+                        "operation": "issue_action",
+                        "plan": {
+                            "package_id": "android/org.fdroid.fdroid",
+                            "actions": [
+                                {
+                                    "type": "download",
+                                    "url": "https://example.invalid/app.apk",
+                                    "file_name": "app.apk"
+                                }
+                            ],
+                            "lua_object": {
+                                "object_id": "debug:android/org.fdroid.fdroid",
+                                "dependency_digest": "debug-digest"
+                            }
+                        }
+                    },
+                    { "operation": "submit_action" },
+                    { "operation": "task_start" },
+                    {
+                        "operation": "task_download_progress",
+                        "payload": {
+                            "task_id": "$last_task_id",
+                            "current_bits": 10,
+                            "total_bits": 20
+                        }
+                    },
+                    { "operation": "task_complete_download" },
+                    { "operation": "task_remove" },
+                    { "operation": "task_clean", "payload": { "mode": "all_inactive" } }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let output = run([
+            "getter".to_owned(),
+            "--data-dir".to_owned(),
+            data_dir.to_string_lossy().to_string(),
+            "runtime".to_owned(),
+            "script".to_owned(),
+            "--script".to_owned(),
+            script.to_string_lossy().to_string(),
+        ]);
+
+        assert_eq!(output.exit_code, ExitCode::Success);
+        let json: Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(json["command"], "runtime script");
+        let steps = json["data"]["steps"].as_array().unwrap();
+        assert_eq!(steps[0]["data"]["action_id"], "action-1");
+        assert_eq!(steps[1]["data"]["task_id"], "task-1");
+        assert_eq!(steps[4]["data"]["status"], "completed");
+        assert_eq!(steps[5]["data"]["task_id"], "task-1");
+        assert_eq!(steps[6]["data"]["tasks"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn runtime_script_does_not_preserve_tasks_across_cli_invocations() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("getter-data");
+        let create_script = temp.path().join("create-runtime-task.json");
+        fs::write(
+            &create_script,
+            serde_json::to_vec_pretty(&json!({
+                "steps": [
+                    {
+                        "operation": "issue_action",
+                        "plan": {
+                            "package_id": "android/org.fdroid.fdroid",
+                            "actions": [],
+                            "lua_object": {
+                                "object_id": "debug:android/org.fdroid.fdroid",
+                                "dependency_digest": "debug-digest"
+                            }
+                        }
+                    },
+                    { "operation": "submit_action" }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let list_script = temp.path().join("list-runtime-tasks.json");
+        fs::write(
+            &list_script,
+            serde_json::to_vec_pretty(&json!({
+                "steps": [{ "operation": "task_list" }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let create = run([
+            "getter".to_owned(),
+            "--data-dir".to_owned(),
+            data_dir.to_string_lossy().to_string(),
+            "runtime".to_owned(),
+            "script".to_owned(),
+            "--script".to_owned(),
+            create_script.to_string_lossy().to_string(),
+        ]);
+        assert_eq!(create.exit_code, ExitCode::Success);
+
+        let list = run([
+            "getter".to_owned(),
+            "--data-dir".to_owned(),
+            data_dir.to_string_lossy().to_string(),
+            "runtime".to_owned(),
+            "script".to_owned(),
+            "--script".to_owned(),
+            list_script.to_string_lossy().to_string(),
+        ]);
+        assert_eq!(list.exit_code, ExitCode::Success);
+        let json: Value = serde_json::from_str(&list.stdout).unwrap();
+        assert_eq!(
+            json["data"]["steps"][0]["data"]["tasks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
         );
     }
 

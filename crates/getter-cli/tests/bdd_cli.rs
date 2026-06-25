@@ -16,6 +16,7 @@ struct CliWorld {
     autogen_preview: Option<PathBuf>,
     update_fixture: Option<PathBuf>,
     task_request: Option<PathBuf>,
+    runtime_script: Option<PathBuf>,
     remembered_task_id: Option<String>,
     remembered_event_cursor: Option<u64>,
     remembered_handoff_id: Option<String>,
@@ -303,6 +304,44 @@ fn malformed_offline_download_request(world: &mut CliWorld) {
     world.task_request = Some(request);
 }
 
+#[given("a runtime script that submits completes removes and cleans a task")]
+fn runtime_script_submits_completes_removes_and_cleans_task(world: &mut CliWorld) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let script = temp.path().join("runtime-script.json");
+    fs::write(
+        &script,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "steps": [
+                {
+                    "operation": "issue_action",
+                    "plan": {
+                        "package_id": "android/org.fdroid.fdroid",
+                        "actions": [
+                            {
+                                "type": "download",
+                                "url": "https://example.invalid/app.apk",
+                                "file_name": "app.apk"
+                            }
+                        ],
+                        "lua_object": {
+                            "object_id": "debug:android/org.fdroid.fdroid",
+                            "dependency_digest": "debug-digest"
+                        }
+                    }
+                },
+                { "operation": "submit_action" },
+                { "operation": "task_start" },
+                { "operation": "task_complete_download" },
+                { "operation": "task_remove" },
+                { "operation": "task_clean", "payload": { "mode": "all_inactive" } }
+            ]
+        }))
+        .expect("runtime script serializes"),
+    )
+    .expect("write runtime script");
+    world.runtime_script = Some(script);
+}
+
 #[given(expr = "a fixture Lua repository {string} with package {string}")]
 fn fixture_lua_repository(world: &mut CliWorld, repo_id: String, package_id: String) {
     create_fixture_lua_repository(world, repo_id, package_id, "F-Droid".to_owned());
@@ -562,13 +601,14 @@ fn run_getter_version_unpin(world: &mut CliWorld, package_id: String) {
     world.json = None;
 }
 
-#[when("I run getter task submit for that request")]
-fn run_getter_task_submit(world: &mut CliWorld) {
+#[when("I run getter debug fake-task submit for that request")]
+fn run_getter_debug_fake_task_submit(world: &mut CliWorld) {
     let request = world.task_request.as_ref().expect("task request exists");
     let output = run_getter(
         world,
         [
-            "task".to_owned(),
+            "debug".to_owned(),
+            "fake-task".to_owned(),
             "submit".to_owned(),
             "--request".to_owned(),
             request.to_string_lossy().to_string(),
@@ -578,43 +618,67 @@ fn run_getter_task_submit(world: &mut CliWorld) {
     world.json = None;
 }
 
-#[when("I run getter task list")]
-fn run_getter_task_list(world: &mut CliWorld) {
-    let output = run_getter(world, ["task".to_owned(), "list".to_owned()]);
-    world.output = Some(output);
-    world.json = None;
-}
-
-#[when("I run getter task cancel for the remembered task")]
-fn run_getter_task_cancel(world: &mut CliWorld) {
-    let task_id = world
-        .remembered_task_id
-        .as_ref()
-        .expect("remembered task id exists")
-        .clone();
-    let output = run_getter(world, ["task".to_owned(), "cancel".to_owned(), task_id]);
-    world.output = Some(output);
-    world.json = None;
-}
-
-#[when("I run getter task run for the remembered task")]
-fn run_getter_task_run(world: &mut CliWorld) {
-    let task_id = world
-        .remembered_task_id
-        .as_ref()
-        .expect("remembered task id exists")
-        .clone();
-    let output = run_getter(world, ["task".to_owned(), "run".to_owned(), task_id]);
-    world.output = Some(output);
-    world.json = None;
-}
-
-#[when(expr = "I run getter task events after {int} limit {int}")]
-fn run_getter_task_events_after_limit(world: &mut CliWorld, after: u64, limit: u64) {
+#[when("I run getter debug fake-task list")]
+fn run_getter_debug_fake_task_list(world: &mut CliWorld) {
     let output = run_getter(
         world,
         [
-            "task".to_owned(),
+            "debug".to_owned(),
+            "fake-task".to_owned(),
+            "list".to_owned(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter debug fake-task cancel for the remembered task")]
+fn run_getter_debug_fake_task_cancel(world: &mut CliWorld) {
+    let task_id = world
+        .remembered_task_id
+        .as_ref()
+        .expect("remembered task id exists")
+        .clone();
+    let output = run_getter(
+        world,
+        [
+            "debug".to_owned(),
+            "fake-task".to_owned(),
+            "cancel".to_owned(),
+            task_id,
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter debug fake-task run for the remembered task")]
+fn run_getter_debug_fake_task_run(world: &mut CliWorld) {
+    let task_id = world
+        .remembered_task_id
+        .as_ref()
+        .expect("remembered task id exists")
+        .clone();
+    let output = run_getter(
+        world,
+        [
+            "debug".to_owned(),
+            "fake-task".to_owned(),
+            "run".to_owned(),
+            task_id,
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when(expr = "I run getter debug fake-task events after {int} limit {int}")]
+fn run_getter_debug_fake_task_events_after_limit(world: &mut CliWorld, after: u64, limit: u64) {
+    let output = run_getter(
+        world,
+        [
+            "debug".to_owned(),
+            "fake-task".to_owned(),
             "events".to_owned(),
             "--after".to_owned(),
             after.to_string(),
@@ -626,16 +690,16 @@ fn run_getter_task_events_after_limit(world: &mut CliWorld, after: u64, limit: u
     world.json = None;
 }
 
-#[when(expr = "I run getter task events after the remembered cursor limit {int}")]
-fn run_getter_task_events_after_remembered_cursor(world: &mut CliWorld, limit: u64) {
+#[when(expr = "I run getter debug fake-task events after the remembered cursor limit {int}")]
+fn run_getter_debug_fake_task_events_after_remembered_cursor(world: &mut CliWorld, limit: u64) {
     let after = world
         .remembered_event_cursor
         .expect("remembered event cursor exists");
-    run_getter_task_events_after_limit(world, after, limit);
+    run_getter_debug_fake_task_events_after_limit(world, after, limit);
 }
 
-#[when(expr = "I run getter task install-result {string} for the remembered handoff")]
-fn run_getter_task_install_result(world: &mut CliWorld, status: String) {
+#[when(expr = "I run getter debug fake-task install-result {string} for the remembered handoff")]
+fn run_getter_debug_fake_task_install_result(world: &mut CliWorld, status: String) {
     let handoff_id = world
         .remembered_handoff_id
         .as_ref()
@@ -644,11 +708,31 @@ fn run_getter_task_install_result(world: &mut CliWorld, status: String) {
     let output = run_getter(
         world,
         [
-            "task".to_owned(),
+            "debug".to_owned(),
+            "fake-task".to_owned(),
             "install-result".to_owned(),
             handoff_id,
             "--status".to_owned(),
             status,
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter runtime script for that script")]
+fn run_getter_runtime_script(world: &mut CliWorld) {
+    let script = world
+        .runtime_script
+        .as_ref()
+        .expect("runtime script exists");
+    let output = run_getter(
+        world,
+        [
+            "runtime".to_owned(),
+            "script".to_owned(),
+            "--script".to_owned(),
+            script.to_string_lossy().to_string(),
         ],
     );
     world.output = Some(output);
@@ -892,12 +976,26 @@ fn output_contains_empty_repository_list(world: &mut CliWorld) {
 #[then("I remember the submitted task id")]
 fn remember_submitted_task_id(world: &mut CliWorld) {
     let json = current_json(world);
-    assert_eq!(json["command"], "task submit");
+    assert_eq!(json["command"], "debug fake-task submit");
     let task_id = json["data"]["task"]["id"]
         .as_str()
         .expect("task id should be a string")
         .to_owned();
     world.remembered_task_id = Some(task_id);
+}
+
+#[then("the runtime script output removes the completed task")]
+fn runtime_script_output_removes_completed_task(world: &mut CliWorld) {
+    let json = current_json(world);
+    assert_eq!(json["command"], "runtime script");
+    let steps = json["data"]["steps"].as_array().expect("runtime steps");
+    assert_eq!(steps[0]["data"]["action_id"], "action-1");
+    assert_eq!(steps[1]["data"]["task_id"], "task-1");
+    assert_eq!(steps[3]["data"]["status"], "completed");
+    assert_eq!(steps[4]["operation"], "task_remove");
+    assert_eq!(steps[4]["data"]["task_id"], "task-1");
+    assert_eq!(steps[5]["operation"], "task_clean");
+    assert_eq!(steps[5]["data"]["tasks"].as_array().unwrap().len(), 0);
 }
 
 #[then(expr = "the task list contains the remembered task with status {string}")]
@@ -908,7 +1006,7 @@ fn task_list_contains_remembered_task_with_status(world: &mut CliWorld, status: 
         .expect("remembered task id exists")
         .clone();
     let json = current_json(world);
-    assert_eq!(json["command"], "task list");
+    assert_eq!(json["command"], "debug fake-task list");
     let tasks = json["data"]["tasks"].as_array().expect("tasks array");
     let task = tasks
         .iter()
@@ -920,7 +1018,7 @@ fn task_list_contains_remembered_task_with_status(world: &mut CliWorld, status: 
 #[then(expr = "the task cancel result has status {string} and changed true")]
 fn task_cancel_result_changed_true(world: &mut CliWorld, status: String) {
     let json = current_json(world);
-    assert_eq!(json["command"], "task cancel");
+    assert_eq!(json["command"], "debug fake-task cancel");
     assert_eq!(json["data"]["status"], status);
     assert_eq!(json["data"]["changed"], true);
 }
@@ -928,7 +1026,7 @@ fn task_cancel_result_changed_true(world: &mut CliWorld, status: String) {
 #[then(expr = "the task cancel result has status {string} and changed false")]
 fn task_cancel_result_changed_false(world: &mut CliWorld, status: String) {
     let json = current_json(world);
-    assert_eq!(json["command"], "task cancel");
+    assert_eq!(json["command"], "debug fake-task cancel");
     assert_eq!(json["data"]["status"], status);
     assert_eq!(json["data"]["changed"], false);
 }
@@ -940,7 +1038,7 @@ fn task_run_result_has_status_and_install_handoff(
     handoff_status: String,
 ) {
     let json = current_json(world);
-    assert_eq!(json["command"], "task run");
+    assert_eq!(json["command"], "debug fake-task run");
     assert_eq!(json["data"]["task"]["status"], status);
     assert_eq!(json["data"]["install_handoff"]["status"], handoff_status);
 }
@@ -948,7 +1046,7 @@ fn task_run_result_has_status_and_install_handoff(
 #[then(expr = "the task events output contains {int} events and has more events")]
 fn task_events_output_contains_events_and_has_more(world: &mut CliWorld, count: usize) {
     let json = current_json(world);
-    assert_eq!(json["command"], "task events");
+    assert_eq!(json["command"], "debug fake-task events");
     assert_eq!(json["data"]["events"].as_array().unwrap().len(), count);
     assert_eq!(json["data"]["has_more"], true);
 }
@@ -989,7 +1087,7 @@ fn remember_install_handoff_id(world: &mut CliWorld) {
 #[then(expr = "the install result output has status {string}")]
 fn install_result_output_has_status(world: &mut CliWorld, status: String) {
     let json = current_json(world);
-    assert_eq!(json["command"], "task install-result");
+    assert_eq!(json["command"], "debug fake-task install-result");
     assert_eq!(json["data"]["handoff"]["status"], status);
 }
 
