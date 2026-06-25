@@ -1,7 +1,10 @@
 //! Minimal Lua package-file evaluation and Rust validation boundary.
 
 use crate::repository::RepositoryLayout;
-use crate::{InstalledTarget, PackageId, PackagePermissions, ResolvedPackage};
+use crate::{
+    InstalledTarget, PackageId, PackagePermissions, ResolvedPackage, UpdateArtifact,
+    UpdateCandidate,
+};
 use mlua::{Lua, Table, Value};
 use serde_json::{Map, Number, Value as JsonValue};
 use std::fs;
@@ -331,6 +334,7 @@ fn validate_package_json(
     let permissions = parse_permissions(path, object.get("permissions"))?;
     let source_priority =
         parse_string_array(path, "source_priority", object.get("source_priority"))?;
+    let updates = parse_update_candidates(path, object.get("updates"))?;
 
     Ok(ResolvedPackage {
         id,
@@ -339,6 +343,7 @@ fn validate_package_json(
         installed,
         permissions,
         source_priority,
+        updates,
     })
 }
 
@@ -392,6 +397,69 @@ fn parse_installed_targets(
             }
         })
         .collect()
+}
+
+fn parse_update_candidates(
+    path: &Path,
+    value: Option<&JsonValue>,
+) -> Result<Vec<UpdateCandidate>, LuaPackageError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let array = value.as_array().ok_or_else(|| LuaPackageError::Schema {
+        path: path.to_path_buf(),
+        message: "field 'updates' must be an array".to_owned(),
+    })?;
+    array
+        .iter()
+        .map(|item| {
+            let object = item.as_object().ok_or_else(|| LuaPackageError::Schema {
+                path: path.to_path_buf(),
+                message: "updates entries must be objects".to_owned(),
+            })?;
+            let artifacts = parse_update_artifacts(path, object.get("artifacts"))?;
+            Ok(UpdateCandidate {
+                version: required_string(path, object, "version")?.to_owned(),
+                channel: optional_string(object, "channel"),
+                source: optional_string(object, "source"),
+                artifacts,
+            })
+        })
+        .collect()
+}
+
+fn parse_update_artifacts(
+    path: &Path,
+    value: Option<&JsonValue>,
+) -> Result<Vec<UpdateArtifact>, LuaPackageError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let array = value.as_array().ok_or_else(|| LuaPackageError::Schema {
+        path: path.to_path_buf(),
+        message: "field 'artifacts' must be an array".to_owned(),
+    })?;
+    array
+        .iter()
+        .map(|item| {
+            let object = item.as_object().ok_or_else(|| LuaPackageError::Schema {
+                path: path.to_path_buf(),
+                message: "artifact entries must be objects".to_owned(),
+            })?;
+            Ok(UpdateArtifact {
+                name: required_string(path, object, "name")?.to_owned(),
+                url: required_string(path, object, "url")?.to_owned(),
+                file_name: optional_string(object, "file_name"),
+            })
+        })
+        .collect()
+}
+
+fn optional_string(object: &Map<String, JsonValue>, field: &str) -> Option<String> {
+    object
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned)
 }
 
 fn parse_permissions(
@@ -480,6 +548,20 @@ return package_def {
   },
   permissions = { free_network = true },
   source_priority = { "github", "fdroid" },
+  updates = {
+    {
+      version = "1.2.0",
+      channel = "stable",
+      source = "fixture",
+      artifacts = {
+        {
+          name = "app.apk",
+          url = "https://example.invalid/app.apk",
+          file_name = "fdroid.apk",
+        },
+      },
+    },
+  },
 }
 "#,
         )
@@ -497,6 +579,14 @@ return package_def {
         );
         assert!(package.permissions.free_network);
         assert_eq!(package.source_priority, vec!["github", "fdroid"]);
+        assert_eq!(package.updates.len(), 1);
+        assert_eq!(package.updates[0].version, "1.2.0");
+        assert_eq!(package.updates[0].channel.as_deref(), Some("stable"));
+        assert_eq!(package.updates[0].source.as_deref(), Some("fixture"));
+        assert_eq!(
+            package.updates[0].artifacts[0].file_name.as_deref(),
+            Some("fdroid.apk")
+        );
     }
 
     #[test]

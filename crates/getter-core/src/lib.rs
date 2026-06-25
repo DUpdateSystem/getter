@@ -251,6 +251,13 @@ pub struct ResolvedPackage {
     pub permissions: PackagePermissions,
     #[serde(default)]
     pub source_priority: Vec<String>,
+    /// Static/offline update candidates declared by package Lua.
+    ///
+    /// This is a first mock-provider bridge toward ADR-0011 action issuance:
+    /// getter still owns selection and action planning, while live provider
+    /// execution remains a later runtime slice.
+    #[serde(default)]
+    pub updates: Vec<UpdateCandidate>,
 }
 
 /// Installed target matched by a package, such as an Android package name.
