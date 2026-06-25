@@ -7,3 +7,4 @@
 
 pub mod autogen;
 pub mod legacy_room;
+pub mod runtime;
