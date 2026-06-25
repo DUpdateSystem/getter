@@ -6,6 +6,11 @@
 //! persisted task state or duplicating task/control semantics in Flutter or
 //! Android glue.
 
+#[cfg(feature = "lua")]
+use getter_core::{
+    lua::evaluate_package_file,
+    repository::{package_cache_key, RepositoryLayout, RepositoryLoadError},
+};
 use getter_core::{
     runtime::{
         GetterRuntime, IssuedAction, PackageVersionLuaObject, RuntimeError, SealedActionPlan,
@@ -14,8 +19,14 @@ use getter_core::{
     update::{run_offline_update_check, OfflineUpdateCheckError, OfflineUpdateCheckFixture},
     PackageId,
 };
+#[cfg(feature = "lua")]
+use getter_core::{update::check_updates_offline, update::UpdateSelectionPolicy, RepositoryId};
+#[cfg(feature = "lua")]
+use getter_storage::{MainDb, StorageError};
 use serde::Deserialize;
 use serde_json::{json, Value};
+#[cfg(feature = "lua")]
+use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeOperationError {
@@ -25,6 +36,15 @@ pub enum RuntimeOperationError {
     Runtime(#[from] RuntimeError),
     #[error("update check failed: {0}")]
     UpdateCheck(#[from] OfflineUpdateCheckError),
+    #[cfg(feature = "lua")]
+    #[error("storage operation failed: {0}")]
+    Storage(#[from] StorageError),
+    #[cfg(feature = "lua")]
+    #[error("repository operation failed: {0}")]
+    Repository(#[from] RepositoryLoadError),
+    #[cfg(feature = "lua")]
+    #[error("package evaluation failed: {0}")]
+    PackageEval(String),
     #[error("runtime response serialization failed: {0}")]
     Serialize(String),
 }
@@ -35,6 +55,12 @@ impl RuntimeOperationError {
             Self::InvalidRequest(_) => "runtime.invalid_request",
             Self::Runtime(error) => error.code(),
             Self::UpdateCheck(_) => "update.check_error",
+            #[cfg(feature = "lua")]
+            Self::Storage(_) => "storage.error",
+            #[cfg(feature = "lua")]
+            Self::Repository(_) => "repository.error",
+            #[cfg(feature = "lua")]
+            Self::PackageEval(_) => "package.eval_error",
             Self::Serialize(_) => "runtime.serialize_error",
         }
     }
@@ -44,6 +70,12 @@ impl RuntimeOperationError {
             Self::InvalidRequest(_) => "Getter runtime request is invalid",
             Self::Runtime(_) => "Getter runtime operation failed",
             Self::UpdateCheck(_) => "Getter update check failed",
+            #[cfg(feature = "lua")]
+            Self::Storage(_) => "Getter storage operation failed",
+            #[cfg(feature = "lua")]
+            Self::Repository(_) => "Getter repository operation failed",
+            #[cfg(feature = "lua")]
+            Self::PackageEval(_) => "Getter package evaluation failed",
             Self::Serialize(_) => "Getter runtime response serialization failed",
         }
     }
@@ -53,6 +85,12 @@ impl RuntimeOperationError {
             Self::InvalidRequest(detail) | Self::Serialize(detail) => Some(detail.clone()),
             Self::Runtime(error) => Some(error.to_string()),
             Self::UpdateCheck(error) => Some(error.to_string()),
+            #[cfg(feature = "lua")]
+            Self::Storage(error) => Some(error.to_string()),
+            #[cfg(feature = "lua")]
+            Self::Repository(error) => Some(error.to_string()),
+            #[cfg(feature = "lua")]
+            Self::PackageEval(detail) => Some(detail.clone()),
         }
     }
 }
@@ -84,6 +122,41 @@ pub fn issue_action_from_offline_update_check_json(
         )
     };
     Ok(json!({
+        "update": update,
+        "action": action.map(issued_action_json),
+    }))
+}
+
+#[cfg(feature = "lua")]
+pub fn issue_action_from_registered_package_json(
+    runtime: &mut GetterRuntime,
+    db: &MainDb,
+    request_json: &str,
+) -> Result<Value, RuntimeOperationError> {
+    let request: RegisteredPackageUpdateActionRequest = parse_request(request_json)?;
+    let (package, dependency_digest) = evaluate_registered_package(db, &request)?;
+    let update = check_updates_offline(
+        package.id.clone(),
+        request.installed_version,
+        package.updates.clone(),
+        UpdateSelectionPolicy {
+            ignored_version: request.ignored_version,
+        },
+    )?;
+    let action = if update.actions.is_empty() {
+        None
+    } else {
+        Some(runtime.issue_action(SealedActionPlan {
+            package_id: update.package_id.clone(),
+            actions: update.actions.clone(),
+            lua_object: PackageVersionLuaObject {
+                object_id: format!("package-update:{}", update.package_id),
+                dependency_digest,
+            },
+        }))
+    };
+    Ok(json!({
+        "package": package,
         "update": update,
         "action": action.map(issued_action_json),
     }))
@@ -235,6 +308,18 @@ struct OfflineUpdateActionRequest {
     dependency_digest: Option<String>,
 }
 
+#[cfg(feature = "lua")]
+#[derive(Debug, Deserialize)]
+struct RegisteredPackageUpdateActionRequest {
+    package_id: PackageId,
+    #[serde(default)]
+    repository_id: Option<RepositoryId>,
+    #[serde(default)]
+    installed_version: Option<String>,
+    #[serde(default)]
+    ignored_version: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct SubmitActionRequest {
     action_id: String,
@@ -275,6 +360,60 @@ struct CleanTasksRequest {
     mode: Option<String>,
 }
 
+#[cfg(feature = "lua")]
+fn evaluate_registered_package(
+    db: &MainDb,
+    request: &RegisteredPackageUpdateActionRequest,
+) -> Result<(getter_core::ResolvedPackage, String), RuntimeOperationError> {
+    let repositories = db.repositories()?;
+    let mut missing_path = None;
+    for repository in repositories {
+        if request
+            .repository_id
+            .as_ref()
+            .is_some_and(|requested| requested != &repository.id)
+        {
+            continue;
+        }
+        let Some(root) = repository.path.as_ref() else {
+            missing_path = Some(repository.id.to_string());
+            continue;
+        };
+        let root = PathBuf::from(root);
+        let layout = RepositoryLayout::load(&root)?;
+        let Some(package_file) = layout.package_file(&request.package_id) else {
+            continue;
+        };
+        let package = evaluate_package_file(&layout, &package_file.path)
+            .map_err(|source| RuntimeOperationError::PackageEval(source.to_string()))?;
+        let cache_key = package_cache_key(&layout, package_file)?;
+        let dependency_digest = format!(
+            "repo:{}:package:{}:hash:{}",
+            cache_key.repository_id, cache_key.package_id, cache_key.package_file_hash
+        );
+        return Ok((package, dependency_digest));
+    }
+    let detail = if let Some(repository_id) = request.repository_id.as_ref() {
+        format!(
+            "package '{}' was not found in registered repository '{}'{}",
+            request.package_id,
+            repository_id,
+            missing_path
+                .map(|id| format!("; repository '{id}' has no path"))
+                .unwrap_or_default()
+        )
+    } else {
+        format!(
+            "package '{}' was not found in any registered repository{}",
+            request.package_id,
+            missing_path
+                .map(|id| format!("; repository '{id}' has no path"))
+                .unwrap_or_default()
+        )
+    };
+    Err(RuntimeOperationError::PackageEval(detail))
+}
+
 impl CleanTasksRequest {
     fn mode(self) -> Result<TaskCleanMode, RuntimeOperationError> {
         match self.mode.as_deref().unwrap_or("default") {
@@ -291,10 +430,91 @@ impl CleanTasksRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "lua")]
+    use getter_core::repository::{RepositoryMetadata, REPO_API_VERSION_V1};
+    #[cfg(feature = "lua")]
+    use getter_core::RepositoryPriority;
     use getter_core::{
         runtime::RuntimeTaskStatus, update::OFFLINE_UPDATE_CHECK_FORMAT,
         update::OFFLINE_UPDATE_CHECK_VERSION, UpdateAction, UpdateArtifact, UpdateCandidate,
     };
+    #[cfg(feature = "lua")]
+    use std::fs;
+
+    #[cfg(feature = "lua")]
+    #[test]
+    fn registered_package_update_check_issues_action_from_lua_static_updates() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path().join("repo");
+        write_static_update_repo(&repo_root);
+        let db = MainDb::open_in_memory().unwrap();
+        db.upsert_repository(
+            &RepositoryMetadata {
+                id: "official".parse().unwrap(),
+                name: "Official".to_owned(),
+                priority: RepositoryPriority::new(0),
+                api_version: REPO_API_VERSION_V1.to_owned(),
+            },
+            Some(&repo_root),
+            None,
+        )
+        .unwrap();
+        let mut runtime = GetterRuntime::new();
+
+        let issued = issue_action_from_registered_package_json(
+            &mut runtime,
+            &db,
+            &json!({
+                "package_id": "android/org.fdroid.fdroid",
+                "installed_version": "1.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(issued["package"]["repository"], "official");
+        assert_eq!(issued["update"]["status"], "update_available");
+        let action_id = issued["action"]["action_id"].as_str().unwrap();
+        let submitted =
+            submit_action_json(&mut runtime, &json!({ "action_id": action_id }).to_string())
+                .unwrap();
+        assert_eq!(submitted["package_id"], "android/org.fdroid.fdroid");
+    }
+
+    #[cfg(feature = "lua")]
+    #[test]
+    fn registered_package_update_check_without_update_does_not_issue_action() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path().join("repo");
+        write_static_update_repo(&repo_root);
+        let db = MainDb::open_in_memory().unwrap();
+        db.upsert_repository(
+            &RepositoryMetadata {
+                id: "official".parse().unwrap(),
+                name: "Official".to_owned(),
+                priority: RepositoryPriority::new(0),
+                api_version: REPO_API_VERSION_V1.to_owned(),
+            },
+            Some(&repo_root),
+            None,
+        )
+        .unwrap();
+        let mut runtime = GetterRuntime::new();
+
+        let issued = issue_action_from_registered_package_json(
+            &mut runtime,
+            &db,
+            &json!({
+                "package_id": "android/org.fdroid.fdroid",
+                "installed_version": "1.2.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(issued["update"]["status"], "up_to_date");
+        assert!(issued["action"].is_null());
+    }
 
     #[test]
     fn offline_update_check_issues_getter_owned_action_id() {
@@ -419,6 +639,44 @@ mod tests {
     fn submit_plan(runtime: &mut GetterRuntime, plan: SealedActionPlan) -> String {
         let action = runtime.issue_action(plan);
         runtime.submit_action(&action.action_id).unwrap().task_id
+    }
+
+    #[cfg(feature = "lua")]
+    fn write_static_update_repo(root: &std::path::Path) {
+        fs::create_dir_all(root.join("packages/android")).unwrap();
+        fs::create_dir(root.join("lib")).unwrap();
+        fs::create_dir(root.join("templates")).unwrap();
+        fs::write(
+            root.join("repo.toml"),
+            r#"id = "official"
+name = "Official"
+priority = 0
+api_version = "getter.repo.v1"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("packages/android/org.fdroid.fdroid.lua"),
+            r#"
+return package_def {
+  id = "android/org.fdroid.fdroid",
+  name = "F-Droid",
+  updates = {
+    {
+      version = "1.2.0",
+      artifacts = {
+        {
+          name = "app.apk",
+          url = "https://example.invalid/app.apk",
+          file_name = "app.apk",
+        },
+      },
+    },
+  },
+}
+"#,
+        )
+        .unwrap();
     }
 
     fn update_fixture(

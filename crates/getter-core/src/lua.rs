@@ -106,7 +106,7 @@ fn configure_package_path(lua: &Lua, repository: &RepositoryLayout) -> mlua::Res
 }
 
 fn disable_native_module_searchers(package: &Table) -> mlua::Result<()> {
-    let searchers: Table = package.get("searchers")?;
+    let searchers = package_searchers(package)?;
     let len = searchers.raw_len();
     for index in 4..=len {
         searchers.raw_set(index, Value::Nil)?;
@@ -128,7 +128,7 @@ fn remove_unsafe_globals(lua: &Lua) -> mlua::Result<()> {
 }
 
 fn install_lib_prefix_searcher(lua: &Lua, package: &Table, lib_dir: PathBuf) -> mlua::Result<()> {
-    let searchers: Table = package.get("searchers")?;
+    let searchers = package_searchers(package)?;
     let searcher = lua.create_function(move |lua, module: String| {
         let Some(module) = module.strip_prefix("lib.") else {
             return lua
@@ -169,6 +169,13 @@ fn install_lib_prefix_searcher(lua: &Lua, package: &Table, lib_dir: PathBuf) -> 
         searchers.raw_set(index + 1, value)?;
     }
     searchers.raw_set(2, searcher)
+}
+
+fn package_searchers(package: &Table) -> mlua::Result<Table> {
+    match package.get::<Value>("searchers")? {
+        Value::Table(searchers) => Ok(searchers),
+        _ => package.get("loaders"),
+    }
 }
 
 fn module_to_relative_path(module: &str) -> Option<PathBuf> {

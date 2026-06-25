@@ -24,7 +24,7 @@ edition = "2021"
 [features]
 default = ["cli", "domain"]
 domain = ["dep:getter-core", "dep:getter-storage", "dep:getter-operations"]
-lua = ["getter-core/lua"]
+lua = ["getter-core/lua", "getter-operations/lua"]
 cli = ["dep:getter-cli"]
 rustls-platform-verifier = ["dep:rustls-platform-verifier"]
 rustls-platform-verifier-android = ["rustls-platform-verifier", "rustls-platform-verifier/jni"]
