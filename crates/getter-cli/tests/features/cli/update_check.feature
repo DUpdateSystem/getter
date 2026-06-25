@@ -19,22 +19,22 @@ Feature: Offline update check
     And the update check status is "up_to_date"
     And the update check has no selected update
 
-  Scenario: User checks an offline fixture where the latest update is ignored
+  Scenario: User checks an offline fixture where pin_version overrides the local baseline
     Given an initialized getter data directory
-    And an offline update fixture for package "android/org.fdroid.fdroid" installed version "1.0.0" ignored version "1.2.0" with candidate versions "1.1.0,1.2.0"
+    And an offline update fixture for package "android/org.fdroid.fdroid" installed version "1.0.0" pin version "1.2.0" with candidate versions "1.1.0,1.2.0,1.3.0"
     When I run getter update check for that fixture
     Then the command succeeds
     And the output is valid JSON
     And the update check status is "update_available"
-    And the selected update version is "1.1.0"
+    And the selected update version is "1.3.0"
 
-  Scenario: User checks an offline fixture where the only update is ignored
+  Scenario: User checks an offline fixture where pin_version makes the package up to date
     Given an initialized getter data directory
-    And an offline update fixture for package "android/org.fdroid.fdroid" installed version "1.0.0" ignored version "1.2.0" with candidate versions "1.2.0"
+    And an offline update fixture for package "android/org.fdroid.fdroid" installed version "1.0.0" pin version "1.2.0" with candidate versions "1.2.0"
     When I run getter update check for that fixture
     Then the command succeeds
     And the output is valid JSON
-    And the update check status is "ignored"
+    And the update check status is "up_to_date"
     And the update check has no selected update
 
   Scenario: User checks an offline fixture without an installed version

@@ -51,7 +51,7 @@ pub enum LegacyPackageResolution {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LegacyUserStateMapping {
-    pub ignored_version: Option<String>,
+    pub pin_version: Option<String>,
     pub favorite: bool,
 }
 
@@ -157,10 +157,9 @@ pub fn map_legacy_app(
         _ => Vec::new(),
     };
     let user_state = LegacyUserStateMapping {
-        ignored_version: extra.and_then(|extra| extra.ignored_version.clone()),
+        pin_version: extra.and_then(|extra| extra.ignored_version.clone()),
         favorite: extra.is_some_and(|extra| extra.favorite),
     };
-
     Ok(LegacyAppMapping {
         package_id,
         package_resolution,
@@ -506,7 +505,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(mapping.user_state.ignored_version.as_deref(), Some("1.2.3"));
+        assert_eq!(mapping.user_state.pin_version.as_deref(), Some("1.2.3"));
         assert!(mapping.user_state.favorite);
     }
 

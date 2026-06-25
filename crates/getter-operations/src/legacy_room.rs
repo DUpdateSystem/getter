@@ -174,6 +174,7 @@ fn import_legacy_room_db(
         "imported_records": import.apps.len(),
         "source_counts": source_counts_json(import),
         "warnings": import_warnings_json(&import.warnings),
+        "notices": [migration_pin_version_notice()],
     })
     .to_string();
     db.import_tracked_packages_with_migration_record(
@@ -194,7 +195,7 @@ fn tracked_package_upsert(
         package_id: mapping.package_id,
         enabled: true,
         favorite: mapping.user_state.favorite,
-        ignored_version: mapping.user_state.ignored_version,
+        pin_version: mapping.user_state.pin_version,
         repository_id: None,
         package_resolution: stored_resolution(mapping.package_resolution),
     }
@@ -249,7 +250,7 @@ fn tracked_packages_json(packages: Vec<StoredTrackedPackage>) -> Vec<Value> {
                 "id": package.package_id.to_string(),
                 "enabled": package.enabled,
                 "favorite": package.favorite,
-                "ignored_version": package.ignored_version,
+                "pin_version": package.pin_version,
                 "repository_id": package.repository_id.map(|id| id.to_string()),
                 "package_resolution": package.package_resolution.as_str(),
             })
@@ -263,6 +264,13 @@ fn source_counts_json(import: &LegacyRoomDbImport) -> Value {
         "extra_app_rows": import.source_counts.extra_app_rows,
         "hub_rows": import.source_counts.hub_rows,
         "extra_hub_rows": import.source_counts.extra_hub_rows,
+    })
+}
+
+fn migration_pin_version_notice() -> Value {
+    json!({
+        "code": "migration.renamed_ignored_version_to_pin_version",
+        "message": "Legacy ignored version state was preserved as pin_version",
     })
 }
 
@@ -310,6 +318,7 @@ fn create_migration_report_with_source_counts(
         imported_records,
         tracked_records,
         warnings,
+        notices: migration_report_notices(code),
         source_counts,
     };
     let bytes = serde_json::to_vec_pretty(&report).map_err(|source| {
@@ -323,6 +332,14 @@ fn create_migration_report_with_source_counts(
 
 fn report_file_name(code: &str) -> String {
     format!("{}.json", code.replace('.', "-"))
+}
+
+fn migration_report_notices(code: &str) -> Vec<Value> {
+    if code == "migration.imported" {
+        vec![migration_pin_version_notice()]
+    } else {
+        Vec::new()
+    }
 }
 
 fn list_migration_reports(data_dir: &Path) -> LegacyRoomOperationResult<Vec<Value>> {
@@ -377,6 +394,10 @@ fn list_migration_reports(data_dir: &Path) -> LegacyRoomOperationResult<Vec<Valu
                     .get("warnings")
                     .cloned()
                     .unwrap_or_else(|| Value::Array(Vec::new())),
+                "notices": report
+                    .get("notices")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new())),
                 "source_counts": report.get("source_counts").cloned().unwrap_or(Value::Null),
             }))
         })
@@ -393,6 +414,8 @@ struct MigrationReport<'a> {
     imported_records: u64,
     tracked_records: u64,
     warnings: &'a [Value],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notices: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_counts: Option<&'a Value>,
 }

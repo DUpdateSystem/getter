@@ -205,20 +205,20 @@ fn offline_update_fixture_with_installed_version(
 }
 
 #[given(
-    expr = "an offline update fixture for package {string} installed version {string} ignored version {string} with candidate versions {string}"
+    expr = "an offline update fixture for package {string} installed version {string} pin version {string} with candidate versions {string}"
 )]
-fn offline_update_fixture_with_ignored_version(
+fn offline_update_fixture_with_pin_version(
     world: &mut CliWorld,
     package_id: String,
     installed_version: String,
-    ignored_version: String,
+    pin_version: String,
     versions: String,
 ) {
     write_offline_update_fixture(
         world,
         package_id,
         Some(installed_version),
-        Some(ignored_version),
+        Some(pin_version),
         versions,
     );
 }
@@ -537,6 +537,26 @@ fn run_getter_update_check(world: &mut CliWorld) {
             "--fixture".to_owned(),
             fixture.to_string_lossy().to_string(),
         ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when(expr = "I run getter version pin for package {string} version {string}")]
+fn run_getter_version_pin(world: &mut CliWorld, package_id: String, version: String) {
+    let output = run_getter(
+        world,
+        ["version".to_owned(), "pin".to_owned(), package_id, version],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when(expr = "I run getter version unpin for package {string}")]
+fn run_getter_version_unpin(world: &mut CliWorld, package_id: String) {
+    let output = run_getter(
+        world,
+        ["version".to_owned(), "unpin".to_owned(), package_id],
     );
     world.output = Some(output);
     world.json = None;
@@ -1074,6 +1094,18 @@ fn output_contains_named_package(world: &mut CliWorld, package_id: String, packa
     assert_eq!(json["data"]["package"]["name"], package_name);
 }
 
+#[then(expr = "the pinned package version is {string}")]
+fn pinned_package_version_is(world: &mut CliWorld, version: String) {
+    let json = current_json(world);
+    assert_eq!(json["data"]["package"]["pin_version"], version);
+}
+
+#[then("the package is unpinned")]
+fn package_is_unpinned(world: &mut CliWorld) {
+    let json = current_json(world);
+    assert!(json["data"]["package"]["pin_version"].is_null());
+}
+
 #[then(expr = "the update check status is {string}")]
 fn update_check_status_is(world: &mut CliWorld, status: String) {
     let json = current_json(world);
@@ -1343,6 +1375,7 @@ fn direct_migration_report_stays_sanitized(world: &mut CliWorld) {
     assert_eq!(report_json["source_counts"]["hub_rows"], 1);
     assert_eq!(report_json["source_counts"]["extra_hub_rows"], 1);
     assert_report_has_drop_warnings(&report_json);
+    assert_report_has_pin_version_notice(&report_json);
 }
 
 #[then("the output reports the legacy Room migration was already completed")]
@@ -1398,6 +1431,7 @@ fn direct_migration_report_list_stays_sanitized(world: &mut CliWorld) {
     assert_eq!(imported["source_counts"]["hub_rows"], 1);
     assert_eq!(imported["source_counts"]["extra_hub_rows"], 1);
     assert_report_has_drop_warnings(imported);
+    assert_report_has_pin_version_notice(imported);
 }
 
 #[then(expr = "the app list contains imported package {string}")]
@@ -1411,7 +1445,7 @@ fn app_list_contains_imported_package(world: &mut CliWorld, package_id: String) 
         .find(|app| app["id"].as_str() == Some(package_id.as_str()))
         .unwrap_or_else(|| panic!("app list should contain {package_id}: {apps:?}"));
     assert_eq!(app["favorite"], true);
-    assert_eq!(app["ignored_version"], "1.20.0");
+    assert_eq!(app["pin_version"], "1.20.0");
     assert_eq!(app["package_resolution"], "official_repository_package");
     world.output = Some(output);
     world.json = Some(json);
@@ -1428,7 +1462,7 @@ fn app_list_contains_directly_imported_package(world: &mut CliWorld, package_id:
         .find(|app| app["id"].as_str() == Some(package_id.as_str()))
         .unwrap_or_else(|| panic!("app list should contain {package_id}: {apps:?}"));
     assert_eq!(app["favorite"], true);
-    assert_eq!(app["ignored_version"], "1.20.0");
+    assert_eq!(app["pin_version"], "1.20.0");
     assert_eq!(app["package_resolution"], "missing_package_definition");
     world.output = Some(output);
     world.json = Some(json);
@@ -1504,7 +1538,7 @@ fn write_offline_update_fixture(
     world: &mut CliWorld,
     package_id: String,
     installed_version: Option<String>,
-    ignored_version: Option<String>,
+    pin_version: Option<String>,
     versions: String,
 ) {
     let candidates: Vec<Value> = versions
@@ -1530,7 +1564,7 @@ fn write_offline_update_fixture(
         world,
         package_id,
         installed_version,
-        ignored_version,
+        pin_version,
         candidates,
     );
 }
@@ -1539,7 +1573,7 @@ fn write_offline_update_fixture_with_candidates(
     world: &mut CliWorld,
     package_id: String,
     installed_version: Option<String>,
-    ignored_version: Option<String>,
+    pin_version: Option<String>,
     candidates: Vec<Value>,
 ) {
     let temp = world.temp.as_ref().expect("tempdir exists");
@@ -1551,7 +1585,7 @@ fn write_offline_update_fixture_with_candidates(
             "version": 1,
             "package_id": package_id,
             "installed_version": installed_version,
-            "ignored_version": ignored_version,
+            "pin_version": pin_version,
             "candidates": candidates,
         }))
         .expect("fixture serializes"),
@@ -1633,6 +1667,13 @@ fn assert_report_has_drop_warnings(report: &Value) {
     assert!(warnings
         .iter()
         .any(|warning| warning["code"].as_str() == Some("legacy.dropped_extra_hub_rows")));
+}
+
+fn assert_report_has_pin_version_notice(report: &Value) {
+    let notices = report["notices"].as_array().expect("notices array");
+    assert!(notices.iter().any(|notice| {
+        notice["code"].as_str() == Some("migration.renamed_ignored_version_to_pin_version")
+    }));
 }
 
 fn assert_sanitized_direct_room_report_text(text: &str) {

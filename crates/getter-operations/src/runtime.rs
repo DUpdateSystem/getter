@@ -140,7 +140,7 @@ pub fn issue_action_from_registered_package_json(
         request.installed_version,
         package.updates.clone(),
         UpdateSelectionPolicy {
-            ignored_version: request.ignored_version,
+            pin_version: request.pin_version,
         },
     )?;
     let action = if update.actions.is_empty() {
@@ -316,8 +316,8 @@ struct RegisteredPackageUpdateActionRequest {
     repository_id: Option<RepositoryId>,
     #[serde(default)]
     installed_version: Option<String>,
-    #[serde(default)]
-    ignored_version: Option<String>,
+    #[serde(default, alias = "ignored_version")]
+    pin_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -689,7 +689,7 @@ return package_def {
             version: OFFLINE_UPDATE_CHECK_VERSION,
             package_id: package_id.parse().unwrap(),
             installed_version: installed_version.map(str::to_owned),
-            ignored_version: None,
+            pin_version: None,
             candidates: versions
                 .into_iter()
                 .map(|version| UpdateCandidate {

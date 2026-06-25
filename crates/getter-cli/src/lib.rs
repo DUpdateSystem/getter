@@ -64,6 +64,13 @@ pub enum CliCommand {
         repo_id: Option<RepositoryId>,
     },
     StorageValidate,
+    VersionPin {
+        package_id: PackageId,
+        version: String,
+    },
+    VersionUnpin {
+        package_id: PackageId,
+    },
     UpdateCheck {
         fixture: PathBuf,
     },
@@ -380,6 +387,17 @@ where
         [domain, command] if domain == "storage" && command == "validate" => {
             CliCommand::StorageValidate
         }
+        [domain, command, package_id, version] if domain == "version" && command == "pin" => {
+            CliCommand::VersionPin {
+                package_id: parse_package_id(package_id)?,
+                version: version.clone(),
+            }
+        }
+        [domain, command, package_id] if domain == "version" && command == "unpin" => {
+            CliCommand::VersionUnpin {
+                package_id: parse_package_id(package_id)?,
+            }
+        }
         [domain, command, flag, fixture]
             if domain == "update" && command == "check" && flag == "--fixture" =>
         {
@@ -566,6 +584,19 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
                 "main_db": main_db_path(&invocation.data_dir),
                 "cache_db": cache_db_path(&invocation.data_dir),
             }))
+        }
+        CliCommand::VersionPin {
+            package_id,
+            version,
+        } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            let package = db.set_tracked_package_pin_version(&package_id, Some(&version))?;
+            Ok(json!({ "package": tracked_package_json(package) }))
+        }
+        CliCommand::VersionUnpin { package_id } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            let package = db.set_tracked_package_pin_version(&package_id, None)?;
+            Ok(json!({ "package": tracked_package_json(package) }))
         }
         CliCommand::UpdateCheck { fixture } => {
             open_initialized_storage(&invocation.data_dir)?;
@@ -962,19 +993,18 @@ fn package_json(package: getter_core::ResolvedPackage) -> Result<Value, CliError
 }
 
 fn tracked_packages_json(packages: Vec<StoredTrackedPackage>) -> Vec<Value> {
-    packages
-        .into_iter()
-        .map(|package| {
-            json!({
-                "id": package.package_id.to_string(),
-                "enabled": package.enabled,
-                "favorite": package.favorite,
-                "ignored_version": package.ignored_version,
-                "repository_id": package.repository_id.map(|id| id.to_string()),
-                "package_resolution": package.package_resolution.as_str(),
-            })
-        })
-        .collect()
+    packages.into_iter().map(tracked_package_json).collect()
+}
+
+fn tracked_package_json(package: StoredTrackedPackage) -> Value {
+    json!({
+        "id": package.package_id.to_string(),
+        "enabled": package.enabled,
+        "favorite": package.favorite,
+        "pin_version": package.pin_version,
+        "repository_id": package.repository_id.map(|id| id.to_string()),
+        "package_resolution": package.package_resolution.as_str(),
+    })
 }
 
 fn import_legacy_room_bundle(db: &MainDb, bundle: &LegacyRoomBundle) -> Result<(), CliError> {
@@ -988,7 +1018,7 @@ fn import_legacy_room_bundle(db: &MainDb, bundle: &LegacyRoomBundle) -> Result<(
                 common_conversion_available: app.common_conversion_available,
             },
             Some(&LegacyExtraAppRecord {
-                ignored_version: app.ignored_version.clone(),
+                ignored_version: app.pin_version.clone(),
                 favorite: app.favorite,
             }),
         )
@@ -1000,6 +1030,7 @@ fn import_legacy_room_bundle(db: &MainDb, bundle: &LegacyRoomBundle) -> Result<(
         "ok": true,
         "source": "legacy-room-bundle",
         "imported_records": bundle.apps.len(),
+        "notices": [migration_pin_version_notice()],
     })
     .to_string();
     db.import_tracked_packages_with_migration_record(
@@ -1013,6 +1044,13 @@ fn import_legacy_room_bundle(db: &MainDb, bundle: &LegacyRoomBundle) -> Result<(
     Ok(())
 }
 
+fn migration_pin_version_notice() -> Value {
+    json!({
+        "code": "migration.renamed_ignored_version_to_pin_version",
+        "message": "Legacy ignored version state was preserved as pin_version",
+    })
+}
+
 fn tracked_package_upsert(
     mapping: getter_storage::legacy_room::LegacyAppMapping,
 ) -> TrackedPackageUpsert {
@@ -1020,7 +1058,7 @@ fn tracked_package_upsert(
         package_id: mapping.package_id,
         enabled: true,
         favorite: mapping.user_state.favorite,
-        ignored_version: mapping.user_state.ignored_version,
+        pin_version: mapping.user_state.pin_version,
         repository_id: None,
         package_resolution: stored_resolution(mapping.package_resolution),
     }
@@ -1103,6 +1141,7 @@ fn create_migration_report_with_source_counts(
         imported_records,
         tracked_records,
         warnings,
+        notices: migration_report_notices(code),
         source_counts,
     };
     let bytes = serde_json::to_vec_pretty(&report)
@@ -1116,6 +1155,14 @@ fn report_file_name(code: &str) -> String {
     format!("{}.json", code.replace('.', "-"))
 }
 
+fn migration_report_notices(code: &str) -> Vec<Value> {
+    if code == "migration.imported" {
+        vec![migration_pin_version_notice()]
+    } else {
+        Vec::new()
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct MigrationReport<'a> {
     ok: bool,
@@ -1126,6 +1173,8 @@ struct MigrationReport<'a> {
     imported_records: u64,
     tracked_records: u64,
     warnings: &'a [Value],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notices: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_counts: Option<&'a Value>,
 }
@@ -1165,7 +1214,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|hub list|update check --fixture <fixture.json>|task submit --request <request.json>|task run <task-id>|task list|task cancel <task-id>|task events --after <cursor> --limit <n>|task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\n".to_owned()
+    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|task submit --request <request.json>|task run <task-id>|task list|task cancel <task-id>|task events --after <cursor> --limit <n>|task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1184,8 +1233,8 @@ struct LegacyBundleApp {
     official_package_available: bool,
     #[serde(default)]
     common_conversion_available: bool,
-    #[serde(default)]
-    ignored_version: Option<String>,
+    #[serde(default, alias = "ignored_version")]
+    pin_version: Option<String>,
     #[serde(default)]
     favorite: bool,
 }
@@ -1218,6 +1267,8 @@ impl CliCommand {
             Self::RepoValidate { .. } => "repo validate",
             Self::PackageEval { .. } => "package eval",
             Self::StorageValidate => "storage validate",
+            Self::VersionPin { .. } => "version pin",
+            Self::VersionUnpin { .. } => "version unpin",
             Self::UpdateCheck { .. } => "update check",
             Self::TaskSubmit { .. } => "task submit",
             Self::TaskRun { .. } => "task run",
@@ -1250,6 +1301,43 @@ mod tests {
     }
 
     #[test]
+    fn parses_version_pin_and_unpin_commands() {
+        let pin = parse_args([
+            "getter",
+            "--data-dir",
+            "/tmp/ua-getter",
+            "version",
+            "pin",
+            "android/org.fdroid.fdroid",
+            "1.2.3",
+        ])
+        .unwrap();
+        assert_eq!(
+            pin.command,
+            CliCommand::VersionPin {
+                package_id: "android/org.fdroid.fdroid".parse().unwrap(),
+                version: "1.2.3".to_owned(),
+            }
+        );
+
+        let unpin = parse_args([
+            "getter",
+            "--data-dir",
+            "/tmp/ua-getter",
+            "version",
+            "unpin",
+            "android/org.fdroid.fdroid",
+        ])
+        .unwrap();
+        assert_eq!(
+            unpin.command,
+            CliCommand::VersionUnpin {
+                package_id: "android/org.fdroid.fdroid".parse().unwrap(),
+            }
+        );
+    }
+
+    #[test]
     fn run_init_creates_sqlite_database_files_and_json_envelope() {
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path().join("getter-data");
@@ -1267,6 +1355,37 @@ mod tests {
         let json: Value = serde_json::from_str(&output.stdout).unwrap();
         assert_eq!(json["ok"], true);
         assert_eq!(json["command"], "init");
+    }
+
+    #[test]
+    fn run_version_pin_and_unpin_mutates_tracked_package_pin_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("getter-data");
+
+        let pin = run([
+            "getter".to_owned(),
+            "--data-dir".to_owned(),
+            data_dir.to_string_lossy().to_string(),
+            "version".to_owned(),
+            "pin".to_owned(),
+            "android/org.fdroid.fdroid".to_owned(),
+            "1.2.3".to_owned(),
+        ]);
+        assert_eq!(pin.exit_code, ExitCode::Success);
+        let pin_json: Value = serde_json::from_str(&pin.stdout).unwrap();
+        assert_eq!(pin_json["data"]["package"]["pin_version"], "1.2.3");
+
+        let unpin = run([
+            "getter".to_owned(),
+            "--data-dir".to_owned(),
+            data_dir.to_string_lossy().to_string(),
+            "version".to_owned(),
+            "unpin".to_owned(),
+            "android/org.fdroid.fdroid".to_owned(),
+        ]);
+        assert_eq!(unpin.exit_code, ExitCode::Success);
+        let unpin_json: Value = serde_json::from_str(&unpin.stdout).unwrap();
+        assert!(unpin_json["data"]["package"]["pin_version"].is_null());
     }
 
     #[test]

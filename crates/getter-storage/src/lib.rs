@@ -35,6 +35,8 @@ pub enum StorageError {
     InvalidTaskTransition { task_id: String, reason: String },
     #[error("invalid task request: {0}")]
     InvalidTaskRequest(String),
+    #[error("storage invariant failed: {0}")]
+    Invariant(String),
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -85,7 +87,7 @@ CREATE TABLE IF NOT EXISTS tracked_packages (
     package_id TEXT PRIMARY KEY,
     enabled INTEGER NOT NULL DEFAULT 1,
     favorite INTEGER NOT NULL DEFAULT 0,
-    ignored_version TEXT,
+    pin_version TEXT,
     repository_id TEXT,
     package_resolution TEXT NOT NULL DEFAULT 'missing_package_definition',
     FOREIGN KEY(repository_id) REFERENCES repositories(id)
@@ -136,7 +138,8 @@ CREATE TABLE IF NOT EXISTS install_handoffs (
 );
 "#,
         )?;
-        self.ensure_column("tracked_packages", "ignored_version", "TEXT")?;
+        self.ensure_column("tracked_packages", "pin_version", "TEXT")?;
+        self.migrate_ignored_version_to_pin_version()?;
         self.ensure_column(
             "tracked_packages",
             "package_resolution",
@@ -164,6 +167,22 @@ CREATE TABLE IF NOT EXISTS install_handoffs (
             self.conn.execute_batch(&format!(
                 "ALTER TABLE {table} ADD COLUMN {column} {definition};"
             ))?;
+        }
+        Ok(())
+    }
+
+    fn migrate_ignored_version_to_pin_version(&self) -> Result<(), StorageError> {
+        let columns = self.table_columns("tracked_packages")?;
+        if columns.iter().any(|existing| existing == "ignored_version") {
+            self.conn.execute(
+                r#"
+UPDATE tracked_packages
+SET pin_version = ignored_version
+WHERE pin_version IS NULL
+  AND ignored_version IS NOT NULL
+"#,
+                [],
+            )?;
         }
         Ok(())
     }
@@ -244,6 +263,46 @@ ON CONFLICT(id) DO UPDATE SET
         Ok(())
     }
 
+    pub fn set_tracked_package_pin_version(
+        &self,
+        package_id: &PackageId,
+        pin_version: Option<&str>,
+    ) -> Result<StoredTrackedPackage, StorageError> {
+        self.conn.execute(
+            r#"
+INSERT INTO tracked_packages(
+    package_id,
+    enabled,
+    favorite,
+    pin_version,
+    repository_id,
+    package_resolution
+)
+VALUES (?1, 1, 0, ?2, NULL, ?3)
+ON CONFLICT(package_id) DO UPDATE SET
+    pin_version = excluded.pin_version
+"#,
+            params![
+                package_id.to_string(),
+                pin_version,
+                StoredPackageResolution::MissingPackageDefinition.as_str(),
+            ],
+        )?;
+        self.tracked_package(package_id)?.ok_or_else(|| {
+            StorageError::Invariant("tracked package upsert did not create a row".to_owned())
+        })
+    }
+
+    pub fn tracked_package(
+        &self,
+        package_id: &PackageId,
+    ) -> Result<Option<StoredTrackedPackage>, StorageError> {
+        Ok(self
+            .tracked_packages()?
+            .into_iter()
+            .find(|package| &package.package_id == package_id))
+    }
+
     pub fn upsert_generated_tracked_package_preserving_user_state(
         &self,
         package_id: &PackageId,
@@ -255,7 +314,7 @@ INSERT INTO tracked_packages(
     package_id,
     enabled,
     favorite,
-    ignored_version,
+    pin_version,
     repository_id,
     package_resolution
 )
@@ -329,7 +388,7 @@ WHERE package_id = ?1
     pub fn tracked_packages(&self) -> Result<Vec<StoredTrackedPackage>, StorageError> {
         let mut stmt = self.conn.prepare(
             r#"
-SELECT package_id, enabled, favorite, ignored_version, repository_id, package_resolution
+SELECT package_id, enabled, favorite, pin_version, repository_id, package_resolution
 FROM tracked_packages
 ORDER BY package_id ASC
 "#,
@@ -346,12 +405,12 @@ ORDER BY package_id ASC
         })?;
         let mut packages = Vec::new();
         for row in rows {
-            let (package_id, enabled, favorite, ignored_version, repository_id, resolution) = row?;
+            let (package_id, enabled, favorite, pin_version, repository_id, resolution) = row?;
             packages.push(StoredTrackedPackage {
                 package_id: PackageId::from_str(&package_id)?,
                 enabled: enabled != 0,
                 favorite: favorite != 0,
-                ignored_version,
+                pin_version,
                 repository_id: repository_id.map(RepositoryId::new).transpose()?,
                 package_resolution: StoredPackageResolution::from_str(&resolution)?,
             });
@@ -842,7 +901,7 @@ pub struct TrackedPackageUpsert {
     pub package_id: PackageId,
     pub enabled: bool,
     pub favorite: bool,
-    pub ignored_version: Option<String>,
+    pub pin_version: Option<String>,
     pub repository_id: Option<RepositoryId>,
     pub package_resolution: StoredPackageResolution,
 }
@@ -852,7 +911,7 @@ pub struct StoredTrackedPackage {
     pub package_id: PackageId,
     pub enabled: bool,
     pub favorite: bool,
-    pub ignored_version: Option<String>,
+    pub pin_version: Option<String>,
     pub repository_id: Option<RepositoryId>,
     pub package_resolution: StoredPackageResolution,
 }
@@ -957,7 +1016,7 @@ INSERT INTO tracked_packages(
     package_id,
     enabled,
     favorite,
-    ignored_version,
+    pin_version,
     repository_id,
     package_resolution
 )
@@ -965,7 +1024,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 ON CONFLICT(package_id) DO UPDATE SET
     enabled = excluded.enabled,
     favorite = excluded.favorite,
-    ignored_version = excluded.ignored_version,
+    pin_version = excluded.pin_version,
     repository_id = excluded.repository_id,
     package_resolution = excluded.package_resolution
 "#,
@@ -973,7 +1032,7 @@ ON CONFLICT(package_id) DO UPDATE SET
             package.package_id.to_string(),
             bool_to_i64(package.enabled),
             bool_to_i64(package.favorite),
-            package.ignored_version.as_deref(),
+            package.pin_version.as_deref(),
             package.repository_id.as_ref().map(RepositoryId::as_str),
             package.package_resolution.as_str(),
         ],
@@ -1105,7 +1164,7 @@ mod tests {
             package_id: "android/org.fdroid.fdroid".parse().unwrap(),
             enabled: true,
             favorite: true,
-            ignored_version: Some("1.2.3".to_owned()),
+            pin_version: Some("1.2.3".to_owned()),
             repository_id: None,
             package_resolution: StoredPackageResolution::OfficialRepositoryPackage,
         })
@@ -1119,11 +1178,56 @@ mod tests {
         );
         assert!(packages[0].enabled);
         assert!(packages[0].favorite);
-        assert_eq!(packages[0].ignored_version.as_deref(), Some("1.2.3"));
+        assert_eq!(packages[0].pin_version.as_deref(), Some("1.2.3"));
         assert_eq!(
             packages[0].package_resolution,
             StoredPackageResolution::OfficialRepositoryPackage
         );
+    }
+
+    #[test]
+    fn main_db_pins_and_unpins_tracked_package_version() {
+        let db = MainDb::open_in_memory().unwrap();
+        let package_id: PackageId = "android/org.fdroid.fdroid".parse().unwrap();
+
+        let pinned = db
+            .set_tracked_package_pin_version(&package_id, Some("1.2.3"))
+            .unwrap();
+        assert_eq!(pinned.pin_version.as_deref(), Some("1.2.3"));
+        assert_eq!(
+            pinned.package_resolution,
+            StoredPackageResolution::MissingPackageDefinition
+        );
+
+        let unpinned = db
+            .set_tracked_package_pin_version(&package_id, None)
+            .unwrap();
+        assert_eq!(unpinned.pin_version, None);
+    }
+
+    #[test]
+    fn main_db_migrates_legacy_ignored_version_column_to_pin_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+CREATE TABLE tracked_packages (
+    package_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    favorite INTEGER NOT NULL DEFAULT 0,
+    ignored_version TEXT,
+    repository_id TEXT,
+    package_resolution TEXT NOT NULL DEFAULT 'missing_package_definition'
+);
+INSERT INTO tracked_packages(package_id, ignored_version)
+VALUES ('android/org.fdroid.fdroid', '1.2.3');
+"#,
+        )
+        .unwrap();
+        let db = MainDb { conn };
+        db.migrate().unwrap();
+
+        let packages = db.tracked_packages().unwrap();
+        assert_eq!(packages[0].pin_version.as_deref(), Some("1.2.3"));
     }
 
     #[test]
@@ -1135,7 +1239,7 @@ mod tests {
             package_id: package_id.clone(),
             enabled: false,
             favorite: true,
-            ignored_version: Some("9.9.9".to_owned()),
+            pin_version: Some("9.9.9".to_owned()),
             repository_id: None,
             package_resolution: StoredPackageResolution::OfficialRepositoryPackage,
         })
@@ -1148,7 +1252,7 @@ mod tests {
         assert_eq!(packages.len(), 1);
         assert!(!packages[0].enabled);
         assert!(packages[0].favorite);
-        assert_eq!(packages[0].ignored_version.as_deref(), Some("9.9.9"));
+        assert_eq!(packages[0].pin_version.as_deref(), Some("9.9.9"));
         assert_eq!(packages[0].repository_id, None);
         assert_eq!(
             packages[0].package_resolution,
@@ -1165,7 +1269,7 @@ mod tests {
             package_id: package_id.clone(),
             enabled: false,
             favorite: true,
-            ignored_version: Some("9.9.9".to_owned()),
+            pin_version: Some("9.9.9".to_owned()),
             repository_id: None,
             package_resolution: StoredPackageResolution::MissingPackageDefinition,
         })
@@ -1178,7 +1282,7 @@ mod tests {
         assert_eq!(packages.len(), 1);
         assert!(!packages[0].enabled);
         assert!(packages[0].favorite);
-        assert_eq!(packages[0].ignored_version.as_deref(), Some("9.9.9"));
+        assert_eq!(packages[0].pin_version.as_deref(), Some("9.9.9"));
         assert_eq!(packages[0].repository_id.as_ref(), Some(&local_autogen));
         assert_eq!(
             packages[0].package_resolution,
@@ -1195,7 +1299,7 @@ mod tests {
             package_id: package_id.clone(),
             enabled: true,
             favorite: true,
-            ignored_version: Some("9.9.9".to_owned()),
+            pin_version: Some("9.9.9".to_owned()),
             repository_id: None,
             package_resolution: StoredPackageResolution::OfficialRepositoryPackage,
         })
@@ -1210,7 +1314,7 @@ mod tests {
             package_id: package_id.clone(),
             enabled: true,
             favorite: true,
-            ignored_version: Some("9.9.9".to_owned()),
+            pin_version: Some("9.9.9".to_owned()),
             repository_id: None,
             package_resolution: StoredPackageResolution::MissingPackageDefinition,
         })

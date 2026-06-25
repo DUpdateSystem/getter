@@ -12,9 +12,9 @@ pub const OFFLINE_UPDATE_CHECK_VERSION: u32 = 1;
 /// User state that affects update selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateSelectionPolicy {
-    /// Candidate version the user chose to ignore/mark as skipped.
-    #[serde(default)]
-    pub ignored_version: Option<String>,
+    /// User-selected local version override used as the comparison baseline.
+    #[serde(default, alias = "ignored_version")]
+    pub pin_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -24,8 +24,8 @@ pub struct OfflineUpdateCheckFixture {
     pub package_id: PackageId,
     #[serde(default)]
     pub installed_version: Option<String>,
-    #[serde(default)]
-    pub ignored_version: Option<String>,
+    #[serde(default, alias = "ignored_version")]
+    pub pin_version: Option<String>,
     #[serde(default)]
     pub candidates: Vec<UpdateCandidate>,
 }
@@ -36,6 +36,8 @@ pub struct OfflineUpdateCheckResult {
     pub package_id: PackageId,
     #[serde(default)]
     pub installed_version: Option<String>,
+    #[serde(default)]
+    pub effective_local_version: Option<String>,
     pub policy: UpdateSelectionPolicy,
     pub status: UpdateCheckStatus,
     #[serde(default)]
@@ -49,7 +51,6 @@ pub enum UpdateCheckStatus {
     UpdateAvailable,
     UpToDate,
     NoCandidates,
-    Ignored,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -76,7 +77,7 @@ pub fn run_offline_update_check(
     }
 
     let policy = UpdateSelectionPolicy {
-        ignored_version: fixture.ignored_version,
+        pin_version: fixture.pin_version,
     };
     check_updates_offline(
         fixture.package_id,
@@ -92,18 +93,17 @@ pub fn check_updates_offline(
     candidates: Vec<UpdateCandidate>,
     policy: UpdateSelectionPolicy,
 ) -> Result<OfflineUpdateCheckResult, OfflineUpdateCheckError> {
+    let effective_local_version = policy
+        .pin_version
+        .clone()
+        .or_else(|| installed_version.clone());
     let selected = select_update(
         package_id.clone(),
-        installed_version.as_deref(),
+        effective_local_version.as_deref(),
         &candidates,
         &policy,
     );
-    let status = update_check_status(
-        selected.as_ref(),
-        installed_version.as_deref(),
-        &candidates,
-        &policy,
-    );
+    let status = update_check_status(selected.as_ref(), &candidates);
     let actions = match selected.as_ref() {
         Some(selected) => {
             if selected.artifact.is_none() {
@@ -120,6 +120,7 @@ pub fn check_updates_offline(
         network_required: false,
         package_id,
         installed_version,
+        effective_local_version,
         policy,
         status,
         selected,
@@ -163,36 +164,15 @@ fn installer_for_package_kind(kind: PackageKind) -> &'static str {
 
 fn update_check_status(
     selected: Option<&SelectedUpdate>,
-    installed_version: Option<&str>,
     candidates: &[UpdateCandidate],
-    policy: &UpdateSelectionPolicy,
 ) -> UpdateCheckStatus {
     if candidates.is_empty() {
         UpdateCheckStatus::NoCandidates
     } else if selected.is_some() {
         UpdateCheckStatus::UpdateAvailable
-    } else if ignored_candidate_would_have_been_update(installed_version, candidates, policy) {
-        UpdateCheckStatus::Ignored
     } else {
         UpdateCheckStatus::UpToDate
     }
-}
-
-fn ignored_candidate_would_have_been_update(
-    installed_version: Option<&str>,
-    candidates: &[UpdateCandidate],
-    policy: &UpdateSelectionPolicy,
-) -> bool {
-    let Some(ignored) = policy.ignored_version.as_deref() else {
-        return false;
-    };
-
-    candidates.iter().any(|candidate| {
-        compare_versions(&candidate.version, ignored) == Ordering::Equal
-            && installed_version.is_none_or(|installed| {
-                compare_versions(&candidate.version, installed) == Ordering::Greater
-            })
-    })
 }
 
 /// Compare human-facing version strings using a deterministic token ordering.
@@ -236,8 +216,10 @@ pub fn compare_versions(left: &str, right: &str) -> Ordering {
 /// Select the best update candidate for a package.
 ///
 /// The selected candidate is the highest version that is newer than the
-/// installed version and not equal to the user's ignored version. If no
-/// installed version is known, the highest non-ignored candidate is selected.
+/// effective local baseline. The effective baseline is normally the observed
+/// installed version; callers pass `pin_version` instead when the user has set
+/// a baseline override. If no baseline is known, the highest candidate is
+/// selected.
 pub fn select_update(
     package_id: PackageId,
     installed_version: Option<&str>,
@@ -261,13 +243,7 @@ fn is_selectable(
     installed_version: Option<&str>,
     policy: &UpdateSelectionPolicy,
 ) -> bool {
-    if policy
-        .ignored_version
-        .as_deref()
-        .is_some_and(|ignored| compare_versions(&candidate.version, ignored) == Ordering::Equal)
-    {
-        return false;
-    }
+    let _ = policy;
 
     match installed_version {
         Some(installed) => compare_versions(&candidate.version, installed) == Ordering::Greater,
@@ -400,18 +376,21 @@ mod tests {
     }
 
     #[test]
-    fn respects_ignored_version() {
-        let selected = select_update(
+    fn pin_version_overrides_comparison_baseline() {
+        let result = check_updates_offline(
             "android/org.fdroid.fdroid".parse().unwrap(),
-            Some("1.0.0"),
-            &[candidate("1.1.0"), candidate("1.2.0")],
-            &UpdateSelectionPolicy {
-                ignored_version: Some("1.2.0".to_owned()),
+            Some("1.0.0".to_owned()),
+            vec![candidate("1.1.0"), candidate("1.2.0")],
+            UpdateSelectionPolicy {
+                pin_version: Some("1.2.0".to_owned()),
             },
         )
         .unwrap();
 
-        assert_eq!(selected.candidate.version, "1.1.0");
+        assert_eq!(result.status, UpdateCheckStatus::UpToDate);
+        assert_eq!(result.installed_version.as_deref(), Some("1.0.0"));
+        assert_eq!(result.effective_local_version.as_deref(), Some("1.2.0"));
+        assert!(result.selected.is_none());
     }
 
     #[test]
@@ -449,7 +428,7 @@ mod tests {
             version: OFFLINE_UPDATE_CHECK_VERSION,
             package_id: "android/org.fdroid.fdroid".parse().unwrap(),
             installed_version: Some("1.0.0".to_owned()),
-            ignored_version: None,
+            pin_version: None,
             candidates: vec![candidate("1.0.1"), candidate("1.2.0")],
         })
         .unwrap();
@@ -487,35 +466,20 @@ mod tests {
     }
 
     #[test]
-    fn offline_update_check_reports_ignored_when_only_update_is_ignored() {
+    fn offline_update_check_uses_pin_version_as_baseline() {
         let result = check_updates_offline(
             "android/org.fdroid.fdroid".parse().unwrap(),
             Some("1.0.0".to_owned()),
-            vec![candidate("1.2.0")],
+            vec![candidate("1.1.0"), candidate("1.2.0"), candidate("1.3.0")],
             UpdateSelectionPolicy {
-                ignored_version: Some("1.2.0".to_owned()),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(result.status, UpdateCheckStatus::Ignored);
-        assert!(result.selected.is_none());
-    }
-
-    #[test]
-    fn offline_update_check_falls_back_below_ignored_latest() {
-        let result = check_updates_offline(
-            "android/org.fdroid.fdroid".parse().unwrap(),
-            Some("1.0.0".to_owned()),
-            vec![candidate("1.1.0"), candidate("1.2.0")],
-            UpdateSelectionPolicy {
-                ignored_version: Some("1.2.0".to_owned()),
+                pin_version: Some("1.2.0".to_owned()),
             },
         )
         .unwrap();
 
         assert_eq!(result.status, UpdateCheckStatus::UpdateAvailable);
-        assert_eq!(result.selected.as_ref().unwrap().candidate.version, "1.1.0");
+        assert_eq!(result.selected.as_ref().unwrap().candidate.version, "1.3.0");
+        assert_eq!(result.effective_local_version.as_deref(), Some("1.2.0"));
     }
 
     #[test]
@@ -561,7 +525,7 @@ mod tests {
             version: OFFLINE_UPDATE_CHECK_VERSION,
             package_id: "android/org.fdroid.fdroid".parse().unwrap(),
             installed_version: None,
-            ignored_version: None,
+            pin_version: None,
             candidates: Vec::new(),
         })
         .unwrap_err();
