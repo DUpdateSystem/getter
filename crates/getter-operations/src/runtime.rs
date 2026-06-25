@@ -8,9 +8,10 @@
 
 use getter_core::{
     runtime::{
-        GetterRuntime, IssuedAction, RuntimeError, SealedActionPlan, TaskCleanMode, TaskSnapshot,
-        UserResult,
+        GetterRuntime, IssuedAction, PackageVersionLuaObject, RuntimeError, SealedActionPlan,
+        TaskCleanMode, TaskSnapshot, UserResult,
     },
+    update::{run_offline_update_check, OfflineUpdateCheckError, OfflineUpdateCheckFixture},
     PackageId,
 };
 use serde::Deserialize;
@@ -22,6 +23,8 @@ pub enum RuntimeOperationError {
     InvalidRequest(String),
     #[error("runtime error: {0}")]
     Runtime(#[from] RuntimeError),
+    #[error("update check failed: {0}")]
+    UpdateCheck(#[from] OfflineUpdateCheckError),
     #[error("runtime response serialization failed: {0}")]
     Serialize(String),
 }
@@ -31,6 +34,7 @@ impl RuntimeOperationError {
         match self {
             Self::InvalidRequest(_) => "runtime.invalid_request",
             Self::Runtime(error) => error.code(),
+            Self::UpdateCheck(_) => "update.check_error",
             Self::Serialize(_) => "runtime.serialize_error",
         }
     }
@@ -39,6 +43,7 @@ impl RuntimeOperationError {
         match self {
             Self::InvalidRequest(_) => "Getter runtime request is invalid",
             Self::Runtime(_) => "Getter runtime operation failed",
+            Self::UpdateCheck(_) => "Getter update check failed",
             Self::Serialize(_) => "Getter runtime response serialization failed",
         }
     }
@@ -47,12 +52,41 @@ impl RuntimeOperationError {
         match self {
             Self::InvalidRequest(detail) | Self::Serialize(detail) => Some(detail.clone()),
             Self::Runtime(error) => Some(error.to_string()),
+            Self::UpdateCheck(error) => Some(error.to_string()),
         }
     }
 }
 
 pub fn issue_action(runtime: &mut GetterRuntime, plan: SealedActionPlan) -> Value {
     issued_action_json(runtime.issue_action(plan))
+}
+
+pub fn issue_action_from_offline_update_check_json(
+    runtime: &mut GetterRuntime,
+    request_json: &str,
+) -> Result<Value, RuntimeOperationError> {
+    let request: OfflineUpdateActionRequest = parse_request(request_json)?;
+    let update = run_offline_update_check(request.fixture)?;
+    let action = if update.actions.is_empty() {
+        None
+    } else {
+        Some(
+            runtime.issue_action(SealedActionPlan {
+                package_id: update.package_id.clone(),
+                actions: update.actions.clone(),
+                lua_object: PackageVersionLuaObject {
+                    object_id: format!("offline-update:{}", update.package_id),
+                    dependency_digest: request
+                        .dependency_digest
+                        .unwrap_or_else(|| format!("offline-update:{}", update.package_id)),
+                },
+            }),
+        )
+    };
+    Ok(json!({
+        "update": update,
+        "action": action.map(issued_action_json),
+    }))
 }
 
 pub fn submit_action_json(
@@ -195,6 +229,13 @@ fn tasks_json(tasks: Vec<TaskSnapshot>) -> Result<Value, RuntimeOperationError> 
 }
 
 #[derive(Debug, Deserialize)]
+struct OfflineUpdateActionRequest {
+    fixture: OfflineUpdateCheckFixture,
+    #[serde(default)]
+    dependency_digest: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SubmitActionRequest {
     action_id: String,
 }
@@ -250,7 +291,51 @@ impl CleanTasksRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use getter_core::{runtime::PackageVersionLuaObject, runtime::RuntimeTaskStatus, UpdateAction};
+    use getter_core::{
+        runtime::RuntimeTaskStatus, update::OFFLINE_UPDATE_CHECK_FORMAT,
+        update::OFFLINE_UPDATE_CHECK_VERSION, UpdateAction, UpdateArtifact, UpdateCandidate,
+    };
+
+    #[test]
+    fn offline_update_check_issues_getter_owned_action_id() {
+        let mut runtime = GetterRuntime::new();
+
+        let issued = issue_action_from_offline_update_check_json(
+            &mut runtime,
+            &json!({
+                "fixture": update_fixture("android/org.fdroid.fdroid", Some("1.0.0"), vec!["1.2.0"]),
+                "dependency_digest": "sha256:fixture"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(issued["update"]["status"], "update_available");
+        let action_id = issued["action"]["action_id"].as_str().unwrap();
+        let submitted =
+            submit_action_json(&mut runtime, &json!({ "action_id": action_id }).to_string())
+                .unwrap();
+        assert_eq!(submitted["package_id"], "android/org.fdroid.fdroid");
+        assert_eq!(submitted["status"], "queued");
+    }
+
+    #[test]
+    fn offline_update_check_without_update_does_not_issue_action() {
+        let mut runtime = GetterRuntime::new();
+
+        let issued = issue_action_from_offline_update_check_json(
+            &mut runtime,
+            &json!({
+                "fixture": update_fixture("android/org.fdroid.fdroid", Some("1.2.0"), vec!["1.2.0"]),
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(issued["update"]["status"], "up_to_date");
+        assert!(issued["action"].is_null());
+        assert_eq!(runtime.tasks().len(), 0);
+    }
 
     #[test]
     fn json_submit_and_user_result_round_trip_consumes_action() {
@@ -334,6 +419,33 @@ mod tests {
     fn submit_plan(runtime: &mut GetterRuntime, plan: SealedActionPlan) -> String {
         let action = runtime.issue_action(plan);
         runtime.submit_action(&action.action_id).unwrap().task_id
+    }
+
+    fn update_fixture(
+        package_id: &str,
+        installed_version: Option<&str>,
+        versions: Vec<&str>,
+    ) -> OfflineUpdateCheckFixture {
+        OfflineUpdateCheckFixture {
+            format: OFFLINE_UPDATE_CHECK_FORMAT.to_owned(),
+            version: OFFLINE_UPDATE_CHECK_VERSION,
+            package_id: package_id.parse().unwrap(),
+            installed_version: installed_version.map(str::to_owned),
+            ignored_version: None,
+            candidates: versions
+                .into_iter()
+                .map(|version| UpdateCandidate {
+                    version: version.to_owned(),
+                    channel: None,
+                    source: None,
+                    artifacts: vec![UpdateArtifact {
+                        name: "app.apk".to_owned(),
+                        url: "https://example.invalid/app.apk".to_owned(),
+                        file_name: Some("app.apk".to_owned()),
+                    }],
+                })
+                .collect(),
+        }
     }
 
     fn plan(package_id: &str) -> SealedActionPlan {
