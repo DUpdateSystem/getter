@@ -565,6 +565,7 @@ name = "getter-operations"
 version = "0.1.0"
 dependencies = [
  "getter-core",
+ "getter-providers",
  "getter-storage",
  "serde",
  "serde_json",

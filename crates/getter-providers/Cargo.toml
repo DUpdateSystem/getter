@@ -4,4 +4,4 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-getter-core = { path = "../getter-core" }
+getter-core = { path = "../getter-core", default-features = false }

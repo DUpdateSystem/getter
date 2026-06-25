@@ -22,6 +22,8 @@ use getter_core::{
 #[cfg(feature = "lua")]
 use getter_core::{update::check_updates_offline, update::UpdateSelectionPolicy, RepositoryId};
 #[cfg(feature = "lua")]
+use getter_providers::StaticPackageUpdatesProvider;
+#[cfg(feature = "lua")]
 use getter_storage::{MainDb, StorageError};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -135,10 +137,11 @@ pub fn issue_action_from_registered_package_json(
 ) -> Result<Value, RuntimeOperationError> {
     let request: RegisteredPackageUpdateActionRequest = parse_request(request_json)?;
     let (package, dependency_digest) = evaluate_registered_package(db, &request)?;
+    let candidates = StaticPackageUpdatesProvider.check_updates(&package);
     let update = check_updates_offline(
         package.id.clone(),
         request.installed_version,
-        package.updates.clone(),
+        candidates,
         UpdateSelectionPolicy {
             pin_version: request.pin_version,
         },
