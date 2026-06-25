@@ -15,6 +15,7 @@ pub mod diagnostics;
 #[cfg(feature = "lua")]
 pub mod lua;
 pub mod repository;
+pub mod runtime;
 pub mod task;
 pub mod update;
 

@@ -369,8 +369,11 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "lua")]
     use crate::lua::evaluate_package_file;
+    #[cfg(feature = "lua")]
     use crate::repository::RepositoryLayout;
+    #[cfg(feature = "lua")]
     use std::fs;
 
     #[test]
@@ -492,6 +495,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "lua")]
     #[test]
     fn generated_lua_evaluates_through_package_boundary() {
         let temp = tempfile::tempdir().unwrap();
