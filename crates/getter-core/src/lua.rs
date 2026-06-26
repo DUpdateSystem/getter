@@ -119,7 +119,7 @@ fn evaluate_package_source_to_json(
         path: path.clone(),
         source: Box::new(source),
     })?;
-    install_helpers(&lua).map_err(|source| LuaPackageError::Runtime {
+    install_helpers(&lua, environment).map_err(|source| LuaPackageError::Runtime {
         path: path.clone(),
         source: Box::new(source),
     })?;
@@ -308,14 +308,67 @@ fn module_to_relative_path(module: &str) -> Option<PathBuf> {
     }
 }
 
-fn install_helpers(lua: &Lua) -> mlua::Result<()> {
+fn install_helpers(lua: &Lua, environment: &LuaRepositoryEnvironment<'_>) -> mlua::Result<()> {
     let package_fn = lua.create_function(|_, table: Table| Ok(table))?;
     lua.globals().set("package_def", package_fn.clone())?;
     lua.globals().set("package_version", package_fn.clone())?;
     lua.globals().set("android_app", package_fn.clone())?;
     lua.globals().set("magisk_module", package_fn.clone())?;
     lua.globals().set("generic_package", package_fn)?;
+    if let LuaRepositoryEnvironment::PackageDirectory { package } = environment {
+        install_package_file_helpers(lua, package)?;
+    }
     Ok(())
+}
+
+fn install_package_file_helpers(lua: &Lua, package: &PackageDirectory) -> mlua::Result<()> {
+    let files_root = package.path.join("files");
+    let read_package_file = lua.create_function(move |lua, requested_path: String| {
+        let relative_path = package_file_relative_path(&requested_path)?;
+        let path = files_root.join(relative_path);
+        let metadata = fs::metadata(&path).map_err(mlua::Error::external)?;
+        if !metadata.is_file() {
+            return Err(mlua::Error::external(format!(
+                "read_package_file target {} is not a file",
+                path.display()
+            )));
+        }
+        let bytes = fs::read(&path).map_err(mlua::Error::external)?;
+        lua.create_string(&bytes)
+    })?;
+
+    let globals = lua.globals();
+    let getter_builtin = match globals.get::<Value>("getter_builtin")? {
+        Value::Table(table) => table,
+        Value::Nil => {
+            let table = lua.create_table()?;
+            globals.set("getter_builtin", table.clone())?;
+            table
+        }
+        _ => return Err(mlua::Error::external("getter_builtin must be a table")),
+    };
+    getter_builtin.set("read_package_file", read_package_file.clone())?;
+    globals.set("read_package_file", read_package_file)
+}
+
+fn package_file_relative_path(path: &str) -> mlua::Result<PathBuf> {
+    let mut relative = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(part) => relative.push(part),
+            _ => {
+                return Err(mlua::Error::external(
+                    "read_package_file path must be relative to files/ and must not contain special path components",
+                ))
+            }
+        }
+    }
+    if relative.as_os_str().is_empty() {
+        return Err(mlua::Error::external(
+            "read_package_file path must not be empty",
+        ));
+    }
+    Ok(relative)
 }
 
 fn lua_table_to_json(
@@ -998,6 +1051,122 @@ return android.package_version {
 
         assert_eq!(package.name, "Example Autogen");
         assert_eq!(package.installed.len(), 1);
+    }
+
+    #[test]
+    fn package_directory_can_read_package_local_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/com.example.autogen");
+        fs::create_dir_all(package_dir.join("files/nested")).unwrap();
+        fs::write(package_dir.join("files/nested/data.txt"), b"hello\xff").unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "Example Autogen",
+  "android": { "package_name": "com.example.autogen" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+local body = read_package_file("nested/data.txt")
+return package_version { name = "bytes:" .. tostring(#body) }
+"#,
+        )
+        .unwrap();
+        let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+        let package = &layout.packages[0];
+        let metadata = layout.package_metadata(package).unwrap();
+        let script = layout.unambiguous_version_script(package).unwrap();
+
+        let package = evaluate_package_directory_script(
+            &RepositoryId::new("autogen").unwrap(),
+            package,
+            &metadata,
+            script,
+        )
+        .unwrap();
+
+        assert_eq!(package.name, "bytes:6");
+    }
+
+    #[test]
+    fn read_package_file_rejects_paths_outside_package_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/com.example.autogen");
+        fs::create_dir_all(package_dir.join("files")).unwrap();
+        fs::write(package_dir.join("outside.txt"), "outside").unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "Example Autogen",
+  "android": { "package_name": "com.example.autogen" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+local ok = pcall(read_package_file, "../outside.txt")
+return package_version { name = ok and "leaked" or "blocked" }
+"#,
+        )
+        .unwrap();
+        let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+        let package = &layout.packages[0];
+        let metadata = layout.package_metadata(package).unwrap();
+        let script = layout.unambiguous_version_script(package).unwrap();
+
+        let package = evaluate_package_directory_script(
+            &RepositoryId::new("autogen").unwrap(),
+            package,
+            &metadata,
+            script,
+        )
+        .unwrap();
+
+        assert_eq!(package.name, "blocked");
+    }
+
+    #[test]
+    fn getter_builtin_exposes_package_file_reader_to_package_directory_lua() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/com.example.autogen");
+        fs::create_dir_all(package_dir.join("files")).unwrap();
+        fs::write(package_dir.join("files/name.txt"), "from builtin").unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "Example Autogen",
+  "android": { "package_name": "com.example.autogen" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+return package_version { name = getter_builtin.read_package_file("name.txt") }
+"#,
+        )
+        .unwrap();
+        let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+        let package = &layout.packages[0];
+        let metadata = layout.package_metadata(package).unwrap();
+        let script = layout.unambiguous_version_script(package).unwrap();
+
+        let package = evaluate_package_directory_script(
+            &RepositoryId::new("autogen").unwrap(),
+            package,
+            &metadata,
+            script,
+        )
+        .unwrap();
+
+        assert_eq!(package.name, "from builtin");
     }
 
     #[test]
