@@ -3,7 +3,7 @@
 //! Diagnostics are getter-owned DTOs used by CLI and future app bridges. They
 //! describe what getter observed; Flutter should only render them.
 
-use crate::lua::{evaluate_package_file, LuaPackageError};
+use crate::lua::{evaluate_package_directory_script, evaluate_package_file, LuaPackageError};
 use crate::repository::{
     package_cache_key, InvalidPackageDirectory, RepositoryLayout, RepositoryLoadError,
     RepositoryPackageDirectoryLayout,
@@ -103,12 +103,42 @@ fn validate_package_directory_repository_path(root: &Path) -> RepositoryValidati
             return RepositoryValidationReport::new(0, vec![repository_load_diagnostic(error)])
         }
     };
-    let diagnostics = layout
+    let mut diagnostics: Vec<_> = layout
         .invalid_packages
         .iter()
         .map(invalid_package_directory_diagnostic)
         .collect();
-    RepositoryValidationReport::new(layout.packages.len(), diagnostics)
+    let mut package_count = 0usize;
+    let repository_id = "validation".parse().expect("static repository id is valid");
+    for package in &layout.packages {
+        let metadata = match layout.package_metadata(package) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                diagnostics.push(repository_load_diagnostic(error));
+                continue;
+            }
+        };
+        if package.version_scripts.is_empty() {
+            diagnostics.push(repository_load_diagnostic(
+                RepositoryLoadError::MissingPackageVersionScript {
+                    package_id: package.id.clone(),
+                },
+            ));
+            continue;
+        }
+        let diagnostic_count_before = diagnostics.len();
+        for script in &package.version_scripts {
+            if let Err(error) =
+                evaluate_package_directory_script(&repository_id, package, &metadata, script)
+            {
+                diagnostics.push(lua_diagnostic(error, Some(package.id.clone())));
+            }
+        }
+        if diagnostics.len() == diagnostic_count_before {
+            package_count += 1;
+        }
+    }
+    RepositoryValidationReport::new(package_count, diagnostics)
 }
 
 fn repository_load_diagnostic(error: RepositoryLoadError) -> PackageValidationDiagnostic {
@@ -185,6 +215,38 @@ fn repository_load_diagnostic(error: RepositoryLoadError) -> PackageValidationDi
             path,
             format!("failed to hash package file: {source}"),
         ),
+        RepositoryLoadError::ReadPackageMetadata { path, source } => (
+            "package.read_metadata",
+            path,
+            format!("failed to read package metadata: {source}"),
+        ),
+        RepositoryLoadError::ParsePackageMetadata { path, source } => (
+            "package.parse_metadata",
+            path,
+            format!("failed to parse package metadata: {source}"),
+        ),
+        RepositoryLoadError::InvalidPackageMetadata { path, reason } => (
+            "package.metadata",
+            path,
+            reason,
+        ),
+        RepositoryLoadError::MissingPackageVersionScript { package_id } => (
+            "package.missing_version_script",
+            PathBuf::from(format!("{package_id}/metadata.jsonc")),
+            format!("package '{package_id}' has no enabled version scripts"),
+        ),
+        RepositoryLoadError::AmbiguousPackageVersionScript { package_id } => (
+            "package.ambiguous_version_script",
+            PathBuf::from(format!("{package_id}/metadata.jsonc")),
+            format!(
+                "package '{package_id}' has multiple enabled version scripts; explicit version selection is not implemented"
+            ),
+        ),
+        RepositoryLoadError::MissingLuaApiShebang { path, expected } => (
+            "package.lua_api_shebang",
+            path,
+            format!("Lua version script is missing required shebang '{expected}'"),
+        ),
     };
     diagnostic(code, message, path, None, None)
 }
@@ -245,6 +307,13 @@ fn lua_diagnostic(
         LuaPackageError::Domain { path, message } => {
             diagnostic("package.domain", message, path, None, fallback_package_id)
         }
+        LuaPackageError::Repository { path, source } => diagnostic(
+            "package.repository",
+            source.to_string(),
+            path,
+            None,
+            fallback_package_id,
+        ),
     }
 }
 
@@ -325,7 +394,7 @@ api_version = "getter.repo.v1"
         .unwrap();
         fs::write(
             package_dir.join("1.20.0.lua"),
-            "#!/bin/upa-lua v1\nreturn {}",
+            "#!/bin/upa-lua v1\nreturn package_version { installed = { { kind = \"android_package\", package_name = \"org.fdroid.fdroid\" } } }",
         )
         .unwrap();
 
@@ -335,6 +404,52 @@ api_version = "getter.repo.v1"
         assert_eq!(report.package_count, 1);
         assert!(report.diagnostics.is_empty());
         assert!(!report.network_required);
+    }
+
+    #[test]
+    fn package_directory_without_shebang_is_reported_as_invalid() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{ "type": "android:app", "android": { "package_name": "org.fdroid.fdroid" } }"#,
+        )
+        .unwrap();
+        fs::write(package_dir.join("1.20.0.lua"), "return package_version {}").unwrap();
+
+        let report = validate_repository_path(temp.path());
+
+        assert!(!report.valid);
+        assert_eq!(report.diagnostics[0].code, "package.repository");
+        assert!(report.diagnostics[0].message.contains("#!/bin/upa-lua v1"));
+    }
+
+    #[test]
+    fn package_directory_validator_checks_each_version_script_without_selecting_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{ "type": "android:app", "android": { "package_name": "org.fdroid.fdroid" } }"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("1.20.0.lua"),
+            "#!/bin/upa-lua v1\nreturn package_version { installed = { { kind = \"android_package\", package_name = \"org.fdroid.fdroid\" } } }",
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            "#!/bin/upa-lua v1\nreturn package_version { installed = { { kind = \"android_package\", package_name = \"org.fdroid.fdroid\" } } }",
+        )
+        .unwrap();
+
+        let report = validate_repository_path(temp.path());
+
+        assert!(report.valid, "{report:?}");
+        assert_eq!(report.package_count, 1);
     }
 
     #[test]

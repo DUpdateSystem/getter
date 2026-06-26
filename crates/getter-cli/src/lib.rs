@@ -6,7 +6,7 @@
 
 use getter_core::autogen::InstalledInventory;
 use getter_core::diagnostics::validate_repository_path;
-use getter_core::lua::evaluate_package_file;
+use getter_core::lua::{evaluate_package_directory_script, evaluate_package_file};
 use getter_core::repository::{
     default_repository_priority, GetterDataDirLayout, RepositoryLayout, RepositoryMetadata,
     RepositoryPackageDirectoryLayout, REPOSITORY_ROOT_METADATA_FILE, REPO_API_VERSION_V1,
@@ -596,14 +596,10 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
         CliCommand::RepoEval { id } => {
             let db = open_main_db(&invocation.data_dir)?;
             let repo = find_repository(&db, &id)?;
-            let path = repo_path(&repo)?;
-            let layout = load_repository_layout(&path)?;
-            let mut packages = Vec::new();
-            for package_file in &layout.packages {
-                let package = evaluate_package_file(&layout, &package_file.path)
-                    .map_err(|error| CliError::PackageEval(error.to_string()))?;
-                packages.push(package_json(package)?);
-            }
+            let packages = evaluate_repository_packages(&repo)?
+                .into_iter()
+                .map(package_json)
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(json!({
                 "repository": repository_json(repo),
                 "packages": packages,
@@ -929,6 +925,13 @@ fn load_repository_layout(path: &Path) -> Result<RepositoryLayout, CliError> {
     RepositoryLayout::load(path).map_err(|source| CliError::Repository(source.to_string()))
 }
 
+fn load_package_directory_layout(
+    path: &Path,
+) -> Result<RepositoryPackageDirectoryLayout, CliError> {
+    RepositoryPackageDirectoryLayout::load(path)
+        .map_err(|source| CliError::Repository(source.to_string()))
+}
+
 fn load_repository_metadata(
     id: &RepositoryId,
     path: &Path,
@@ -979,16 +982,12 @@ fn evaluate_package_from_repo(
     package_id: &PackageId,
 ) -> Result<getter_core::ResolvedPackage, CliError> {
     let repo = find_repository(db, repo_id)?;
-    let path = repo_path(&repo)?;
-    let layout = load_repository_layout(&path)?;
-    let package_file = layout.package_file(package_id).ok_or_else(|| {
+    evaluate_package_in_repository(&repo, package_id)?.ok_or_else(|| {
         CliError::PackageEval(format!(
             "package '{}' was not found in repository '{}'",
             package_id, repo_id
         ))
-    })?;
-    evaluate_package_file(&layout, &package_file.path)
-        .map_err(|error| CliError::PackageEval(error.to_string()))
+    })
 }
 
 fn evaluate_highest_priority_package(
@@ -996,16 +995,74 @@ fn evaluate_highest_priority_package(
     package_id: &PackageId,
 ) -> Result<getter_core::ResolvedPackage, CliError> {
     for repo in db.repositories()? {
-        let path = repo_path(&repo)?;
-        let layout = load_repository_layout(&path)?;
-        if let Some(package_file) = layout.package_file(package_id) {
-            return evaluate_package_file(&layout, &package_file.path)
-                .map_err(|error| CliError::PackageEval(error.to_string()));
+        if let Some(package) = evaluate_package_in_repository(&repo, package_id)? {
+            return Ok(package);
         }
     }
     Err(CliError::PackageEval(format!(
         "package '{package_id}' was not found in any registered repository"
     )))
+}
+
+fn evaluate_repository_packages(
+    repo: &StoredRepository,
+) -> Result<Vec<getter_core::ResolvedPackage>, CliError> {
+    let path = repo_path(repo)?;
+    if path.join("repo.toml").is_file() {
+        let layout = load_repository_layout(&path)?;
+        return layout
+            .packages
+            .iter()
+            .map(|package_file| {
+                evaluate_package_file(&layout, &package_file.path)
+                    .map_err(|error| CliError::PackageEval(error.to_string()))
+            })
+            .collect();
+    }
+
+    let layout = load_package_directory_layout(&path)?;
+    layout
+        .packages
+        .iter()
+        .map(|package| evaluate_package_directory(&repo.id, &layout, package))
+        .collect()
+}
+
+fn evaluate_package_in_repository(
+    repo: &StoredRepository,
+    package_id: &PackageId,
+) -> Result<Option<getter_core::ResolvedPackage>, CliError> {
+    let path = repo_path(repo)?;
+    if path.join("repo.toml").is_file() {
+        let layout = load_repository_layout(&path)?;
+        let Some(package_file) = layout.package_file(package_id) else {
+            return Ok(None);
+        };
+        return evaluate_package_file(&layout, &package_file.path)
+            .map(Some)
+            .map_err(|error| CliError::PackageEval(error.to_string()));
+    }
+
+    let layout = load_package_directory_layout(&path)?;
+    let Some(package) = layout.package(package_id) else {
+        return Ok(None);
+    };
+    evaluate_package_directory(&repo.id, &layout, package).map(Some)
+}
+
+fn evaluate_package_directory(
+    repo_id: &RepositoryId,
+    layout: &RepositoryPackageDirectoryLayout,
+    package: &getter_core::repository::PackageDirectory,
+) -> Result<getter_core::ResolvedPackage, CliError> {
+    let metadata = layout
+        .package_metadata(package)
+        .map_err(|error| CliError::PackageEval(error.to_string()))?;
+    let script = layout
+        .unambiguous_version_script(package)
+        .map_err(|error| CliError::PackageEval(error.to_string()))?;
+    evaluate_package_directory_script(repo_id, package, &metadata, script)
+        .map_err(|error| CliError::PackageEval(error.to_string()))
 }
 
 fn read_installed_inventory(path: &Path) -> Result<InstalledInventory, CliError> {

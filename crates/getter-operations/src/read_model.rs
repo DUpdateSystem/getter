@@ -6,9 +6,11 @@
 //! to parse and render.
 
 #[cfg(feature = "lua")]
-use getter_core::lua::evaluate_package_file;
+use getter_core::lua::{evaluate_package_directory_script, evaluate_package_file};
 #[cfg(feature = "lua")]
-use getter_core::repository::{RepositoryLayout, RepositoryLoadError};
+use getter_core::repository::{
+    RepositoryLayout, RepositoryLoadError, RepositoryPackageDirectoryLayout,
+};
 #[cfg(feature = "lua")]
 use getter_core::{PackageId, RepositoryId};
 use getter_storage::{MainDb, StorageError, StoredRepository, StoredTrackedPackage};
@@ -140,16 +142,12 @@ fn evaluate_package_from_repo(
     package_id: &PackageId,
 ) -> Result<getter_core::ResolvedPackage, ReadModelOperationError> {
     let repo = find_repository(db, repo_id)?;
-    let path = repo_path(&repo)?;
-    let layout = RepositoryLayout::load(&path)?;
-    let package_file = layout.package_file(package_id).ok_or_else(|| {
+    evaluate_package_in_repository(&repo, package_id)?.ok_or_else(|| {
         ReadModelOperationError::PackageEval(format!(
             "package '{}' was not found in repository '{}'",
             package_id, repo_id
         ))
-    })?;
-    evaluate_package_file(&layout, &package_file.path)
-        .map_err(|source| ReadModelOperationError::PackageEval(source.to_string()))
+    })
 }
 
 #[cfg(feature = "lua")]
@@ -158,16 +156,40 @@ fn evaluate_highest_priority_package(
     package_id: &PackageId,
 ) -> Result<getter_core::ResolvedPackage, ReadModelOperationError> {
     for repo in db.repositories()? {
-        let path = repo_path(&repo)?;
-        let layout = RepositoryLayout::load(&path)?;
-        if let Some(package_file) = layout.package_file(package_id) {
-            return evaluate_package_file(&layout, &package_file.path)
-                .map_err(|source| ReadModelOperationError::PackageEval(source.to_string()));
+        if let Some(package) = evaluate_package_in_repository(&repo, package_id)? {
+            return Ok(package);
         }
     }
     Err(ReadModelOperationError::PackageEval(format!(
         "package '{package_id}' was not found in any registered repository"
     )))
+}
+
+#[cfg(feature = "lua")]
+fn evaluate_package_in_repository(
+    repo: &StoredRepository,
+    package_id: &PackageId,
+) -> Result<Option<getter_core::ResolvedPackage>, ReadModelOperationError> {
+    let path = repo_path(repo)?;
+    if path.join("repo.toml").is_file() {
+        let layout = RepositoryLayout::load(&path)?;
+        let Some(package_file) = layout.package_file(package_id) else {
+            return Ok(None);
+        };
+        return evaluate_package_file(&layout, &package_file.path)
+            .map(Some)
+            .map_err(|source| ReadModelOperationError::PackageEval(source.to_string()));
+    }
+
+    let layout = RepositoryPackageDirectoryLayout::load(&path)?;
+    let Some(package) = layout.package(package_id) else {
+        return Ok(None);
+    };
+    let metadata = layout.package_metadata(package)?;
+    let script = layout.unambiguous_version_script(package)?;
+    evaluate_package_directory_script(&repo.id, package, &metadata, script)
+        .map(Some)
+        .map_err(|source| ReadModelOperationError::PackageEval(source.to_string()))
 }
 
 #[cfg(feature = "lua")]
@@ -274,6 +296,68 @@ mod tests {
     fn package_eval_reads_registered_lua_repository() {
         let temp = tempdir().unwrap();
         let repo_path = temp.path().join("repo");
+        write_legacy_lua_repo(&repo_path);
+
+        let db = MainDb::open(temp.path().join(MAIN_DB_FILE)).unwrap();
+        db.upsert_repository(
+            &RepositoryMetadata {
+                id: "official".parse().unwrap(),
+                name: "Official".to_owned(),
+                priority: RepositoryPriority::new(10),
+                api_version: REPO_API_VERSION_V1.to_owned(),
+            },
+            Some(&repo_path),
+            None,
+        )
+        .unwrap();
+
+        let result = package_eval_json(
+            temp.path(),
+            r#"{"package_id":"android/org.fdroid.fdroid","repository_id":"official"}"#,
+        )
+        .unwrap();
+        assert_eq!(result["package"]["id"], "android/org.fdroid.fdroid");
+        assert_eq!(result["package"]["name"], "F-Droid");
+        assert_eq!(result["package"]["permissions"]["free_network"], true);
+    }
+
+    #[cfg(feature = "lua")]
+    #[test]
+    fn package_eval_reads_registered_package_directory_repository() {
+        let temp = tempdir().unwrap();
+        let repo_path = temp.path().join("repo");
+        write_package_directory_repo(&repo_path);
+
+        let db = MainDb::open(temp.path().join(MAIN_DB_FILE)).unwrap();
+        db.upsert_repository(
+            &RepositoryMetadata {
+                id: "autogen".parse().unwrap(),
+                name: "Autogen".to_owned(),
+                priority: RepositoryPriority::new(-1),
+                api_version: REPO_API_VERSION_V1.to_owned(),
+            },
+            Some(&repo_path),
+            None,
+        )
+        .unwrap();
+
+        let result = package_eval_json(
+            temp.path(),
+            r#"{"package_id":"android/app/com.example.autogen","repository_id":"autogen"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(result["package"]["id"], "android/app/com.example.autogen");
+        assert_eq!(result["package"]["repository"], "autogen");
+        assert_eq!(result["package"]["name"], "Example Autogen");
+        assert_eq!(
+            result["package"]["installed"][0]["package_name"],
+            "com.example.autogen"
+        );
+    }
+
+    #[cfg(feature = "lua")]
+    fn write_legacy_lua_repo(repo_path: &Path) {
         fs::create_dir_all(repo_path.join("packages/android")).unwrap();
         fs::create_dir_all(repo_path.join("lib")).unwrap();
         fs::create_dir_all(repo_path.join("templates")).unwrap();
@@ -299,27 +383,32 @@ api_version = "getter.repo.v1"
 "#,
         )
         .unwrap();
+    }
 
-        let db = MainDb::open(temp.path().join(MAIN_DB_FILE)).unwrap();
-        db.upsert_repository(
-            &RepositoryMetadata {
-                id: "official".parse().unwrap(),
-                name: "Official".to_owned(),
-                priority: RepositoryPriority::new(10),
-                api_version: REPO_API_VERSION_V1.to_owned(),
-            },
-            Some(&repo_path),
-            None,
+    #[cfg(feature = "lua")]
+    fn write_package_directory_repo(repo_path: &Path) {
+        let package_dir = repo_path.join("android/app/com.example.autogen");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "Example Autogen",
+  "android": { "package_name": "com.example.autogen" }
+}"#,
         )
         .unwrap();
-
-        let result = package_eval_json(
-            temp.path(),
-            r#"{"package_id":"android/org.fdroid.fdroid","repository_id":"official"}"#,
+        fs::write(package_dir.join("Manifest"), "").unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+return package_version {
+  installed = {
+    { kind = "android_package", package_name = "com.example.autogen" },
+  },
+}
+"#,
         )
         .unwrap();
-        assert_eq!(result["package"]["id"], "android/org.fdroid.fdroid");
-        assert_eq!(result["package"]["name"], "F-Droid");
-        assert_eq!(result["package"]["permissions"]["free_network"], true);
     }
 }

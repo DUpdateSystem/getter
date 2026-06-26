@@ -21,6 +21,9 @@ Feature: Installed app autogen
     And the app list contains autogen tracked package "android/app/com.example.autogen"
     When I run getter repo validate for autogen
     Then the output reports a valid repository without network
+    When I run getter package eval for package "android/app/com.example.autogen"
+    Then the command succeeds
+    And the package eval name is "Example Autogen"
 
   Scenario: Higher-priority repositories suppress installed app autogen candidates
     Given an initialized getter data directory

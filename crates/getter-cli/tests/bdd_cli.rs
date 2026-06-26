@@ -349,20 +349,45 @@ fn fixture_lua_repository(world: &mut CliWorld, repo_id: String, package_id: Str
 
 #[given(expr = "a package-directory repository {string} with package {string}")]
 fn package_directory_repository(world: &mut CliWorld, repo_id: String, package_id: String) {
+    create_package_directory_repository(world, repo_id, package_id, 1);
+}
+
+#[given(expr = "a package-directory repository {string} with multi-version package {string}")]
+fn package_directory_repository_multi_version(
+    world: &mut CliWorld,
+    repo_id: String,
+    package_id: String,
+) {
+    create_package_directory_repository(world, repo_id, package_id, 2);
+}
+
+fn create_package_directory_repository(
+    world: &mut CliWorld,
+    repo_id: String,
+    package_id: String,
+    script_count: usize,
+) {
     let temp = world.temp.as_ref().expect("tempdir exists");
     let repo_path = temp.path().join(format!("repo-{repo_id}"));
     let package_dir = repo_path.join(package_id.replace('/', std::path::MAIN_SEPARATOR_STR));
     fs::create_dir_all(&package_dir).expect("create package dir");
     fs::write(
         package_dir.join("metadata.jsonc"),
-        r#"{ "type": "android:app", "android": { "package_name": "org.fdroid.fdroid" } }"#,
+        r#"{ "type": "android:app", "display_name": "F-Droid", "android": { "package_name": "org.fdroid.fdroid" } }"#,
     )
     .expect("write package metadata");
     fs::write(
         package_dir.join("1.20.0.lua"),
-        "#!/bin/upa-lua v1\nreturn {}",
+        "#!/bin/upa-lua v1\nreturn package_version { installed = { { kind = \"android_package\", package_name = \"org.fdroid.fdroid\" } } }",
     )
     .expect("write version Lua");
+    if script_count > 1 {
+        fs::write(
+            package_dir.join("9999.lua"),
+            "#!/bin/upa-lua v1\nreturn package_version { installed = { { kind = \"android_package\", package_name = \"org.fdroid.fdroid\" } } }",
+        )
+        .expect("write live version Lua");
+    }
 
     world.fixture_repo_id = Some(repo_id);
     world.fixture_repo_path = Some(repo_path);
@@ -905,6 +930,21 @@ fn command_fails_with_autogen_error(world: &mut CliWorld) {
     world.json = Some(json);
 }
 
+#[then("the command fails with a package eval error")]
+fn command_fails_with_package_eval_error(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("command output exists");
+    assert_eq!(output.status.code(), Some(1));
+    let json = parse_stdout(output);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["command"], "package eval");
+    assert_eq!(json["error"]["code"], "package.eval_error");
+    assert!(json["error"]["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("explicit version selection is not implemented"));
+    world.json = Some(json);
+}
+
 #[then("the command fails with an update check error")]
 fn command_fails_with_update_check_error(world: &mut CliWorld) {
     let output = world.output.as_ref().expect("command output exists");
@@ -1221,6 +1261,14 @@ fn output_contains_named_package(world: &mut CliWorld, package_id: String, packa
     assert_eq!(json["ok"], true);
     assert_eq!(json["command"], "package eval");
     assert_eq!(json["data"]["package"]["id"], package_id);
+    assert_eq!(json["data"]["package"]["name"], package_name);
+}
+
+#[then(expr = "the package eval name is {string}")]
+fn package_eval_name_is(world: &mut CliWorld, package_name: String) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "package eval");
     assert_eq!(json["data"]["package"]["name"], package_name);
 }
 

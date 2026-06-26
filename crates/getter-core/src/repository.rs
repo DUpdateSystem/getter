@@ -2,6 +2,7 @@
 
 use crate::{PackageId, PackageIdError, RepositoryId, RepositoryIdError, RepositoryPriority};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha512};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,7 +17,9 @@ pub const REPOSITORY_ROOT_METADATA_VERSION: u32 = 1;
 pub const REPOSITORY_SELF_METADATA_DIR: &str = ".metadata";
 pub const REPOSITORY_LUACLASS_DIR: &str = "luaclass";
 pub const PACKAGE_METADATA_FILE: &str = "metadata.jsonc";
+pub const PACKAGE_MANIFEST_FILE: &str = "Manifest";
 pub const LUA_SCRIPT_EXTENSION: &str = "lua";
+pub const LUA_API_SHEBANG_V1: &str = "#!/bin/upa-lua v1";
 pub const LOCAL_REPOSITORY_ALIAS: &str = "local";
 pub const DEFAULT_GENERATED_REPOSITORY_ALIAS: &str = "autogen";
 
@@ -253,6 +256,54 @@ pub struct PackageDirectory {
     pub version_scripts: Vec<PackageVersionScript>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageDirectoryMetadata {
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub lua: HashMap<String, PackageLuaMetadata>,
+    #[serde(flatten)]
+    pub package: PackageTypeMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum PackageTypeMetadata {
+    #[serde(rename = "android:app")]
+    AndroidApp { android: AndroidPackageMetadata },
+    #[serde(rename = "magisk:module")]
+    MagiskModule { magisk: MagiskPackageMetadata },
+    #[serde(rename = "generic")]
+    Generic { generic: GenericPackageMetadata },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AndroidPackageMetadata {
+    pub package_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagiskPackageMetadata {
+    pub module_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenericPackageMetadata {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageLuaMetadata {
+    #[serde(default)]
+    pub permission: Vec<PackageLuaPermission>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageLuaPermission {
+    AllowFreeNetwork,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageVersionScript {
     pub version: String,
@@ -354,6 +405,29 @@ pub enum RepositoryLoadError {
         #[source]
         source: std::io::Error,
     },
+    #[error("failed to read package metadata at {path}: {source}")]
+    ReadPackageMetadata {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse package metadata at {path}: {source}")]
+    ParsePackageMetadata {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("invalid package metadata at {path}: {reason}")]
+    InvalidPackageMetadata { path: PathBuf, reason: String },
+    #[error("package '{package_id}' has no enabled version scripts")]
+    MissingPackageVersionScript { package_id: PackageId },
+    #[error("package '{package_id}' has multiple enabled version scripts; explicit version selection is not implemented")]
+    AmbiguousPackageVersionScript { package_id: PackageId },
+    #[error("Lua version script {path} is missing required shebang '{expected}'")]
+    MissingLuaApiShebang {
+        path: PathBuf,
+        expected: &'static str,
+    },
 }
 
 impl RepositoryPackageDirectoryLayout {
@@ -373,6 +447,43 @@ impl RepositoryPackageDirectoryLayout {
 
     pub fn package(&self, id: &PackageId) -> Option<&PackageDirectory> {
         self.packages.iter().find(|package| &package.id == id)
+    }
+
+    pub fn package_metadata(
+        &self,
+        package: &PackageDirectory,
+    ) -> Result<PackageDirectoryMetadata, RepositoryLoadError> {
+        load_package_metadata(&package.metadata_path)
+    }
+
+    pub fn unambiguous_version_script<'a>(
+        &self,
+        package: &'a PackageDirectory,
+    ) -> Result<&'a PackageVersionScript, RepositoryLoadError> {
+        match package.version_scripts.as_slice() {
+            [script] => Ok(script),
+            [] => Err(RepositoryLoadError::MissingPackageVersionScript {
+                package_id: package.id.clone(),
+            }),
+            _ => Err(RepositoryLoadError::AmbiguousPackageVersionScript {
+                package_id: package.id.clone(),
+            }),
+        }
+    }
+}
+
+impl PackageDirectoryMetadata {
+    pub fn display_name_for(&self, package_id: &PackageId) -> String {
+        self.display_name
+            .clone()
+            .unwrap_or_else(|| package_id.to_string())
+    }
+
+    pub fn permissions_for(&self, file_name: &str) -> &[PackageLuaPermission] {
+        self.lua
+            .get(file_name)
+            .map(|metadata| metadata.permission.as_slice())
+            .unwrap_or(&[])
     }
 }
 
@@ -551,17 +662,37 @@ fn collect_package_boundary(
 }
 
 fn parse_package_metadata(metadata_path: &Path) -> Result<(), String> {
-    let bytes = fs::read(metadata_path)
-        .map_err(|source| format!("failed to read package metadata: {source}"))?;
-    let value = serde_json::from_reader::<_, serde_json::Value>(json_comments::StripComments::new(
+    load_package_metadata(metadata_path)
+        .map(|_| ())
+        .map_err(|source| source.to_string())
+}
+
+pub fn load_package_metadata(
+    metadata_path: impl AsRef<Path>,
+) -> Result<PackageDirectoryMetadata, RepositoryLoadError> {
+    let metadata_path = metadata_path.as_ref();
+    let bytes =
+        fs::read(metadata_path).map_err(|source| RepositoryLoadError::ReadPackageMetadata {
+            path: metadata_path.to_path_buf(),
+            source,
+        })?;
+    let value: serde_json::Value = serde_json::from_reader(json_comments::StripComments::new(
         bytes.as_slice(),
     ))
-    .map_err(|source| format!("failed to parse package metadata: {source}"))?;
-    if value.is_object() {
-        Ok(())
-    } else {
-        Err("package metadata must be a JSON object".to_owned())
+    .map_err(|source| RepositoryLoadError::ParsePackageMetadata {
+        path: metadata_path.to_path_buf(),
+        source,
+    })?;
+    if !value.is_object() {
+        return Err(RepositoryLoadError::InvalidPackageMetadata {
+            path: metadata_path.to_path_buf(),
+            reason: "package metadata must be a JSON object".to_owned(),
+        });
     }
+    serde_json::from_value(value).map_err(|source| RepositoryLoadError::ParsePackageMetadata {
+        path: metadata_path.to_path_buf(),
+        source,
+    })
 }
 
 fn discover_version_scripts(
@@ -704,22 +835,42 @@ pub fn package_cache_key(
     })
 }
 
+pub fn package_directory_cache_key(
+    repository_id: &RepositoryId,
+    package: &PackageDirectory,
+    script: &PackageVersionScript,
+) -> Result<RepositoryPackageCacheKey, RepositoryLoadError> {
+    let package_file_hash = format!(
+        "metadata={};script={};manifest={}",
+        package_file_content_hash(&package.metadata_path)?,
+        package_file_content_hash(&script.path)?,
+        optional_file_content_hash(&package.path.join(PACKAGE_MANIFEST_FILE))?
+            .unwrap_or_else(|| "missing".to_owned())
+    );
+    Ok(RepositoryPackageCacheKey {
+        repository_id: repository_id.clone(),
+        package_id: package.id.clone(),
+        api_version: REPO_API_VERSION_V1.to_owned(),
+        package_file_hash,
+    })
+}
+
+fn optional_file_content_hash(path: &Path) -> Result<Option<String>, RepositoryLoadError> {
+    if path.exists() {
+        package_file_content_hash(path).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
 pub fn package_file_content_hash(path: impl AsRef<Path>) -> Result<String, RepositoryLoadError> {
     let path = path.as_ref();
     let bytes = fs::read(path).map_err(|source| RepositoryLoadError::HashPackageFile {
         path: path.to_path_buf(),
         source,
     })?;
-    Ok(format!("{:016x}", fnv1a64(&bytes)))
-}
-
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
+    let hash = Sha512::digest(&bytes);
+    Ok(format!("sha512:{hash:x}"))
 }
 
 pub fn highest_priority<T, F>(items: &[T], priority: F) -> Option<&T>
@@ -906,7 +1057,7 @@ mod tests {
         fs::create_dir_all(package_dir.join("nested")).unwrap();
         fs::write(
             package_dir.join(PACKAGE_METADATA_FILE),
-            r#"{ "type": "android:app" }"#,
+            r#"{ "type": "android:app", "android": { "package_name": "org.fdroid.fdroid" } }"#,
         )
         .unwrap();
         fs::write(package_dir.join("1.2.3.lua"), "return {}").unwrap();
@@ -944,7 +1095,7 @@ mod tests {
         fs::write(package_dir.join(PACKAGE_METADATA_FILE), "{not-json").unwrap();
         fs::write(
             package_dir.join("nested/android/app/hidden/metadata.jsonc"),
-            r#"{ "type": "android:app" }"#,
+            r#"{ "type": "android:app", "android": { "package_name": "hidden" } }"#,
         )
         .unwrap();
 
@@ -968,19 +1119,19 @@ mod tests {
         fs::create_dir_all(root.join(".metadata/android/app/hidden")).unwrap();
         fs::write(
             root.join(".metadata/android/app/hidden/metadata.jsonc"),
-            r#"{ "type": "android:app" }"#,
+            r#"{ "type": "android:app", "android": { "package_name": "hidden" } }"#,
         )
         .unwrap();
         fs::create_dir_all(root.join("luaclass/android/app/hidden")).unwrap();
         fs::write(
             root.join("luaclass/android/app/hidden/metadata.jsonc"),
-            r#"{ "type": "android:app" }"#,
+            r#"{ "type": "android:app", "android": { "package_name": "hidden" } }"#,
         )
         .unwrap();
         fs::create_dir_all(root.join("android/app/visible")).unwrap();
         fs::write(
             root.join("android/app/visible/metadata.jsonc"),
-            r#"{ "type": "android:app" }"#,
+            r#"{ "type": "android:app", "android": { "package_name": "visible" } }"#,
         )
         .unwrap();
 
@@ -1014,10 +1165,9 @@ mod tests {
 
         assert!(layout.packages.is_empty());
         assert_eq!(layout.invalid_packages.len(), 1);
-        assert_eq!(
-            layout.invalid_packages[0].reason,
-            "package metadata must be a JSON object"
-        );
+        assert!(layout.invalid_packages[0]
+            .reason
+            .contains("package metadata must be a JSON object"));
     }
 
     #[test]
@@ -1027,7 +1177,7 @@ mod tests {
         fs::create_dir_all(root.join("invalidkind/app/example")).unwrap();
         fs::write(
             root.join("invalidkind/app/example/metadata.jsonc"),
-            r#"{ "type": "android:app" }"#,
+            r#"{ "type": "android:app", "android": { "package_name": "example" } }"#,
         )
         .unwrap();
 

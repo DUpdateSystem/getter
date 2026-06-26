@@ -1,8 +1,12 @@
 //! Minimal Lua package-file evaluation and Rust validation boundary.
 
-use crate::repository::RepositoryLayout;
+use crate::repository::{
+    PackageDirectory, PackageDirectoryMetadata, PackageLuaPermission, PackageTypeMetadata,
+    PackageVersionScript, RepositoryLayout, RepositoryLoadError, LUA_API_SHEBANG_V1,
+    REPOSITORY_LUACLASS_DIR,
+};
 use crate::{
-    InstalledTarget, PackageId, PackagePermissions, ResolvedPackage, UpdateArtifact,
+    InstalledTarget, PackageId, PackagePermissions, RepositoryId, ResolvedPackage, UpdateArtifact,
     UpdateCandidate,
 };
 use mlua::{Lua, Table, Value};
@@ -36,6 +40,12 @@ pub enum LuaPackageError {
     Schema { path: PathBuf, message: String },
     #[error("domain validation failed for {path}: {message}")]
     Domain { path: PathBuf, message: String },
+    #[error("repository layout failed for {path}: {source}")]
+    Repository {
+        path: PathBuf,
+        #[source]
+        source: RepositoryLoadError,
+    },
 }
 
 /// Evaluate and validate a Lua package file from a repository layout.
@@ -59,8 +69,49 @@ pub fn evaluate_package_source(
     source: &str,
 ) -> Result<ResolvedPackage, LuaPackageError> {
     let path = path.as_ref().to_path_buf();
+    let json = evaluate_package_source_to_json(
+        &LuaRepositoryEnvironment::Legacy(repository),
+        &path,
+        source,
+    )?;
+    validate_package_json(repository, &path, json)
+}
+
+pub fn evaluate_package_directory_script(
+    repository_id: &RepositoryId,
+    package: &PackageDirectory,
+    metadata: &PackageDirectoryMetadata,
+    script: &PackageVersionScript,
+) -> Result<ResolvedPackage, LuaPackageError> {
+    let source = fs::read_to_string(&script.path).map_err(|source| LuaPackageError::ReadFile {
+        path: script.path.clone(),
+        source,
+    })?;
+    if source.lines().next() != Some(LUA_API_SHEBANG_V1) {
+        return Err(LuaPackageError::Repository {
+            path: script.path.clone(),
+            source: RepositoryLoadError::MissingLuaApiShebang {
+                path: script.path.clone(),
+                expected: LUA_API_SHEBANG_V1,
+            },
+        });
+    }
+    let json = evaluate_package_source_to_json(
+        &LuaRepositoryEnvironment::PackageDirectory { package },
+        &script.path,
+        &source,
+    )?;
+    validate_package_directory_version_json(repository_id, package, metadata, script, json)
+}
+
+fn evaluate_package_source_to_json(
+    environment: &LuaRepositoryEnvironment<'_>,
+    path: &Path,
+    source: &str,
+) -> Result<JsonValue, LuaPackageError> {
+    let path = path.to_path_buf();
     let lua = Lua::new();
-    configure_package_path(&lua, repository).map_err(|source| LuaPackageError::Runtime {
+    configure_package_path(&lua, environment).map_err(|source| LuaPackageError::Runtime {
         path: path.clone(),
         source,
     })?;
@@ -85,24 +136,53 @@ pub fn evaluate_package_source(
         Value::Table(table) => table,
         _ => return Err(LuaPackageError::NotATable { path }),
     };
-    let json = lua_table_to_json(&path, "$", table)?;
-    validate_package_json(repository, &path, json)
+    lua_table_to_json(&path, "$", table)
 }
 
-fn configure_package_path(lua: &Lua, repository: &RepositoryLayout) -> mlua::Result<()> {
+enum LuaRepositoryEnvironment<'a> {
+    Legacy(&'a RepositoryLayout),
+    PackageDirectory { package: &'a PackageDirectory },
+}
+
+fn configure_package_path(
+    lua: &Lua,
+    environment: &LuaRepositoryEnvironment<'_>,
+) -> mlua::Result<()> {
     let package: Table = lua.globals().get("package")?;
-    let lib_pattern = repository.lib_dir.join("?.lua");
-    let nested_lib_pattern = repository.lib_dir.join("?/init.lua");
-    let new_path = format!(
-        "{};{}",
-        lib_pattern.to_string_lossy(),
-        nested_lib_pattern.to_string_lossy()
-    );
-    package.set("path", new_path)?;
     package.set("cpath", "")?;
     package.set("loadlib", Value::Nil)?;
-    install_lib_prefix_searcher(lua, &package, repository.lib_dir.clone())?;
+    match environment {
+        LuaRepositoryEnvironment::Legacy(repository) => {
+            let lib_pattern = repository.lib_dir.join("?.lua");
+            let nested_lib_pattern = repository.lib_dir.join("?/init.lua");
+            let new_path = format!(
+                "{};{}",
+                lib_pattern.to_string_lossy(),
+                nested_lib_pattern.to_string_lossy()
+            );
+            package.set("path", new_path)?;
+            install_lib_prefix_searcher(lua, &package, repository.lib_dir.clone())?;
+        }
+        LuaRepositoryEnvironment::PackageDirectory {
+            package: package_dir,
+        } => {
+            package.set("path", "")?;
+            install_luaclass_prefix_searcher(
+                lua,
+                &package,
+                package_directory_repository_root(package_dir).join(REPOSITORY_LUACLASS_DIR),
+            )?;
+        }
+    }
     disable_native_module_searchers(&package)
+}
+
+fn package_directory_repository_root(package: &PackageDirectory) -> PathBuf {
+    let mut root = package.path.clone();
+    for _ in package.id.to_string().split('/') {
+        root.pop();
+    }
+    root
 }
 
 fn disable_native_module_searchers(package: &Table) -> mlua::Result<()> {
@@ -128,24 +208,54 @@ fn remove_unsafe_globals(lua: &Lua) -> mlua::Result<()> {
 }
 
 fn install_lib_prefix_searcher(lua: &Lua, package: &Table, lib_dir: PathBuf) -> mlua::Result<()> {
+    install_prefixed_file_searcher(
+        lua,
+        package,
+        "lib.",
+        lib_dir,
+        "constrained repository lib searcher only handles lib.* modules",
+    )
+}
+
+fn install_luaclass_prefix_searcher(
+    lua: &Lua,
+    package: &Table,
+    luaclass_dir: PathBuf,
+) -> mlua::Result<()> {
+    install_prefixed_file_searcher(
+        lua,
+        package,
+        "luaclass.",
+        luaclass_dir,
+        "constrained repository luaclass searcher only handles luaclass.* modules",
+    )
+}
+
+fn install_prefixed_file_searcher(
+    lua: &Lua,
+    package: &Table,
+    prefix: &'static str,
+    module_dir: PathBuf,
+    wrong_prefix_message: &'static str,
+) -> mlua::Result<()> {
     let searchers = package_searchers(package)?;
     let searcher = lua.create_function(move |lua, module: String| {
-        let Some(module) = module.strip_prefix("lib.") else {
+        let Some(module) = module.strip_prefix(prefix) else {
             return lua
-                .create_string("\n\tconstrained repository lib searcher only handles lib.* modules")
+                .create_string(format!("\n\t{wrong_prefix_message}"))
                 .map(Value::String);
         };
 
         let Some(relative_module) = module_to_relative_path(module) else {
             return lua
                 .create_string(format!(
-                    "\n\tinvalid repository lib module name 'lib.{module}'"
+                    "\n\tinvalid repository module name '{prefix}{module}'"
                 ))
                 .map(Value::String);
         };
 
-        let module_path = lib_dir.join(&relative_module).with_extension("lua");
-        let init_path = lib_dir.join(&relative_module).join("init.lua");
+        let module_path = module_dir.join(&relative_module).with_extension("lua");
+        let init_path = module_dir.join(&relative_module).join("init.lua");
         for candidate in [&module_path, &init_path] {
             if candidate.is_file() {
                 let source = fs::read_to_string(candidate).map_err(mlua::Error::external)?;
@@ -157,8 +267,8 @@ fn install_lib_prefix_searcher(lua: &Lua, package: &Table, lib_dir: PathBuf) -> 
         }
 
         lua.create_string(format!(
-            "\n\tno repository lib module 'lib.{module}' in {}",
-            lib_dir.display()
+            "\n\tno repository module '{prefix}{module}' in {}",
+            module_dir.display()
         ))
         .map(Value::String)
     })?;
@@ -201,6 +311,7 @@ fn module_to_relative_path(module: &str) -> Option<PathBuf> {
 fn install_helpers(lua: &Lua) -> mlua::Result<()> {
     let package_fn = lua.create_function(|_, table: Table| Ok(table))?;
     lua.globals().set("package_def", package_fn.clone())?;
+    lua.globals().set("package_version", package_fn.clone())?;
     lua.globals().set("android_app", package_fn.clone())?;
     lua.globals().set("magisk_module", package_fn.clone())?;
     lua.globals().set("generic_package", package_fn)?;
@@ -337,15 +448,115 @@ fn validate_package_json(
     }
 
     let name = required_string(path, object, "name")?.to_owned();
+    package_from_version_json(
+        repository.metadata.id.clone(),
+        id,
+        name,
+        PackagePermissions::default(),
+        path,
+        object,
+    )
+}
+
+fn validate_package_directory_version_json(
+    repository_id: &RepositoryId,
+    package: &PackageDirectory,
+    metadata: &PackageDirectoryMetadata,
+    script: &PackageVersionScript,
+    value: JsonValue,
+) -> Result<ResolvedPackage, LuaPackageError> {
+    let object = value.as_object().ok_or_else(|| LuaPackageError::Schema {
+        path: script.path.clone(),
+        message: "package value must be an object".to_owned(),
+    })?;
+    if object.contains_key("id") {
+        return Err(LuaPackageError::Schema {
+            path: script.path.clone(),
+            message: "field 'id' must not be declared by package version scripts; package id is derived from path".to_owned(),
+        });
+    }
+    let name = object
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| metadata.display_name_for(&package.id));
+    let mut package = package_from_version_json(
+        repository_id.clone(),
+        package.id.clone(),
+        name,
+        metadata_permissions_for_script(metadata, &script.file_name),
+        &script.path,
+        object,
+    )?;
+    apply_metadata_installed_target(&mut package, metadata, &script.path)?;
+    Ok(package)
+}
+
+fn apply_metadata_installed_target(
+    package: &mut ResolvedPackage,
+    metadata: &PackageDirectoryMetadata,
+    path: &Path,
+) -> Result<(), LuaPackageError> {
+    let metadata_target = metadata_installed_target(metadata);
+    if package.installed.is_empty() {
+        package.installed.push(metadata_target);
+        return Ok(());
+    }
+    if package.installed == [metadata_target] {
+        return Ok(());
+    }
+    Err(LuaPackageError::Domain {
+        path: path.to_path_buf(),
+        message: "field 'installed' must match package metadata identity".to_owned(),
+    })
+}
+
+fn metadata_installed_target(metadata: &PackageDirectoryMetadata) -> InstalledTarget {
+    match &metadata.package {
+        PackageTypeMetadata::AndroidApp { android } => InstalledTarget::AndroidPackage {
+            package_name: android.package_name.clone(),
+        },
+        PackageTypeMetadata::MagiskModule { magisk } => InstalledTarget::MagiskModule {
+            module_id: magisk.module_id.clone(),
+        },
+        PackageTypeMetadata::Generic { generic } => InstalledTarget::Generic {
+            id: generic.id.clone(),
+        },
+    }
+}
+
+fn metadata_permissions_for_script(
+    metadata: &PackageDirectoryMetadata,
+    file_name: &str,
+) -> PackagePermissions {
+    PackagePermissions {
+        free_network: metadata
+            .permissions_for(file_name)
+            .iter()
+            .any(|permission| *permission == PackageLuaPermission::AllowFreeNetwork),
+    }
+}
+
+fn package_from_version_json(
+    repository: RepositoryId,
+    id: PackageId,
+    name: String,
+    default_permissions: PackagePermissions,
+    path: &Path,
+    object: &Map<String, JsonValue>,
+) -> Result<ResolvedPackage, LuaPackageError> {
     let installed = parse_installed_targets(path, object.get("installed"))?;
-    let permissions = parse_permissions(path, object.get("permissions"))?;
+    let permissions = match object.get("permissions") {
+        Some(value) => parse_permissions(path, Some(value))?,
+        None => default_permissions,
+    };
     let source_priority =
         parse_string_array(path, "source_priority", object.get("source_priority"))?;
     let updates = parse_update_candidates(path, object.get("updates"))?;
 
     Ok(ResolvedPackage {
         id,
-        repository: repository.metadata.id.clone(),
+        repository,
         name,
         installed,
         permissions,
@@ -516,7 +727,8 @@ fn parse_string_array(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repository::RepositoryLayout;
+    use crate::repository::{RepositoryLayout, RepositoryPackageDirectoryLayout};
+    use crate::RepositoryId;
     use std::fs;
 
     fn fixture_repo() -> (tempfile::TempDir, RepositoryLayout, PathBuf) {
@@ -594,6 +806,199 @@ return package_def {
             package.updates[0].artifacts[0].file_name.as_deref(),
             Some("fdroid.apk")
         );
+    }
+
+    #[test]
+    fn evaluates_package_directory_version_script_from_metadata_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/com.example.autogen");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "Example Autogen",
+  "android": { "package_name": "com.example.autogen" },
+  "lua": { "9999.lua": { "permission": ["allow_free_network"] } }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+return package_version {
+  installed = {
+    { kind = "android_package", package_name = "com.example.autogen" },
+  },
+  updates = {
+    {
+      version = "1.2.0",
+      artifacts = {
+        { name = "app.apk", url = "https://example.invalid/app.apk", file_name = "app.apk" },
+      },
+    },
+  },
+}
+"#,
+        )
+        .unwrap();
+        let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+        let package = &layout.packages[0];
+        let metadata = layout.package_metadata(package).unwrap();
+        let script = layout.unambiguous_version_script(package).unwrap();
+
+        let package = evaluate_package_directory_script(
+            &RepositoryId::new("autogen").unwrap(),
+            package,
+            &metadata,
+            script,
+        )
+        .unwrap();
+
+        assert_eq!(package.id.to_string(), "android/app/com.example.autogen");
+        assert_eq!(package.repository.as_str(), "autogen");
+        assert_eq!(package.name, "Example Autogen");
+        assert!(package.permissions.free_network);
+        assert_eq!(package.installed.len(), 1);
+        assert_eq!(package.updates[0].version, "1.2.0");
+    }
+
+    #[test]
+    fn rejects_package_directory_installed_target_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/com.example.autogen");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "Example Autogen",
+  "android": { "package_name": "com.example.autogen" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+return package_version {
+  installed = {
+    { kind = "android_package", package_name = "com.other.app" },
+  },
+}
+"#,
+        )
+        .unwrap();
+        let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+        let package = &layout.packages[0];
+        let metadata = layout.package_metadata(package).unwrap();
+        let script = layout.unambiguous_version_script(package).unwrap();
+
+        let err = evaluate_package_directory_script(
+            &RepositoryId::new("autogen").unwrap(),
+            package,
+            &metadata,
+            script,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, LuaPackageError::Domain { .. }));
+        assert!(err.to_string().contains("metadata identity"));
+    }
+
+    #[test]
+    fn rejects_package_directory_version_script_id_field() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/com.example.autogen");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "Example Autogen",
+  "android": { "package_name": "com.example.autogen" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+return package_version { id = "android/app/com.example.autogen" }
+"#,
+        )
+        .unwrap();
+        let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+        let package = &layout.packages[0];
+        let metadata = layout.package_metadata(package).unwrap();
+        let script = layout.unambiguous_version_script(package).unwrap();
+
+        let err = evaluate_package_directory_script(
+            &RepositoryId::new("autogen").unwrap(),
+            package,
+            &metadata,
+            script,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, LuaPackageError::Schema { .. }));
+        assert!(err.to_string().contains("must not be declared"));
+    }
+
+    #[test]
+    fn package_directory_can_load_luaclass_modules() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/com.example.autogen");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::create_dir_all(temp.path().join("luaclass")).unwrap();
+        fs::write(
+            temp.path().join("luaclass/android.lua"),
+            r#"
+return {
+  package_version = function(input)
+    return {
+      installed = input.installed,
+      updates = input.updates,
+    }
+  end
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "Example Autogen",
+  "android": { "package_name": "com.example.autogen" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+local android = require("luaclass.android")
+return android.package_version {
+  installed = {
+    { kind = "android_package", package_name = "com.example.autogen" },
+  },
+}
+"#,
+        )
+        .unwrap();
+        let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+        let package = &layout.packages[0];
+        let metadata = layout.package_metadata(package).unwrap();
+        let script = layout.unambiguous_version_script(package).unwrap();
+
+        let package = evaluate_package_directory_script(
+            &RepositoryId::new("autogen").unwrap(),
+            package,
+            &metadata,
+            script,
+        )
+        .unwrap();
+
+        assert_eq!(package.name, "Example Autogen");
+        assert_eq!(package.installed.len(), 1);
     }
 
     #[test]
