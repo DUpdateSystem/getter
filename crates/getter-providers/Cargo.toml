@@ -5,3 +5,5 @@ edition.workspace = true
 
 [dependencies]
 getter-core = { path = "../getter-core", default-features = false }
+roxmltree = "0.21"
+thiserror = "1"

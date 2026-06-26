@@ -504,6 +504,7 @@ mod tests {
             Some("1.0.0".to_owned()),
             vec![UpdateCandidate {
                 version: "1.2.0".to_owned(),
+                version_code: None,
                 channel: None,
                 source: None,
                 artifacts: Vec::new(),
@@ -539,12 +540,15 @@ mod tests {
     fn candidate(version: &str) -> UpdateCandidate {
         UpdateCandidate {
             version: version.to_owned(),
+            version_code: None,
             channel: None,
             source: None,
             artifacts: vec![UpdateArtifact {
                 name: "APK".to_owned(),
                 url: format!("https://example.invalid/{version}.apk"),
                 file_name: Some("app.apk".to_owned()),
+                sha256: None,
+                size: None,
             }],
         }
     }

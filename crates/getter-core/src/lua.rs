@@ -690,6 +690,7 @@ fn parse_update_candidates(
             let artifacts = parse_update_artifacts(path, object.get("artifacts"))?;
             Ok(UpdateCandidate {
                 version: required_string(path, object, "version")?.to_owned(),
+                version_code: optional_i64(path, object, "version_code")?,
                 channel: optional_string(object, "channel"),
                 source: optional_string(object, "source"),
                 artifacts,
@@ -720,6 +721,8 @@ fn parse_update_artifacts(
                 name: required_string(path, object, "name")?.to_owned(),
                 url: required_string(path, object, "url")?.to_owned(),
                 file_name: optional_string(object, "file_name"),
+                sha256: optional_string(object, "sha256"),
+                size: optional_u64(path, object, "size")?,
             })
         })
         .collect()
@@ -730,6 +733,38 @@ fn optional_string(object: &Map<String, JsonValue>, field: &str) -> Option<Strin
         .get(field)
         .and_then(JsonValue::as_str)
         .map(str::to_owned)
+}
+
+fn optional_i64(
+    path: &Path,
+    object: &Map<String, JsonValue>,
+    field: &str,
+) -> Result<Option<i64>, LuaPackageError> {
+    object
+        .get(field)
+        .map(|value| {
+            value.as_i64().ok_or_else(|| LuaPackageError::Schema {
+                path: path.to_path_buf(),
+                message: format!("field '{field}' must be an integer"),
+            })
+        })
+        .transpose()
+}
+
+fn optional_u64(
+    path: &Path,
+    object: &Map<String, JsonValue>,
+    field: &str,
+) -> Result<Option<u64>, LuaPackageError> {
+    object
+        .get(field)
+        .map(|value| {
+            value.as_u64().ok_or_else(|| LuaPackageError::Schema {
+                path: path.to_path_buf(),
+                message: format!("field '{field}' must be an unsigned integer"),
+            })
+        })
+        .transpose()
 }
 
 fn parse_permissions(
@@ -822,6 +857,7 @@ return package_def {
   updates = {
     {
       version = "1.2.0",
+      version_code = 120,
       channel = "stable",
       source = "fixture",
       artifacts = {
@@ -829,6 +865,8 @@ return package_def {
           name = "app.apk",
           url = "https://example.invalid/app.apk",
           file_name = "fdroid.apk",
+          sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          size = 12345,
         },
       },
     },
@@ -852,12 +890,18 @@ return package_def {
         assert_eq!(package.source_priority, vec!["github", "fdroid"]);
         assert_eq!(package.updates.len(), 1);
         assert_eq!(package.updates[0].version, "1.2.0");
+        assert_eq!(package.updates[0].version_code, Some(120));
         assert_eq!(package.updates[0].channel.as_deref(), Some("stable"));
         assert_eq!(package.updates[0].source.as_deref(), Some("fixture"));
         assert_eq!(
             package.updates[0].artifacts[0].file_name.as_deref(),
             Some("fdroid.apk")
         );
+        assert_eq!(
+            package.updates[0].artifacts[0].sha256.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(package.updates[0].artifacts[0].size, Some(12345));
     }
 
     #[test]

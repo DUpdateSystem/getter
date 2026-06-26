@@ -795,12 +795,15 @@ return package_version {
                 .into_iter()
                 .map(|version| UpdateCandidate {
                     version: version.to_owned(),
+                    version_code: None,
                     channel: None,
                     source: None,
                     artifacts: vec![UpdateArtifact {
                         name: "app.apk".to_owned(),
                         url: "https://example.invalid/app.apk".to_owned(),
                         file_name: Some("app.apk".to_owned()),
+                        sha256: None,
+                        size: None,
                     }],
                 })
                 .collect(),

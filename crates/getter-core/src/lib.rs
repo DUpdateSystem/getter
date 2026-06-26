@@ -281,6 +281,8 @@ pub struct PackagePermissions {
 pub struct UpdateCandidate {
     pub version: String,
     #[serde(default)]
+    pub version_code: Option<i64>,
+    #[serde(default)]
     pub channel: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
@@ -294,6 +296,10 @@ pub struct UpdateArtifact {
     pub url: String,
     #[serde(default)]
     pub file_name: Option<String>,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 /// Candidate selected for update after package/user-state policy.
