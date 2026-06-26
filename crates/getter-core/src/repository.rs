@@ -13,6 +13,10 @@ pub const REPOSITORY_ROOT_DIR: &str = "repo";
 pub const RUNTIME_CONFIG_DIR: &str = "rc";
 pub const REPOSITORY_ROOT_METADATA_FILE: &str = "metadata.jsonc";
 pub const REPOSITORY_ROOT_METADATA_VERSION: u32 = 1;
+pub const REPOSITORY_SELF_METADATA_DIR: &str = ".metadata";
+pub const REPOSITORY_LUACLASS_DIR: &str = "luaclass";
+pub const PACKAGE_METADATA_FILE: &str = "metadata.jsonc";
+pub const LUA_SCRIPT_EXTENSION: &str = "lua";
 pub const LOCAL_REPOSITORY_ALIAS: &str = "local";
 pub const DEFAULT_GENERATED_REPOSITORY_ALIAS: &str = "autogen";
 
@@ -234,6 +238,36 @@ pub struct PackageFile {
     pub path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryPackageDirectoryLayout {
+    pub root: PathBuf,
+    pub packages: Vec<PackageDirectory>,
+    pub invalid_packages: Vec<InvalidPackageDirectory>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageDirectory {
+    pub id: PackageId,
+    pub path: PathBuf,
+    pub metadata_path: PathBuf,
+    pub version_scripts: Vec<PackageVersionScript>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageVersionScript {
+    pub version: String,
+    pub file_name: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidPackageDirectory {
+    pub id: Option<PackageId>,
+    pub path: PathBuf,
+    pub metadata_path: PathBuf,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepositoryPackageCacheKey {
     pub repository_id: RepositoryId,
@@ -322,6 +356,26 @@ pub enum RepositoryLoadError {
     },
 }
 
+impl RepositoryPackageDirectoryLayout {
+    pub fn load(root: impl AsRef<Path>) -> Result<Self, RepositoryLoadError> {
+        let root = root.as_ref().to_path_buf();
+        let mut packages = Vec::new();
+        let mut invalid_packages = Vec::new();
+        collect_package_directories(&root, &root, &mut packages, &mut invalid_packages)?;
+        packages.sort_by_key(|package| package.id.to_string());
+        invalid_packages.sort_by_key(|package| package.path.clone());
+        Ok(Self {
+            root,
+            packages,
+            invalid_packages,
+        })
+    }
+
+    pub fn package(&self, id: &PackageId) -> Option<&PackageDirectory> {
+        self.packages.iter().find(|package| &package.id == id)
+    }
+}
+
 impl RepositoryLayout {
     pub fn load(root: impl AsRef<Path>) -> Result<Self, RepositoryLoadError> {
         let root = root.as_ref().to_path_buf();
@@ -403,30 +457,186 @@ fn collect_package_files(
     current: &Path,
     out: &mut Vec<PackageFile>,
 ) -> Result<(), RepositoryLoadError> {
-    for entry in fs::read_dir(current).map_err(|source| RepositoryLoadError::ReadPackagesDir {
-        path: current.to_path_buf(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| RepositoryLoadError::ReadPackagesDir {
-            path: current.to_path_buf(),
-            source,
-        })?;
+    for entry in read_dir_entries(current)? {
         let path = entry.path();
-        let file_type =
-            entry
-                .file_type()
-                .map_err(|source| RepositoryLoadError::ReadPackagesDir {
-                    path: current.to_path_buf(),
-                    source,
-                })?;
+        let file_type = entry_file_type(&entry, current)?;
         if file_type.is_dir() {
             collect_package_files(packages_root, &path, out)?;
-        } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "lua") {
+        } else if file_type.is_file()
+            && path
+                .extension()
+                .is_some_and(|ext| ext == LUA_SCRIPT_EXTENSION)
+        {
             let id = package_id_from_path(packages_root, &path)?;
             out.push(PackageFile { id, path });
         }
     }
     Ok(())
+}
+
+fn collect_package_directories(
+    repository_root: &Path,
+    current: &Path,
+    packages: &mut Vec<PackageDirectory>,
+    invalid_packages: &mut Vec<InvalidPackageDirectory>,
+) -> Result<(), RepositoryLoadError> {
+    if current == repository_root.join(REPOSITORY_SELF_METADATA_DIR)
+        || current == repository_root.join(REPOSITORY_LUACLASS_DIR)
+    {
+        return Ok(());
+    }
+
+    let metadata_path = current.join(PACKAGE_METADATA_FILE);
+    if metadata_path.is_file() {
+        collect_package_boundary(
+            repository_root,
+            current,
+            &metadata_path,
+            packages,
+            invalid_packages,
+        )?;
+        return Ok(());
+    }
+
+    for entry in read_dir_entries(current)? {
+        let file_type = entry_file_type(&entry, current)?;
+        if file_type.is_dir() {
+            collect_package_directories(
+                repository_root,
+                &entry.path(),
+                packages,
+                invalid_packages,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_package_boundary(
+    repository_root: &Path,
+    package_dir: &Path,
+    metadata_path: &Path,
+    packages: &mut Vec<PackageDirectory>,
+    invalid_packages: &mut Vec<InvalidPackageDirectory>,
+) -> Result<(), RepositoryLoadError> {
+    let id = package_id_from_package_dir(repository_root, package_dir);
+    if let Err(error) = parse_package_metadata(metadata_path) {
+        invalid_packages.push(InvalidPackageDirectory {
+            id: id.ok(),
+            path: package_dir.to_path_buf(),
+            metadata_path: metadata_path.to_path_buf(),
+            reason: error,
+        });
+        return Ok(());
+    }
+    let id = match id {
+        Ok(id) => id,
+        Err(error) => {
+            invalid_packages.push(InvalidPackageDirectory {
+                id: None,
+                path: package_dir.to_path_buf(),
+                metadata_path: metadata_path.to_path_buf(),
+                reason: error.to_string(),
+            });
+            return Ok(());
+        }
+    };
+    packages.push(PackageDirectory {
+        id,
+        path: package_dir.to_path_buf(),
+        metadata_path: metadata_path.to_path_buf(),
+        version_scripts: discover_version_scripts(package_dir)?,
+    });
+    Ok(())
+}
+
+fn parse_package_metadata(metadata_path: &Path) -> Result<(), String> {
+    let bytes = fs::read(metadata_path)
+        .map_err(|source| format!("failed to read package metadata: {source}"))?;
+    let value = serde_json::from_reader::<_, serde_json::Value>(json_comments::StripComments::new(
+        bytes.as_slice(),
+    ))
+    .map_err(|source| format!("failed to parse package metadata: {source}"))?;
+    if value.is_object() {
+        Ok(())
+    } else {
+        Err("package metadata must be a JSON object".to_owned())
+    }
+}
+
+fn discover_version_scripts(
+    package_dir: &Path,
+) -> Result<Vec<PackageVersionScript>, RepositoryLoadError> {
+    let mut scripts = Vec::new();
+    for entry in read_dir_entries(package_dir)? {
+        let path = entry.path();
+        let file_type = entry_file_type(&entry, package_dir)?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if file_name.starts_with('.') {
+            continue;
+        }
+        if path
+            .extension()
+            .is_none_or(|extension| extension != LUA_SCRIPT_EXTENSION)
+        {
+            continue;
+        }
+        let Some(version) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        scripts.push(PackageVersionScript {
+            version: version.to_owned(),
+            file_name: file_name.to_owned(),
+            path,
+        });
+    }
+    scripts.sort_by_key(|script| script.file_name.clone());
+    Ok(scripts)
+}
+
+fn read_dir_entries(path: &Path) -> Result<Vec<fs::DirEntry>, RepositoryLoadError> {
+    fs::read_dir(path)
+        .map_err(|source| RepositoryLoadError::ReadPackagesDir {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| RepositoryLoadError::ReadPackagesDir {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+fn entry_file_type(
+    entry: &fs::DirEntry,
+    parent: &Path,
+) -> Result<fs::FileType, RepositoryLoadError> {
+    entry
+        .file_type()
+        .map_err(|source| RepositoryLoadError::ReadPackagesDir {
+            path: parent.to_path_buf(),
+            source,
+        })
+}
+
+pub fn package_id_from_package_dir(
+    repository_root: impl AsRef<Path>,
+    package_dir: impl AsRef<Path>,
+) -> Result<PackageId, RepositoryLoadError> {
+    let repository_root = repository_root.as_ref();
+    let package_dir = package_dir.as_ref();
+    let relative = package_dir.strip_prefix(repository_root).map_err(|_| {
+        RepositoryLoadError::InvalidPackagePath {
+            path: package_dir.to_path_buf(),
+            reason: format!("path is not under {}", repository_root.display()),
+        }
+    })?;
+    package_id_from_relative_path(package_dir, relative)
 }
 
 pub fn package_id_from_path(
@@ -447,8 +657,14 @@ pub fn package_id_from_path(
             reason: "package file must have .lua extension".to_owned(),
         });
     }
-    let without_extension = relative.with_extension("");
-    let mut parts = without_extension.components();
+    package_id_from_relative_path(path, &relative.with_extension(""))
+}
+
+fn package_id_from_relative_path(
+    path: &Path,
+    relative: &Path,
+) -> Result<PackageId, RepositoryLoadError> {
+    let mut parts = relative.components();
     let kind = parts
         .next()
         .ok_or_else(|| RepositoryLoadError::InvalidPackagePath {
@@ -672,6 +888,156 @@ mod tests {
         let id =
             package_id_from_path(&root, "repo/packages/android/org.fdroid.fdroid.lua").unwrap();
         assert_eq!(id.to_string(), "android/org.fdroid.fdroid");
+    }
+
+    #[test]
+    fn derives_package_id_from_package_directory() {
+        let root = PathBuf::from("repo/official");
+        let id = package_id_from_package_dir(&root, "repo/official/android/f-droid/magisk/hello")
+            .unwrap();
+        assert_eq!(id.to_string(), "android/f-droid/magisk/hello");
+    }
+
+    #[test]
+    fn discovers_package_directories_and_direct_child_version_scripts() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let package_dir = root.join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(package_dir.join("nested")).unwrap();
+        fs::write(
+            package_dir.join(PACKAGE_METADATA_FILE),
+            r#"{ "type": "android:app" }"#,
+        )
+        .unwrap();
+        fs::write(package_dir.join("1.2.3.lua"), "return {}").unwrap();
+        fs::write(package_dir.join("9999.lua"), "return {}").unwrap();
+        fs::write(package_dir.join(".disabled.lua"), "return {}").unwrap();
+        fs::write(package_dir.join("nested/2.0.lua"), "return {}").unwrap();
+
+        let layout = RepositoryPackageDirectoryLayout::load(root).unwrap();
+
+        assert_eq!(layout.invalid_packages, Vec::new());
+        assert_eq!(layout.packages.len(), 1);
+        let package = &layout.packages[0];
+        assert_eq!(package.id.to_string(), "android/app/org.fdroid.fdroid");
+        assert_eq!(package.path, package_dir);
+        assert_eq!(
+            package.metadata_path,
+            package.path.join(PACKAGE_METADATA_FILE)
+        );
+        assert_eq!(
+            package
+                .version_scripts
+                .iter()
+                .map(|script| (script.version.as_str(), script.file_name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("1.2.3", "1.2.3.lua"), ("9999", "9999.lua")]
+        );
+    }
+
+    #[test]
+    fn package_metadata_boundary_stops_nested_discovery_even_when_invalid() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let package_dir = root.join("android/app/broken");
+        fs::create_dir_all(package_dir.join("nested/android/app/hidden")).unwrap();
+        fs::write(package_dir.join(PACKAGE_METADATA_FILE), "{not-json").unwrap();
+        fs::write(
+            package_dir.join("nested/android/app/hidden/metadata.jsonc"),
+            r#"{ "type": "android:app" }"#,
+        )
+        .unwrap();
+
+        let layout = RepositoryPackageDirectoryLayout::load(root).unwrap();
+
+        assert!(layout.packages.is_empty());
+        assert_eq!(layout.invalid_packages.len(), 1);
+        assert_eq!(
+            layout.invalid_packages[0]
+                .id
+                .as_ref()
+                .map(ToString::to_string),
+            Some("android/app/broken".to_owned())
+        );
+    }
+
+    #[test]
+    fn repository_reserved_roots_are_not_package_discovery_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join(".metadata/android/app/hidden")).unwrap();
+        fs::write(
+            root.join(".metadata/android/app/hidden/metadata.jsonc"),
+            r#"{ "type": "android:app" }"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("luaclass/android/app/hidden")).unwrap();
+        fs::write(
+            root.join("luaclass/android/app/hidden/metadata.jsonc"),
+            r#"{ "type": "android:app" }"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("android/app/visible")).unwrap();
+        fs::write(
+            root.join("android/app/visible/metadata.jsonc"),
+            r#"{ "type": "android:app" }"#,
+        )
+        .unwrap();
+
+        let layout = RepositoryPackageDirectoryLayout::load(root).unwrap();
+
+        assert_eq!(layout.packages.len(), 1);
+        assert_eq!(layout.packages[0].id.to_string(), "android/app/visible");
+    }
+
+    #[test]
+    fn autogen_record_alone_does_not_create_package_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("android/app/generated")).unwrap();
+        fs::write(root.join("android/app/generated/.autogen.jsonc"), "{}").unwrap();
+
+        let layout = RepositoryPackageDirectoryLayout::load(root).unwrap();
+
+        assert!(layout.packages.is_empty());
+        assert!(layout.invalid_packages.is_empty());
+    }
+
+    #[test]
+    fn package_metadata_must_be_an_object() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("android/app/not-object")).unwrap();
+        fs::write(root.join("android/app/not-object/metadata.jsonc"), "[]").unwrap();
+
+        let layout = RepositoryPackageDirectoryLayout::load(root).unwrap();
+
+        assert!(layout.packages.is_empty());
+        assert_eq!(layout.invalid_packages.len(), 1);
+        assert_eq!(
+            layout.invalid_packages[0].reason,
+            "package metadata must be a JSON object"
+        );
+    }
+
+    #[test]
+    fn invalid_package_path_is_reported_as_invalid_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("invalidkind/app/example")).unwrap();
+        fs::write(
+            root.join("invalidkind/app/example/metadata.jsonc"),
+            r#"{ "type": "android:app" }"#,
+        )
+        .unwrap();
+
+        let layout = RepositoryPackageDirectoryLayout::load(root).unwrap();
+
+        assert!(layout.packages.is_empty());
+        assert_eq!(layout.invalid_packages.len(), 1);
+        assert!(layout.invalid_packages[0]
+            .reason
+            .contains("unsupported package kind"));
     }
 
     #[test]

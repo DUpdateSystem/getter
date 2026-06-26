@@ -4,7 +4,10 @@
 //! describe what getter observed; Flutter should only render them.
 
 use crate::lua::{evaluate_package_file, LuaPackageError};
-use crate::repository::{package_cache_key, RepositoryLayout, RepositoryLoadError};
+use crate::repository::{
+    package_cache_key, InvalidPackageDirectory, RepositoryLayout, RepositoryLoadError,
+    RepositoryPackageDirectoryLayout,
+};
 use crate::PackageId;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -62,6 +65,14 @@ impl RepositoryValidationReport {
 /// not perform provider/network checks.
 pub fn validate_repository_path(path: impl AsRef<Path>) -> RepositoryValidationReport {
     let root = path.as_ref();
+    if root.join("repo.toml").is_file() {
+        validate_legacy_repository_path(root)
+    } else {
+        validate_package_directory_repository_path(root)
+    }
+}
+
+fn validate_legacy_repository_path(root: &Path) -> RepositoryValidationReport {
     let layout = match RepositoryLayout::load(root) {
         Ok(layout) => layout,
         Err(error) => {
@@ -83,6 +94,21 @@ pub fn validate_repository_path(path: impl AsRef<Path>) -> RepositoryValidationR
     }
 
     RepositoryValidationReport::new(package_count, diagnostics)
+}
+
+fn validate_package_directory_repository_path(root: &Path) -> RepositoryValidationReport {
+    let layout = match RepositoryPackageDirectoryLayout::load(root) {
+        Ok(layout) => layout,
+        Err(error) => {
+            return RepositoryValidationReport::new(0, vec![repository_load_diagnostic(error)])
+        }
+    };
+    let diagnostics = layout
+        .invalid_packages
+        .iter()
+        .map(invalid_package_directory_diagnostic)
+        .collect();
+    RepositoryValidationReport::new(layout.packages.len(), diagnostics)
 }
 
 fn repository_load_diagnostic(error: RepositoryLoadError) -> PackageValidationDiagnostic {
@@ -161,6 +187,18 @@ fn repository_load_diagnostic(error: RepositoryLoadError) -> PackageValidationDi
         ),
     };
     diagnostic(code, message, path, None, None)
+}
+
+fn invalid_package_directory_diagnostic(
+    package: &InvalidPackageDirectory,
+) -> PackageValidationDiagnostic {
+    diagnostic(
+        "package.metadata",
+        package.reason.clone(),
+        package.metadata_path.clone(),
+        None,
+        package.id.clone(),
+    )
 }
 
 fn lua_diagnostic(
@@ -273,6 +311,52 @@ api_version = "getter.repo.v1"
         assert_eq!(report.package_count, 1);
         assert!(report.diagnostics.is_empty());
         assert!(!report.network_required);
+    }
+
+    #[test]
+    fn package_directory_repository_has_no_diagnostics() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{ "type": "android:app", "android": { "package_name": "org.fdroid.fdroid" } }"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("1.20.0.lua"),
+            "#!/bin/upa-lua v1\nreturn {}",
+        )
+        .unwrap();
+
+        let report = validate_repository_path(temp.path());
+
+        assert!(report.valid, "{report:?}");
+        assert_eq!(report.package_count, 1);
+        assert!(report.diagnostics.is_empty());
+        assert!(!report.network_required);
+    }
+
+    #[test]
+    fn package_directory_metadata_error_is_stable_package_diagnostic() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(package_dir.join("metadata.jsonc"), "[]").unwrap();
+
+        let report = validate_repository_path(temp.path());
+
+        assert!(!report.valid);
+        assert_eq!(report.package_count, 0);
+        assert_eq!(report.diagnostics[0].code, "package.metadata");
+        assert_eq!(
+            report.diagnostics[0]
+                .package_id
+                .as_ref()
+                .unwrap()
+                .to_string(),
+            "android/app/org.fdroid.fdroid"
+        );
     }
 
     #[test]

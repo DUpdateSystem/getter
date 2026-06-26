@@ -347,6 +347,28 @@ fn fixture_lua_repository(world: &mut CliWorld, repo_id: String, package_id: Str
     create_fixture_lua_repository(world, repo_id, package_id, "F-Droid".to_owned());
 }
 
+#[given(expr = "a package-directory repository {string} with package {string}")]
+fn package_directory_repository(world: &mut CliWorld, repo_id: String, package_id: String) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let repo_path = temp.path().join(format!("repo-{repo_id}"));
+    let package_dir = repo_path.join(package_id.replace('/', std::path::MAIN_SEPARATOR_STR));
+    fs::create_dir_all(&package_dir).expect("create package dir");
+    fs::write(
+        package_dir.join("metadata.jsonc"),
+        r#"{ "type": "android:app", "android": { "package_name": "org.fdroid.fdroid" } }"#,
+    )
+    .expect("write package metadata");
+    fs::write(
+        package_dir.join("1.20.0.lua"),
+        "#!/bin/upa-lua v1\nreturn {}",
+    )
+    .expect("write version Lua");
+
+    world.fixture_repo_id = Some(repo_id);
+    world.fixture_repo_path = Some(repo_path);
+    world.fixture_package_id = Some(package_id);
+}
+
 #[given(expr = "a fixture Lua repository {string} with package {string} named {string}")]
 fn fixture_lua_repository_named(
     world: &mut CliWorld,
