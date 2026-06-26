@@ -10,6 +10,7 @@ use getter_core::task::{
 };
 use getter_core::{PackageId, RepositoryId, RepositoryPriority, UpdateAction};
 use rusqlite::{params, Connection, OptionalExtension, Params, Transaction};
+use serde_json::Value;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -884,6 +885,161 @@ CREATE TABLE IF NOT EXISTS provider_responses (
         )?;
         Ok(())
     }
+
+    pub fn upsert_provider_response(
+        &self,
+        response: &ProviderResponseUpsert,
+    ) -> Result<StoredProviderResponse, StorageError> {
+        let response_json = serde_json::to_string(&response.response_json)?;
+        self.conn.execute(
+            r#"
+INSERT INTO provider_responses(cache_key, provider, response_json)
+VALUES (?1, ?2, ?3)
+ON CONFLICT(cache_key) DO UPDATE SET
+    provider = excluded.provider,
+    response_json = excluded.response_json,
+    fetched_at_unix = unixepoch()
+"#,
+            params![response.cache_key, response.provider, response_json],
+        )?;
+        self.provider_response(&response.cache_key)?.ok_or_else(|| {
+            StorageError::Invariant(format!(
+                "provider response '{}' was not readable after upsert",
+                response.cache_key
+            ))
+        })
+    }
+
+    pub fn provider_response(
+        &self,
+        cache_key: &str,
+    ) -> Result<Option<StoredProviderResponse>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            r#"
+SELECT cache_key, provider, response_json, fetched_at_unix
+FROM provider_responses
+WHERE cache_key = ?1
+"#,
+        )?;
+        let row = stmt
+            .query_row(params![cache_key], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .optional()?;
+        row.map(
+            |(cache_key, provider, response_json, fetched_at_unix)| -> Result<_, StorageError> {
+                Ok(StoredProviderResponse {
+                    cache_key,
+                    provider,
+                    response_json: serde_json::from_str(&response_json)?,
+                    fetched_at_unix,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    pub fn upsert_evaluated_package(
+        &self,
+        package: &EvaluatedPackageUpsert,
+    ) -> Result<StoredEvaluatedPackage, StorageError> {
+        let evaluated_json = serde_json::to_string(&package.evaluated_json)?;
+        self.conn.execute(
+            r#"
+INSERT INTO evaluated_packages(
+    cache_key,
+    repository_id,
+    package_id,
+    package_file_hash,
+    schema_version,
+    evaluated_json
+)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+ON CONFLICT(cache_key) DO UPDATE SET
+    repository_id = excluded.repository_id,
+    package_id = excluded.package_id,
+    package_file_hash = excluded.package_file_hash,
+    schema_version = excluded.schema_version,
+    evaluated_json = excluded.evaluated_json,
+    evaluated_at_unix = unixepoch()
+"#,
+            params![
+                package.cache_key,
+                package.repository_id.as_str(),
+                package.package_id.to_string(),
+                package.package_file_hash,
+                package.schema_version,
+                evaluated_json,
+            ],
+        )?;
+        self.evaluated_package(&package.cache_key)?.ok_or_else(|| {
+            StorageError::Invariant(format!(
+                "evaluated package '{}' was not readable after upsert",
+                package.cache_key
+            ))
+        })
+    }
+
+    pub fn evaluated_package(
+        &self,
+        cache_key: &str,
+    ) -> Result<Option<StoredEvaluatedPackage>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            r#"
+SELECT
+    cache_key,
+    repository_id,
+    package_id,
+    package_file_hash,
+    schema_version,
+    evaluated_json,
+    evaluated_at_unix
+FROM evaluated_packages
+WHERE cache_key = ?1
+"#,
+        )?;
+        let row = stmt
+            .query_row(params![cache_key], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })
+            .optional()?;
+        row.map(
+            |(
+                cache_key,
+                repository_id,
+                package_id,
+                package_file_hash,
+                schema_version,
+                evaluated_json,
+                evaluated_at_unix,
+            )|
+             -> Result<_, StorageError> {
+                Ok(StoredEvaluatedPackage {
+                    cache_key,
+                    repository_id: RepositoryId::new(repository_id)?,
+                    package_id: package_id.parse()?,
+                    package_file_hash,
+                    schema_version,
+                    evaluated_json: serde_json::from_str(&evaluated_json)?,
+                    evaluated_at_unix,
+                })
+            },
+        )
+        .transpose()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -894,6 +1050,42 @@ pub struct StoredRepository {
     pub api_version: String,
     pub path: Option<String>,
     pub revision: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderResponseUpsert {
+    pub cache_key: String,
+    pub provider: String,
+    pub response_json: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredProviderResponse {
+    pub cache_key: String,
+    pub provider: String,
+    pub response_json: Value,
+    pub fetched_at_unix: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvaluatedPackageUpsert {
+    pub cache_key: String,
+    pub repository_id: RepositoryId,
+    pub package_id: PackageId,
+    pub package_file_hash: String,
+    pub schema_version: String,
+    pub evaluated_json: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredEvaluatedPackage {
+    pub cache_key: String,
+    pub repository_id: RepositoryId,
+    pub package_id: PackageId,
+    pub package_file_hash: String,
+    pub schema_version: String,
+    pub evaluated_json: Value,
+    pub evaluated_at_unix: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1497,5 +1689,125 @@ VALUES ('android/org.fdroid.fdroid', '1.2.3');
     #[test]
     fn cache_db_migrates_schema() {
         let _db = CacheDb::open_in_memory().unwrap();
+    }
+
+    #[test]
+    fn cache_db_round_trips_provider_response_cache_entries() {
+        let db = CacheDb::open_in_memory().unwrap();
+
+        let stored = db
+            .upsert_provider_response(&ProviderResponseUpsert {
+                cache_key: "fdroid:official:index:v1".to_owned(),
+                provider: "fdroid".to_owned(),
+                response_json: serde_json::json!({
+                    "endpoint": "official",
+                    "packages": ["org.fdroid.fdroid"]
+                }),
+            })
+            .unwrap();
+
+        assert_eq!(stored.cache_key, "fdroid:official:index:v1");
+        assert_eq!(stored.provider, "fdroid");
+        assert_eq!(stored.response_json["endpoint"], "official");
+        assert_eq!(
+            db.provider_response("fdroid:official:index:v1")
+                .unwrap()
+                .unwrap(),
+            stored
+        );
+    }
+
+    #[test]
+    fn cache_db_replaces_provider_response_for_same_cache_key() {
+        let db = CacheDb::open_in_memory().unwrap();
+        db.upsert_provider_response(&ProviderResponseUpsert {
+            cache_key: "github:f-droid/fdroidclient:releases".to_owned(),
+            provider: "github".to_owned(),
+            response_json: serde_json::json!({ "etag": "old" }),
+        })
+        .unwrap();
+
+        let stored = db
+            .upsert_provider_response(&ProviderResponseUpsert {
+                cache_key: "github:f-droid/fdroidclient:releases".to_owned(),
+                provider: "github".to_owned(),
+                response_json: serde_json::json!({ "etag": "new" }),
+            })
+            .unwrap();
+
+        assert_eq!(stored.response_json["etag"], "new");
+        assert_eq!(
+            db.provider_response("github:f-droid/fdroidclient:releases")
+                .unwrap()
+                .unwrap()
+                .response_json["etag"],
+            "new"
+        );
+    }
+
+    #[test]
+    fn cache_db_round_trips_evaluated_package_cache_entries() {
+        let db = CacheDb::open_in_memory().unwrap();
+        let stored = db
+            .upsert_evaluated_package(&EvaluatedPackageUpsert {
+                cache_key: "official:android/app/org.fdroid.fdroid:sha512:123".to_owned(),
+                repository_id: RepositoryId::new("official").unwrap(),
+                package_id: "android/app/org.fdroid.fdroid".parse().unwrap(),
+                package_file_hash: "sha512:123".to_owned(),
+                schema_version: "getter.package.v1".to_owned(),
+                evaluated_json: serde_json::json!({
+                    "name": "F-Droid",
+                    "updates": []
+                }),
+            })
+            .unwrap();
+
+        assert_eq!(stored.repository_id.as_str(), "official");
+        assert_eq!(
+            stored.package_id.to_string(),
+            "android/app/org.fdroid.fdroid"
+        );
+        assert_eq!(stored.evaluated_json["name"], "F-Droid");
+        assert_eq!(
+            db.evaluated_package("official:android/app/org.fdroid.fdroid:sha512:123")
+                .unwrap()
+                .unwrap(),
+            stored
+        );
+    }
+
+    #[test]
+    fn cache_db_replaces_evaluated_package_for_same_cache_key() {
+        let db = CacheDb::open_in_memory().unwrap();
+        let cache_key = "official:android/app/org.fdroid.fdroid:sha512:123";
+        db.upsert_evaluated_package(&EvaluatedPackageUpsert {
+            cache_key: cache_key.to_owned(),
+            repository_id: RepositoryId::new("official").unwrap(),
+            package_id: "android/app/org.fdroid.fdroid".parse().unwrap(),
+            package_file_hash: "sha512:old".to_owned(),
+            schema_version: "getter.package.v1".to_owned(),
+            evaluated_json: serde_json::json!({ "name": "Old" }),
+        })
+        .unwrap();
+
+        let stored = db
+            .upsert_evaluated_package(&EvaluatedPackageUpsert {
+                cache_key: cache_key.to_owned(),
+                repository_id: RepositoryId::new("official").unwrap(),
+                package_id: "android/app/org.fdroid.fdroid".parse().unwrap(),
+                package_file_hash: "sha512:new".to_owned(),
+                schema_version: "getter.package.v1".to_owned(),
+                evaluated_json: serde_json::json!({ "name": "New" }),
+            })
+            .unwrap();
+
+        assert_eq!(stored.package_file_hash, "sha512:new");
+        assert_eq!(
+            db.evaluated_package(cache_key)
+                .unwrap()
+                .unwrap()
+                .evaluated_json["name"],
+            "New"
+        );
     }
 }

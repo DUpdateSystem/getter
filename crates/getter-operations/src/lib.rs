@@ -7,5 +7,6 @@
 
 pub mod autogen;
 pub mod legacy_room;
+pub mod provider_cache;
 pub mod read_model;
 pub mod runtime;
