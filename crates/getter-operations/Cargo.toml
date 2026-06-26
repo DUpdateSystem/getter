@@ -8,6 +8,7 @@ default = []
 lua = ["getter-core/lua"]
 
 [dependencies]
+json_comments = "0.2"
 getter-core = { path = "../getter-core", default-features = false }
 getter-providers = { path = "../getter-providers" }
 getter-storage = { path = "../getter-storage" }

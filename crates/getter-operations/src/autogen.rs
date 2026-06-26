@@ -2,27 +2,27 @@
 //!
 //! The CLI and native bridge both call this module so there is one implementation
 //! of installed-autogen preview/apply semantics. Platform layers provide installed
-//! inventory facts; this module decides generated package ids, repository
-//! coverage, file writes, manifest updates, preservation behavior, and tracked
-//! state updates.
+//! inventory facts; this module decides generated package directories,
+//! repository coverage, package-local `.autogen.jsonc` ownership, file writes,
+//! cleanup, and tracked state updates.
 
 use getter_core::autogen::{
-    content_hash, local_repo_toml, plan_installed_autogen, AutogenManifest, AutogenManifestEntry,
-    AutogenPlan, AutogenSkipReason, InstalledInventory, DEFAULT_AUTOGEN_REPOSITORY_ID,
-    DEFAULT_AUTOGEN_REPOSITORY_NAME, LOCAL_REPOSITORY_ID, LOCAL_REPOSITORY_NAME,
+    content_hash, content_hash_bytes, plan_installed_autogen, record_file_key,
+    render_autogen_record, AutogenCandidate, AutogenPlan, AutogenRecord, AutogenSkipReason,
+    GeneratedPackageFile, InstalledInventory, AUTOGEN_RECORD_FILE, AUTOGEN_RECORD_VERSION,
+    DEFAULT_AUTOGEN_REPOSITORY_ID, DEFAULT_AUTOGEN_REPOSITORY_NAME, INSTALLED_AUTOGEN_GENERATOR,
 };
 use getter_core::repository::{
     generated_repository_target, GeneratedRepositoryTarget, GetterDataDirLayout, RepositoryLayout,
-    RepositoryLoadError, RepositoryMetadata, RepositoryRootConfig, REPO_API_VERSION_V1,
+    RepositoryLoadError, RepositoryMetadata, RepositoryPackageDirectoryLayout,
+    RepositoryRootConfig, REPO_API_VERSION_V1,
 };
 use getter_core::{PackageId, RepositoryId, RepositoryPriority};
-use getter_storage::{MainDb, StorageError, StoredRepository};
+use getter_storage::{MainDb, StorageError};
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-
-pub const AUTOGEN_MANIFEST_FILE: &str = "autogen-manifest.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutogenAcceptance {
@@ -79,7 +79,11 @@ pub fn installed_preview_json(
     plan: &AutogenPlan,
 ) -> AutogenOperationResult<Value> {
     let (target_alias, target_path, _target_priority) = generated_repository_config(data_dir)?;
-    let candidates: Vec<Value> = plan.candidates.iter().map(autogen_candidate_json).collect();
+    let candidates: Vec<Value> = plan
+        .candidates
+        .iter()
+        .map(autogen_candidate_json)
+        .collect::<AutogenOperationResult<_>>()?;
     let skipped: Vec<Value> = plan.skipped.iter().map(autogen_skip_json).collect();
     Ok(json!({
         "operation": "installed.preview",
@@ -103,17 +107,14 @@ pub fn cleanup_preview_json(
     inventory: &InstalledInventory,
 ) -> AutogenOperationResult<Value> {
     let (target_alias, repo_path, _target_priority) = generated_repository_config(data_dir)?;
-    let Some(manifest) = read_autogen_manifest(&repo_path)? else {
-        return Ok(json!({
-            "operation": "cleanup.preview",
-            "target_repo_id": target_alias.as_str(),
-            "target_repo_path": repo_path,
-            "summary": { "candidate_count": 0, "skipped_count": 0, "write_count": 0, "delete_count": 0 },
-            "candidates": [],
-            "skipped": [],
-            "diagnostics": [],
-        }));
-    };
+    if !repo_path.is_dir() {
+        return Ok(cleanup_preview_response(
+            target_alias,
+            repo_path,
+            Vec::new(),
+            Vec::new(),
+        ));
+    }
     let plan = build_installed_autogen_plan(data_dir, db, inventory)?;
     let installed_ids: BTreeSet<String> = plan
         .candidates
@@ -121,14 +122,32 @@ pub fn cleanup_preview_json(
         .map(|candidate| candidate.package_id.to_string())
         .chain(plan.skipped.iter().map(|skip| skip.package_id.to_string()))
         .collect();
+
+    let layout = RepositoryPackageDirectoryLayout::load(&repo_path)?;
     let mut candidates = Vec::new();
-    for entry in manifest.packages {
-        if !installed_ids.contains(&entry.package_id.to_string()) {
+    let mut diagnostics = Vec::new();
+    for package in layout.packages {
+        let relative_path = relative_package_path(&repo_path, &package.path)?;
+        let ownership = match read_owned_record(&package.path, &package.id, &relative_path) {
+            Ok(ownership) => ownership,
+            Err(error) => {
+                diagnostics.push(autogen_diagnostic(
+                    "autogen.ownership_conflict",
+                    format!(
+                        "generated package '{}' has invalid ownership: {error}",
+                        package.id
+                    ),
+                    Some(package.id.to_string()),
+                ));
+                continue;
+            }
+        };
+        if !installed_ids.contains(&package.id.to_string()) {
             candidates.push(json!({
-                "package_id": entry.package_id.to_string(),
+                "package_id": package.id.to_string(),
                 "action": "delete",
-                "output_relative_path": entry.relative_path,
-                "content_hash": entry.content_hash,
+                "output_relative_path": relative_path,
+                "content_hash": ownership.content_hash,
                 "reason": "not_in_installed_inventory",
             }));
         }
@@ -140,20 +159,12 @@ pub fn cleanup_preview_json(
             .unwrap_or_default()
             .to_owned()
     });
-    Ok(json!({
-        "operation": "cleanup.preview",
-        "target_repo_id": target_alias.as_str(),
-        "target_repo_path": repo_path,
-        "summary": {
-            "candidate_count": candidates.len(),
-            "skipped_count": 0,
-            "write_count": 0,
-            "delete_count": candidates.len(),
-        },
-        "candidates": candidates,
-        "skipped": [],
-        "diagnostics": [],
-    }))
+    Ok(cleanup_preview_response(
+        target_alias,
+        repo_path,
+        candidates,
+        diagnostics,
+    ))
 }
 
 pub fn apply_installed_preview(
@@ -171,74 +182,25 @@ pub fn apply_installed_preview(
     }
     ensure_generated_repository(&repo_path, db, &target_alias, target_priority)?;
     let accepted = accepted_preview_candidates(preview, acceptance)?;
-    let mut manifest =
-        read_autogen_manifest(&repo_path)?.unwrap_or_else(|| empty_autogen_manifest(&target_alias));
     let mut applied = Vec::new();
-    let mut preserved = Vec::new();
 
     for candidate in accepted {
         let package_id = preview_package_id(candidate)?;
         let relative_path = preview_relative_path(candidate)?;
-        let content = candidate
-            .get("content")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                AutogenOperationError::Autogen("preview candidate missing content".to_owned())
-            })?;
-        let expected_hash = candidate
-            .get("content_hash")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                AutogenOperationError::Autogen("preview candidate missing content_hash".to_owned())
-            })?;
-        if content_hash(content) != expected_hash {
-            return Err(AutogenOperationError::Autogen(format!(
-                "preview content hash mismatch for {package_id}"
-            )));
-        }
-        let target = safe_join(&repo_path, &relative_path)?;
-        if target.exists() {
-            let current = fs::read_to_string(&target).map_err(|source| {
+        let payload = preview_candidate_payload(candidate, &package_id, &relative_path)?;
+        let target_dir = safe_join(&repo_path, &relative_path)?;
+        if target_dir.exists() {
+            read_owned_record(&target_dir, &package_id, &relative_path)?;
+            clear_directory_contents(&target_dir)?;
+        } else {
+            fs::create_dir_all(&target_dir).map_err(|source| {
                 AutogenOperationError::Autogen(format!(
-                    "failed to read existing autogen file '{}': {source}",
-                    target.display()
-                ))
-            })?;
-            let current_hash = content_hash(&current);
-            let known_hash = manifest
-                .package(&package_id)
-                .map(|entry| entry.content_hash.as_str());
-            if known_hash != Some(current_hash.as_str()) {
-                preserved.push(preserve_autogen_file_in_local(
-                    data_dir,
-                    db,
-                    &package_id,
-                    &current,
-                )?);
-            }
-        }
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|source| {
-                AutogenOperationError::Autogen(format!(
-                    "failed to create autogen package directory '{}': {source}",
-                    parent.display()
+                    "failed to create generated package directory '{}': {source}",
+                    target_dir.display()
                 ))
             })?;
         }
-        fs::write(&target, content).map_err(|source| {
-            AutogenOperationError::Autogen(format!(
-                "failed to write autogen package '{}': {source}",
-                target.display()
-            ))
-        })?;
-        upsert_manifest_entry(
-            &mut manifest,
-            AutogenManifestEntry {
-                package_id: package_id.clone(),
-                relative_path: relative_path.clone(),
-                content_hash: expected_hash.to_owned(),
-            },
-        );
+        write_generated_package(&target_dir, &payload.files, &payload.record_content)?;
         db.upsert_generated_tracked_package_preserving_user_state(&package_id, &target_alias)?;
         applied.push(json!({
             "package_id": package_id.to_string(),
@@ -246,13 +208,11 @@ pub fn apply_installed_preview(
         }));
     }
 
-    write_autogen_manifest(&repo_path, &manifest)?;
     Ok(json!({
         "target_repo_id": target_alias.as_str(),
         "target_repo_path": repo_path,
         "applied_count": applied.len(),
         "applied": applied,
-        "preserved_to_local": preserved,
     }))
 }
 
@@ -270,10 +230,7 @@ pub fn apply_cleanup_preview(
         )));
     }
     let accepted = accepted_preview_candidates(preview, acceptance)?;
-    let mut manifest =
-        read_autogen_manifest(&repo_path)?.unwrap_or_else(|| empty_autogen_manifest(&target_alias));
     let mut deleted = Vec::new();
-    let mut preserved = Vec::new();
     for candidate in accepted {
         let package_id = preview_package_id(candidate)?;
         let relative_path = preview_relative_path(candidate)?;
@@ -285,57 +242,25 @@ pub fn apply_cleanup_preview(
                     "cleanup preview candidate missing content_hash".to_owned(),
                 )
             })?;
-        let manifest_entry = manifest.package(&package_id).ok_or_else(|| {
-            AutogenOperationError::Autogen(format!(
-                "cleanup preview candidate {package_id} is not managed by autogen manifest"
-            ))
-        })?;
-        if manifest_entry.relative_path != relative_path
-            || manifest_entry.content_hash != expected_hash
-        {
+        let target_dir = safe_join(&repo_path, &relative_path)?;
+        let ownership = read_owned_record(&target_dir, &package_id, &relative_path)?;
+        if ownership.content_hash != expected_hash {
             return Err(AutogenOperationError::Autogen(format!(
-                "cleanup preview candidate {package_id} does not match autogen manifest"
+                "cleanup preview candidate {package_id} does not match current autogen record"
             )));
         }
-        let target = safe_join(&repo_path, &relative_path)?;
-        if target.exists() {
-            let current = fs::read_to_string(&target).map_err(|source| {
-                AutogenOperationError::Autogen(format!(
-                    "failed to read existing autogen file '{}': {source}",
-                    target.display()
-                ))
-            })?;
-            if content_hash(&current) != expected_hash {
-                preserved.push(preserve_autogen_file_in_local(
-                    data_dir,
-                    db,
-                    &package_id,
-                    &current,
-                )?);
-            }
-            fs::remove_file(&target).map_err(|source| {
-                AutogenOperationError::Autogen(format!(
-                    "failed to delete autogen package '{}': {source}",
-                    target.display()
-                ))
-            })?;
-        }
-        manifest
-            .packages
-            .retain(|entry| entry.package_id != package_id);
+        clear_directory_contents(&target_dir)?;
         db.delete_generated_tracked_package(&package_id, &target_alias)?;
         deleted.push(json!({
             "package_id": package_id.to_string(),
             "output_relative_path": relative_path,
         }));
     }
-    write_autogen_manifest(&repo_path, &manifest)?;
     Ok(json!({
         "target_repo_id": target_alias.as_str(),
         "target_repo_path": repo_path,
         "deleted_count": deleted.len(),
         "deleted": deleted,
-        "preserved_to_local": preserved,
     }))
 }
 
@@ -391,21 +316,48 @@ fn higher_priority_package_coverage(
         let Some(path) = repo.path.as_ref() else {
             continue;
         };
-        let layout = load_repository_layout(Path::new(path))?;
-        for package in layout.packages {
-            covered.entry(package.id).or_insert_with(|| repo.id.clone());
+        for package_id in load_repository_package_ids(Path::new(path))? {
+            covered.entry(package_id).or_insert_with(|| repo.id.clone());
         }
     }
     Ok(covered)
 }
 
-fn load_repository_layout(path: &Path) -> AutogenOperationResult<RepositoryLayout> {
-    RepositoryLayout::load(path)
-        .map_err(|source| AutogenOperationError::Repository(source.to_string()))
+fn load_repository_package_ids(path: &Path) -> AutogenOperationResult<Vec<PackageId>> {
+    if path.join("repo.toml").is_file() {
+        let layout = RepositoryLayout::load(path)
+            .map_err(|source| AutogenOperationError::Repository(source.to_string()))?;
+        Ok(layout
+            .packages
+            .into_iter()
+            .map(|package| package.id)
+            .collect())
+    } else {
+        let layout = RepositoryPackageDirectoryLayout::load(path)
+            .map_err(|source| AutogenOperationError::Repository(source.to_string()))?;
+        Ok(layout
+            .packages
+            .into_iter()
+            .map(|package| package.id)
+            .collect())
+    }
 }
 
-fn autogen_candidate_json(candidate: &getter_core::autogen::AutogenCandidate) -> Value {
-    json!({
+fn autogen_candidate_json(candidate: &AutogenCandidate) -> AutogenOperationResult<Value> {
+    let record_content = render_autogen_record(&candidate.record)
+        .map_err(|source| AutogenOperationError::Autogen(source.to_string()))?;
+    let files: Vec<Value> = candidate
+        .files
+        .iter()
+        .map(|file| {
+            json!({
+                "relative_path": file.relative_path,
+                "content_hash": file.content_hash,
+                "content": file.content,
+            })
+        })
+        .collect();
+    Ok(json!({
         "package_id": candidate.package_id.to_string(),
         "kind": candidate.package_id.kind().as_str(),
         "display_name": candidate.name,
@@ -413,8 +365,10 @@ fn autogen_candidate_json(candidate: &getter_core::autogen::AutogenCandidate) ->
         "action": "create",
         "output_relative_path": candidate.relative_path,
         "content_hash": candidate.content_hash,
-        "content": candidate.content,
-    })
+        "content": record_content,
+        "autogen_record_content": record_content,
+        "files": files,
+    }))
 }
 
 fn autogen_skip_json(skip: &getter_core::autogen::AutogenSkip) -> Value {
@@ -425,6 +379,28 @@ fn autogen_skip_json(skip: &getter_core::autogen::AutogenSkip) -> Value {
             AutogenSkipReason::CoveredByHigherPriorityRepository => "covered_by_higher_priority_repo",
         },
         "covering_repo_id": skip.repository_id.as_ref().map(RepositoryId::as_str),
+    })
+}
+
+fn cleanup_preview_response(
+    target_alias: RepositoryId,
+    repo_path: PathBuf,
+    candidates: Vec<Value>,
+    diagnostics: Vec<Value>,
+) -> Value {
+    json!({
+        "operation": "cleanup.preview",
+        "target_repo_id": target_alias.as_str(),
+        "target_repo_path": repo_path,
+        "summary": {
+            "candidate_count": candidates.len(),
+            "skipped_count": 0,
+            "write_count": 0,
+            "delete_count": candidates.len(),
+        },
+        "candidates": candidates,
+        "skipped": [],
+        "diagnostics": diagnostics,
     })
 }
 
@@ -480,13 +456,111 @@ fn preview_relative_path(candidate: &Value) -> AutogenOperationResult<PathBuf> {
         })
 }
 
+struct PreviewCandidatePayload {
+    record_content: String,
+    files: Vec<GeneratedPackageFile>,
+}
+
+fn preview_candidate_payload(
+    candidate: &Value,
+    package_id: &PackageId,
+    relative_path: &Path,
+) -> AutogenOperationResult<PreviewCandidatePayload> {
+    let record_content = candidate
+        .get("autogen_record_content")
+        .or_else(|| candidate.get("content"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AutogenOperationError::Autogen(
+                "preview candidate missing autogen_record_content".to_owned(),
+            )
+        })?
+        .to_owned();
+    let expected_hash = candidate
+        .get("content_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AutogenOperationError::Autogen("preview candidate missing content_hash".to_owned())
+        })?;
+    if content_hash(&record_content) != expected_hash {
+        return Err(AutogenOperationError::Autogen(format!(
+            "preview autogen record hash mismatch for {package_id}"
+        )));
+    }
+    let files = preview_generated_files(candidate)?;
+    let record = parse_record_content(&record_content)?;
+    validate_record(&record, package_id, relative_path, &files)?;
+    Ok(PreviewCandidatePayload {
+        record_content,
+        files,
+    })
+}
+
+fn preview_generated_files(candidate: &Value) -> AutogenOperationResult<Vec<GeneratedPackageFile>> {
+    let files = candidate
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AutogenOperationError::Autogen("preview candidate missing files".to_owned())
+        })?;
+    files
+        .iter()
+        .map(|file| {
+            let relative_path = file
+                .get("relative_path")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .ok_or_else(|| {
+                    AutogenOperationError::Autogen(
+                        "preview generated file missing relative_path".to_owned(),
+                    )
+                })?;
+            validate_relative_path(&relative_path)?;
+            let content = file
+                .get("content")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    AutogenOperationError::Autogen(
+                        "preview generated file missing content".to_owned(),
+                    )
+                })?
+                .to_owned();
+            let expected_hash = file
+                .get("content_hash")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    AutogenOperationError::Autogen(
+                        "preview generated file missing content_hash".to_owned(),
+                    )
+                })?;
+            let actual_hash = content_hash(&content);
+            if actual_hash != expected_hash {
+                return Err(AutogenOperationError::Autogen(format!(
+                    "preview generated file '{}' hash mismatch",
+                    relative_path.display()
+                )));
+            }
+            Ok(GeneratedPackageFile {
+                relative_path,
+                content,
+                content_hash: actual_hash,
+            })
+        })
+        .collect()
+}
+
 fn ensure_generated_repository(
     repo_path: &Path,
     db: &MainDb,
     alias: &RepositoryId,
     priority: RepositoryPriority,
 ) -> AutogenOperationResult<()> {
-    ensure_repository_layout(repo_path, &generated_repo_toml(alias, priority))?;
+    fs::create_dir_all(repo_path).map_err(|source| {
+        AutogenOperationError::Autogen(format!(
+            "failed to create generated repository '{}': {source}",
+            repo_path.display()
+        ))
+    })?;
     db.upsert_repository(
         &RepositoryMetadata {
             id: alias.clone(),
@@ -500,15 +574,6 @@ fn ensure_generated_repository(
     Ok(())
 }
 
-fn generated_repo_toml(alias: &RepositoryId, priority: RepositoryPriority) -> String {
-    format!(
-        "id = \"{}\"\nname = \"{}\"\npriority = {}\napi_version = \"{REPO_API_VERSION_V1}\"\n",
-        alias.as_str(),
-        generated_repository_name(alias),
-        priority.value()
-    )
-}
-
 fn generated_repository_name(alias: &RepositoryId) -> String {
     if alias.as_str() == DEFAULT_AUTOGEN_REPOSITORY_ID {
         DEFAULT_AUTOGEN_REPOSITORY_NAME.to_owned()
@@ -517,177 +582,248 @@ fn generated_repository_name(alias: &RepositoryId) -> String {
     }
 }
 
-fn ensure_local_repository(data_dir: &Path, db: &MainDb) -> AutogenOperationResult<PathBuf> {
-    let local_id = RepositoryId::new(LOCAL_REPOSITORY_ID).expect("valid id");
-    if let Ok(existing) = find_repository(db, &local_id) {
-        let repo_path = repo_path(&existing)?;
-        ensure_repository_layout(&repo_path, &local_repo_toml())?;
-        return Ok(repo_path);
+struct LoadedAutogenRecord {
+    content_hash: String,
+}
+
+fn read_owned_record(
+    package_dir: &Path,
+    package_id: &PackageId,
+    relative_path: &Path,
+) -> AutogenOperationResult<LoadedAutogenRecord> {
+    let record_path = package_dir.join(AUTOGEN_RECORD_FILE);
+    if !record_path.is_file() {
+        return Err(AutogenOperationError::Autogen(format!(
+            "generated package '{}' is missing {AUTOGEN_RECORD_FILE}",
+            package_dir.display()
+        )));
     }
-
-    let repo_path = GetterDataDirLayout::new(data_dir)
-        .repository_path(&RepositoryId::new(LOCAL_REPOSITORY_ID).expect("valid id"));
-    ensure_repository_layout(&repo_path, &local_repo_toml())?;
-    db.upsert_repository(
-        &RepositoryMetadata {
-            id: local_id,
-            name: LOCAL_REPOSITORY_NAME.to_owned(),
-            priority: RepositoryPriority::LOCAL,
-            api_version: REPO_API_VERSION_V1.to_owned(),
-        },
-        Some(&repo_path),
-        None,
-    )?;
-    Ok(repo_path)
-}
-
-fn find_repository(db: &MainDb, id: &RepositoryId) -> AutogenOperationResult<StoredRepository> {
-    db.repositories()?
-        .into_iter()
-        .find(|repo| &repo.id == id)
-        .ok_or_else(|| {
-            AutogenOperationError::Repository(format!("repository '{id}' is not registered"))
-        })
-}
-
-fn repo_path(repo: &StoredRepository) -> AutogenOperationResult<PathBuf> {
-    repo.path.as_ref().map(PathBuf::from).ok_or_else(|| {
-        AutogenOperationError::Repository(format!("repository '{}' has no path", repo.id))
+    let bytes = fs::read(&record_path).map_err(|source| {
+        AutogenOperationError::Autogen(format!(
+            "failed to read autogen record '{}': {source}",
+            record_path.display()
+        ))
+    })?;
+    let record: AutogenRecord = serde_json::from_reader(json_comments::StripComments::new(
+        bytes.as_slice(),
+    ))
+    .map_err(|source| {
+        AutogenOperationError::Autogen(format!(
+            "failed to parse autogen record '{}': {source}",
+            record_path.display()
+        ))
+    })?;
+    let files = read_recorded_files(package_dir, &record)?;
+    validate_record(&record, package_id, relative_path, &files)?;
+    Ok(LoadedAutogenRecord {
+        content_hash: content_hash_bytes(&bytes),
     })
 }
 
-fn ensure_repository_layout(repo_path: &Path, repo_toml: &str) -> AutogenOperationResult<()> {
-    fs::create_dir_all(repo_path.join("packages")).map_err(|source| {
-        AutogenOperationError::Autogen(format!(
-            "failed to create repository packages dir '{}': {source}",
-            repo_path.display()
-        ))
-    })?;
-    fs::create_dir_all(repo_path.join("lib")).map_err(|source| {
-        AutogenOperationError::Autogen(format!(
-            "failed to create repository lib dir '{}': {source}",
-            repo_path.display()
-        ))
-    })?;
-    fs::create_dir_all(repo_path.join("templates")).map_err(|source| {
-        AutogenOperationError::Autogen(format!(
-            "failed to create repository templates dir '{}': {source}",
-            repo_path.display()
-        ))
-    })?;
-    let repo_toml_path = repo_path.join("repo.toml");
-    if !repo_toml_path.exists() {
-        fs::write(&repo_toml_path, repo_toml).map_err(|source| {
+fn read_recorded_files(
+    package_dir: &Path,
+    record: &AutogenRecord,
+) -> AutogenOperationResult<Vec<GeneratedPackageFile>> {
+    let mut files = Vec::new();
+    for (relative, expected_hash) in &record.files {
+        let relative_path = PathBuf::from(relative);
+        validate_relative_path(&relative_path)?;
+        let path = package_dir.join(&relative_path);
+        if !path.is_file() {
+            return Err(AutogenOperationError::Autogen(format!(
+                "generated file '{}' listed in {AUTOGEN_RECORD_FILE} is missing",
+                path.display()
+            )));
+        }
+        let bytes = fs::read(&path).map_err(|source| {
             AutogenOperationError::Autogen(format!(
-                "failed to write repo.toml '{}': {source}",
-                repo_toml_path.display()
+                "failed to read generated file '{}': {source}",
+                path.display()
             ))
         })?;
+        let actual_hash = content_hash_bytes(&bytes);
+        if &actual_hash != expected_hash {
+            return Err(AutogenOperationError::Autogen(format!(
+                "generated file '{}' hash does not match {AUTOGEN_RECORD_FILE}",
+                path.display()
+            )));
+        }
+        let content = String::from_utf8(bytes).map_err(|source| {
+            AutogenOperationError::Autogen(format!(
+                "generated file '{}' is not UTF-8: {source}",
+                path.display()
+            ))
+        })?;
+        files.push(GeneratedPackageFile {
+            relative_path,
+            content,
+            content_hash: actual_hash,
+        });
+    }
+    Ok(files)
+}
+
+fn parse_record_content(content: &str) -> AutogenOperationResult<AutogenRecord> {
+    serde_json::from_str(content).map_err(|source| {
+        AutogenOperationError::Autogen(format!("failed to parse preview autogen record: {source}"))
+    })
+}
+
+fn validate_record(
+    record: &AutogenRecord,
+    package_id: &PackageId,
+    relative_path: &Path,
+    files: &[GeneratedPackageFile],
+) -> AutogenOperationResult<()> {
+    if record.version != AUTOGEN_RECORD_VERSION {
+        return Err(AutogenOperationError::Autogen(format!(
+            "unsupported autogen record version {}; expected {AUTOGEN_RECORD_VERSION}",
+            record.version
+        )));
+    }
+    if record.generator != INSTALLED_AUTOGEN_GENERATOR {
+        return Err(AutogenOperationError::Autogen(format!(
+            "autogen record generator '{}' does not match '{INSTALLED_AUTOGEN_GENERATOR}'",
+            record.generator
+        )));
+    }
+    if &record.package_id != package_id {
+        return Err(AutogenOperationError::Autogen(format!(
+            "autogen record package '{}' does not match '{package_id}'",
+            record.package_id
+        )));
+    }
+    if record.output_relative_path != relative_path {
+        return Err(AutogenOperationError::Autogen(format!(
+            "autogen record output path '{}' does not match '{}'",
+            record.output_relative_path.display(),
+            relative_path.display()
+        )));
+    }
+    let file_hashes: BTreeMap<String, String> = files
+        .iter()
+        .map(|file| {
+            (
+                record_file_key(&file.relative_path),
+                file.content_hash.clone(),
+            )
+        })
+        .collect();
+    if record.files.contains_key(AUTOGEN_RECORD_FILE) {
+        return Err(AutogenOperationError::Autogen(format!(
+            "autogen record must not list {AUTOGEN_RECORD_FILE} in files"
+        )));
+    }
+    if record.files != file_hashes {
+        return Err(AutogenOperationError::Autogen(
+            "autogen record files do not match generated files".to_owned(),
+        ));
     }
     Ok(())
 }
 
-fn preserve_autogen_file_in_local(
-    data_dir: &Path,
-    db: &MainDb,
-    package_id: &PackageId,
-    content: &str,
-) -> AutogenOperationResult<Value> {
-    let local_repo = ensure_local_repository(data_dir, db)?;
-    let primary_relative = getter_core::autogen::package_relative_path(package_id);
-    let primary_target = safe_join(&local_repo, &primary_relative)?;
-    let relative_path = if primary_target.exists() {
-        let backup = PathBuf::from("autogen-preserved")
-            .join(package_id.kind().as_str())
-            .join(format!(
-                "{}.{}.lua",
-                package_id.name(),
-                content_hash(content).replace(':', "-")
-            ));
-        safe_join(&local_repo, &backup)?;
-        backup
-    } else {
-        primary_relative
-    };
-    let target = safe_join(&local_repo, &relative_path)?;
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|source| {
+fn write_generated_package(
+    package_dir: &Path,
+    files: &[GeneratedPackageFile],
+    record_content: &str,
+) -> AutogenOperationResult<()> {
+    for file in files {
+        let target = safe_join(package_dir, &file.relative_path)?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|source| {
+                AutogenOperationError::Autogen(format!(
+                    "failed to create generated package directory '{}': {source}",
+                    parent.display()
+                ))
+            })?;
+        }
+        fs::write(&target, &file.content).map_err(|source| {
             AutogenOperationError::Autogen(format!(
-                "failed to create local preservation directory '{}': {source}",
-                parent.display()
+                "failed to write generated package file '{}': {source}",
+                target.display()
             ))
         })?;
     }
-    fs::write(&target, content).map_err(|source| {
+    fs::write(package_dir.join(AUTOGEN_RECORD_FILE), record_content).map_err(|source| {
         AutogenOperationError::Autogen(format!(
-            "failed to preserve modified autogen file '{}': {source}",
-            target.display()
-        ))
-    })?;
-    Ok(json!({
-        "package_id": package_id.to_string(),
-        "repository_id": LOCAL_REPOSITORY_ID,
-        "relative_path": relative_path,
-    }))
-}
-
-fn read_autogen_manifest(repo_path: &Path) -> AutogenOperationResult<Option<AutogenManifest>> {
-    let path = repo_path.join(AUTOGEN_MANIFEST_FILE);
-    if !path.exists() {
-        return Ok(None);
-    }
-    let bytes = fs::read(&path).map_err(|source| {
-        AutogenOperationError::Autogen(format!(
-            "failed to read autogen manifest '{}': {source}",
-            path.display()
-        ))
-    })?;
-    serde_json::from_slice(&bytes).map(Some).map_err(|source| {
-        AutogenOperationError::Autogen(format!("failed to parse autogen manifest: {source}"))
-    })
-}
-
-fn write_autogen_manifest(
-    repo_path: &Path,
-    manifest: &AutogenManifest,
-) -> AutogenOperationResult<()> {
-    fs::create_dir_all(repo_path).map_err(|source| {
-        AutogenOperationError::Autogen(format!(
-            "failed to create autogen repository '{}': {source}",
-            repo_path.display()
-        ))
-    })?;
-    let path = repo_path.join(AUTOGEN_MANIFEST_FILE);
-    let bytes = serde_json::to_vec_pretty(manifest).map_err(|source| {
-        AutogenOperationError::Autogen(format!("failed to serialize manifest: {source}"))
-    })?;
-    fs::write(&path, bytes).map_err(|source| {
-        AutogenOperationError::Autogen(format!(
-            "failed to write autogen manifest '{}': {source}",
-            path.display()
+            "failed to write autogen record '{}': {source}",
+            package_dir.join(AUTOGEN_RECORD_FILE).display()
         ))
     })
 }
 
-fn empty_autogen_manifest(repository_id: &RepositoryId) -> AutogenManifest {
-    AutogenManifest {
-        version: getter_core::autogen::AUTOGEN_MANIFEST_VERSION,
-        repository_id: repository_id.clone(),
-        packages: Vec::new(),
+fn clear_directory_contents(path: &Path) -> AutogenOperationResult<()> {
+    fs::create_dir_all(path).map_err(|source| {
+        AutogenOperationError::Autogen(format!(
+            "failed to create generated package directory '{}': {source}",
+            path.display()
+        ))
+    })?;
+    for entry in fs::read_dir(path).map_err(|source| {
+        AutogenOperationError::Autogen(format!(
+            "failed to read generated package directory '{}': {source}",
+            path.display()
+        ))
+    })? {
+        let entry = entry.map_err(|source| {
+            AutogenOperationError::Autogen(format!(
+                "failed to read generated package directory '{}': {source}",
+                path.display()
+            ))
+        })?;
+        let child = entry.path();
+        let file_type = entry.file_type().map_err(|source| {
+            AutogenOperationError::Autogen(format!(
+                "failed to inspect generated package entry '{}': {source}",
+                child.display()
+            ))
+        })?;
+        if file_type.is_dir() {
+            fs::remove_dir_all(&child).map_err(|source| {
+                AutogenOperationError::Autogen(format!(
+                    "failed to delete generated package directory '{}': {source}",
+                    child.display()
+                ))
+            })?;
+        } else {
+            fs::remove_file(&child).map_err(|source| {
+                AutogenOperationError::Autogen(format!(
+                    "failed to delete generated package file '{}': {source}",
+                    child.display()
+                ))
+            })?;
+        }
     }
+    Ok(())
 }
 
-fn upsert_manifest_entry(manifest: &mut AutogenManifest, entry: AutogenManifestEntry) {
-    manifest
-        .packages
-        .retain(|existing| existing.package_id != entry.package_id);
-    manifest.packages.push(entry);
-    manifest
-        .packages
-        .sort_by_key(|existing| existing.package_id.to_string());
+fn relative_package_path(root: &Path, package_dir: &Path) -> AutogenOperationResult<PathBuf> {
+    package_dir
+        .strip_prefix(root)
+        .map(Path::to_path_buf)
+        .map_err(|_| {
+            AutogenOperationError::Autogen(format!(
+                "package directory '{}' is not under generated repository '{}'",
+                package_dir.display(),
+                root.display()
+            ))
+        })
+}
+
+fn autogen_diagnostic(code: &str, message: String, package_id: Option<String>) -> Value {
+    json!({
+        "code": code,
+        "message": message,
+        "detail": package_id,
+    })
 }
 
 fn safe_join(root: &Path, relative: &Path) -> AutogenOperationResult<PathBuf> {
+    validate_relative_path(relative)?;
+    Ok(root.join(relative))
+}
+
+fn validate_relative_path(relative: &Path) -> AutogenOperationResult<()> {
     if relative.is_absolute()
         || relative.components().any(|component| {
             matches!(
@@ -701,7 +837,7 @@ fn safe_join(root: &Path, relative: &Path) -> AutogenOperationResult<PathBuf> {
             relative.display()
         )));
     }
-    Ok(root.join(relative))
+    Ok(())
 }
 
 #[cfg(test)]
@@ -734,6 +870,11 @@ mod tests {
             preview["target_repo_path"].as_str(),
             data_dir.join("repo/autogen").to_str()
         );
+        assert_eq!(
+            preview["candidates"][0]["output_relative_path"],
+            "android/app/com.example.autogen"
+        );
+        assert!(preview["candidates"][0]["files"].is_array());
         assert!(!data_dir.join("repo/autogen").exists());
     }
 
@@ -750,13 +891,112 @@ mod tests {
                 .unwrap();
 
         assert_eq!(result["target_repo_id"], "autogen");
-        assert!(data_dir.join("repo/autogen/repo.toml").is_file());
+        assert!(data_dir.join("repo/autogen").is_dir());
         assert!(data_dir
-            .join("repo/autogen/packages/android/com.example.autogen.lua")
+            .join("repo/autogen/android/app/com.example.autogen/metadata.jsonc")
             .is_file());
+        assert!(data_dir
+            .join("repo/autogen/android/app/com.example.autogen/9999.lua")
+            .is_file());
+        assert!(data_dir
+            .join("repo/autogen/android/app/com.example.autogen/.autogen.jsonc")
+            .is_file());
+        assert!(!data_dir.join("repo/autogen/repo.toml").exists());
+        assert!(!data_dir.join("repo/autogen/packages").exists());
         let repos = db.repositories().unwrap();
         assert_eq!(repos[0].id.as_str(), "autogen");
         assert_eq!(repos[0].priority.value(), -1);
+    }
+
+    #[test]
+    fn apply_rejects_existing_package_directory_without_ownership_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        fs::create_dir_all(data_dir.join("repo/autogen/android/app/com.example.autogen")).unwrap();
+        fs::write(
+            data_dir.join("repo/autogen/android/app/com.example.autogen/metadata.jsonc"),
+            r#"{ "type": "android:app" }"#,
+        )
+        .unwrap();
+        let plan = build_installed_autogen_plan(data_dir, &db, &test_inventory()).unwrap();
+        let preview = installed_preview_json(data_dir, &plan).unwrap();
+
+        let error = apply_installed_preview(data_dir, &db, &preview, &AutogenAcceptance::AcceptAll)
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AutogenOperationError::Autogen(detail) if detail.contains("missing .autogen.jsonc"))
+        );
+    }
+
+    #[test]
+    fn apply_rejects_modified_generated_files_instead_of_preserving_to_local() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        let plan = build_installed_autogen_plan(data_dir, &db, &test_inventory()).unwrap();
+        let preview = installed_preview_json(data_dir, &plan).unwrap();
+        apply_installed_preview(data_dir, &db, &preview, &AutogenAcceptance::AcceptAll).unwrap();
+        fs::write(
+            data_dir.join("repo/autogen/android/app/com.example.autogen/9999.lua"),
+            "#!/bin/upa-lua v1\n-- user edited\nreturn {}\n",
+        )
+        .unwrap();
+
+        let error = apply_installed_preview(data_dir, &db, &preview, &AutogenAcceptance::AcceptAll)
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AutogenOperationError::Autogen(detail) if detail.contains("hash does not match"))
+        );
+        assert!(!data_dir.join("repo/local").exists());
+    }
+
+    #[test]
+    fn cleanup_clears_generated_package_directory_but_keeps_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        let plan = build_installed_autogen_plan(data_dir, &db, &test_inventory()).unwrap();
+        let preview = installed_preview_json(data_dir, &plan).unwrap();
+        apply_installed_preview(data_dir, &db, &preview, &AutogenAcceptance::AcceptAll).unwrap();
+        let empty_inventory = InstalledInventory::new(Vec::new());
+        let cleanup = cleanup_preview_json(data_dir, &db, &empty_inventory).unwrap();
+
+        assert_eq!(
+            cleanup["candidates"][0]["package_id"],
+            "android/app/com.example.autogen"
+        );
+        apply_cleanup_preview(data_dir, &db, &cleanup, &AutogenAcceptance::AcceptAll).unwrap();
+
+        let package_dir = data_dir.join("repo/autogen/android/app/com.example.autogen");
+        assert!(package_dir.is_dir());
+        assert_eq!(fs::read_dir(package_dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn cleanup_rejects_stale_preview_when_autogen_record_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        let plan = build_installed_autogen_plan(data_dir, &db, &test_inventory()).unwrap();
+        let preview = installed_preview_json(data_dir, &plan).unwrap();
+        apply_installed_preview(data_dir, &db, &preview, &AutogenAcceptance::AcceptAll).unwrap();
+        let empty_inventory = InstalledInventory::new(Vec::new());
+        let cleanup = cleanup_preview_json(data_dir, &db, &empty_inventory).unwrap();
+        fs::write(
+            data_dir.join("repo/autogen/android/app/com.example.autogen/.autogen.jsonc"),
+            r#"{ "version": 1, "generator": "installed-inventory", "package_id": "android/app/com.example.autogen", "output_relative_path": "android/app/com.example.autogen", "input": { "kind": "installed_android_package", "package_name": "com.example.autogen" }, "files": {} }"#,
+        )
+        .unwrap();
+
+        let error = apply_cleanup_preview(data_dir, &db, &cleanup, &AutogenAcceptance::AcceptAll)
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AutogenOperationError::Autogen(detail) if detail.contains("does not match current autogen record") || detail.contains("files do not match"))
+        );
     }
 
     #[test]

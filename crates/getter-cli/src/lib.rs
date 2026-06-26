@@ -8,7 +8,8 @@ use getter_core::autogen::InstalledInventory;
 use getter_core::diagnostics::validate_repository_path;
 use getter_core::lua::evaluate_package_file;
 use getter_core::repository::{
-    GetterDataDirLayout, RepositoryLayout, RepositoryMetadata, REPOSITORY_ROOT_METADATA_FILE,
+    default_repository_priority, GetterDataDirLayout, RepositoryLayout, RepositoryMetadata,
+    RepositoryPackageDirectoryLayout, REPOSITORY_ROOT_METADATA_FILE, REPO_API_VERSION_V1,
 };
 use getter_core::runtime::{GetterRuntime, SealedActionPlan};
 use getter_core::task::{
@@ -588,17 +589,7 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
         }
         CliCommand::RepoAdd { id, path, priority } => {
             let db = open_main_db(&invocation.data_dir)?;
-            let layout = load_repository_layout(&path)?;
-            if layout.metadata.id != id {
-                return Err(CliError::Repository(format!(
-                    "repo.toml id '{}' does not match requested id '{}'",
-                    layout.metadata.id, id
-                )));
-            }
-            let metadata = RepositoryMetadata {
-                priority: priority.unwrap_or(layout.metadata.priority),
-                ..layout.metadata.clone()
-            };
+            let metadata = load_repository_metadata(&id, &path, priority)?;
             db.upsert_repository(&metadata, Some(&path), None)?;
             Ok(json!({ "repository": repository_metadata_json(&metadata, Some(&path), None) }))
         }
@@ -936,6 +927,35 @@ fn parse_autogen_acceptance(args: &[String]) -> Result<AutogenAcceptance, CliErr
 
 fn load_repository_layout(path: &Path) -> Result<RepositoryLayout, CliError> {
     RepositoryLayout::load(path).map_err(|source| CliError::Repository(source.to_string()))
+}
+
+fn load_repository_metadata(
+    id: &RepositoryId,
+    path: &Path,
+    priority: Option<RepositoryPriority>,
+) -> Result<RepositoryMetadata, CliError> {
+    if path.join("repo.toml").is_file() {
+        let layout = load_repository_layout(path)?;
+        if &layout.metadata.id != id {
+            return Err(CliError::Repository(format!(
+                "repo.toml id '{}' does not match requested id '{}'",
+                layout.metadata.id, id
+            )));
+        }
+        return Ok(RepositoryMetadata {
+            priority: priority.unwrap_or(layout.metadata.priority),
+            ..layout.metadata
+        });
+    }
+
+    RepositoryPackageDirectoryLayout::load(path)
+        .map_err(|source| CliError::Repository(source.to_string()))?;
+    Ok(RepositoryMetadata {
+        id: id.clone(),
+        name: id.to_string(),
+        priority: priority.unwrap_or_else(|| default_repository_priority(id.as_str())),
+        api_version: REPO_API_VERSION_V1.to_owned(),
+    })
 }
 
 fn list_repositories(db: &MainDb) -> Result<Vec<Value>, CliError> {
