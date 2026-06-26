@@ -8,6 +8,7 @@ pub use getter_core as core;
 
 use getter_core::{ResolvedPackage, UpdateArtifact, UpdateCandidate};
 use roxmltree::{Document, Node};
+use serde::{Deserialize, Serialize};
 
 /// Mock provider that returns the static `updates` candidates materialized from
 /// a resolved Lua package table.
@@ -24,7 +25,7 @@ impl StaticPackageUpdatesProvider {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FdroidCatalog {
     pub endpoint: FdroidEndpoint,
     pub apps: Vec<FdroidApp>,
@@ -38,14 +39,14 @@ impl FdroidCatalog {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FdroidEndpoint {
     pub name: Option<String>,
     pub url: Option<String>,
     pub timestamp: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FdroidApp {
     pub package_name: String,
     pub name: Option<String>,
@@ -62,7 +63,7 @@ impl FdroidApp {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FdroidRelease {
     pub version: String,
     pub version_code: Option<i64>,

@@ -6,4 +6,5 @@ edition.workspace = true
 [dependencies]
 getter-core = { path = "../getter-core", default-features = false }
 roxmltree = "0.21"
+serde = { version = "1", features = ["derive"] }
 thiserror = "1"

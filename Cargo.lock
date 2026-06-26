@@ -620,6 +620,7 @@ dependencies = [
  "json_comments",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 1.0.69",
 ]
@@ -637,6 +638,7 @@ version = "0.1.0"
 dependencies = [
  "getter-core",
  "roxmltree",
+ "serde",
  "thiserror 1.0.69",
 ]
 
