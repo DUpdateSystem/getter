@@ -26,7 +26,7 @@ pub enum LuaPackageError {
     Runtime {
         path: PathBuf,
         #[source]
-        source: mlua::Error,
+        source: Box<mlua::Error>,
     },
     #[error("Lua package {path} did not return a table")]
     NotATable { path: PathBuf },
@@ -44,7 +44,7 @@ pub enum LuaPackageError {
     Repository {
         path: PathBuf,
         #[source]
-        source: RepositoryLoadError,
+        source: Box<RepositoryLoadError>,
     },
 }
 
@@ -90,10 +90,10 @@ pub fn evaluate_package_directory_script(
     if source.lines().next() != Some(LUA_API_SHEBANG_V1) {
         return Err(LuaPackageError::Repository {
             path: script.path.clone(),
-            source: RepositoryLoadError::MissingLuaApiShebang {
+            source: Box::new(RepositoryLoadError::MissingLuaApiShebang {
                 path: script.path.clone(),
                 expected: LUA_API_SHEBANG_V1,
-            },
+            }),
         });
     }
     let json = evaluate_package_source_to_json(
@@ -113,15 +113,15 @@ fn evaluate_package_source_to_json(
     let lua = Lua::new();
     configure_package_path(&lua, environment).map_err(|source| LuaPackageError::Runtime {
         path: path.clone(),
-        source,
+        source: Box::new(source),
     })?;
     remove_unsafe_globals(&lua).map_err(|source| LuaPackageError::Runtime {
         path: path.clone(),
-        source,
+        source: Box::new(source),
     })?;
     install_helpers(&lua).map_err(|source| LuaPackageError::Runtime {
         path: path.clone(),
-        source,
+        source: Box::new(source),
     })?;
 
     let value = lua
@@ -130,7 +130,7 @@ fn evaluate_package_source_to_json(
         .eval::<Value>()
         .map_err(|source| LuaPackageError::Runtime {
             path: path.clone(),
-            source,
+            source: Box::new(source),
         })?;
     let table = match value {
         Value::Table(table) => table,
@@ -325,13 +325,13 @@ fn lua_table_to_json(
 ) -> Result<JsonValue, LuaPackageError> {
     if is_array_table(&table).map_err(|source| LuaPackageError::Runtime {
         path: path.to_path_buf(),
-        source,
+        source: Box::new(source),
     })? {
         let mut array = Vec::new();
         for pair in table.sequence_values::<Value>() {
             let value = pair.map_err(|source| LuaPackageError::Runtime {
                 path: path.to_path_buf(),
-                source,
+                source: Box::new(source),
             })?;
             array.push(lua_value_to_json(path, &format!("{location}[]"), value)?);
         }
@@ -341,14 +341,14 @@ fn lua_table_to_json(
         for pair in table.pairs::<Value, Value>() {
             let (key, value) = pair.map_err(|source| LuaPackageError::Runtime {
                 path: path.to_path_buf(),
-                source,
+                source: Box::new(source),
             })?;
             let key = match key {
                 Value::String(value) => value
                     .to_str()
                     .map_err(|source| LuaPackageError::Runtime {
                         path: path.to_path_buf(),
-                        source,
+                        source: Box::new(source),
                     })?
                     .to_owned(),
                 Value::Integer(value) => value.to_string(),
@@ -388,7 +388,7 @@ fn lua_value_to_json(
                 .to_str()
                 .map_err(|source| LuaPackageError::Runtime {
                     path: path.to_path_buf(),
-                    source,
+                    source: Box::new(source),
                 })?
                 .to_owned(),
         )),
@@ -532,8 +532,7 @@ fn metadata_permissions_for_script(
     PackagePermissions {
         free_network: metadata
             .permissions_for(file_name)
-            .iter()
-            .any(|permission| *permission == PackageLuaPermission::AllowFreeNetwork),
+            .contains(&PackageLuaPermission::AllowFreeNetwork),
     }
 }
 
