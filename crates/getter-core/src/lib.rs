@@ -146,7 +146,7 @@ impl From<PackageId> for String {
 }
 
 /// Repository identifier such as `official`, `community`, `local`, or
-/// `local_autogen`.
+/// `autogen`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct RepositoryId(String);
@@ -206,7 +206,7 @@ pub struct RepositoryPriority(i32);
 impl RepositoryPriority {
     pub const LOCAL: Self = Self(100);
     pub const DEFAULT: Self = Self(0);
-    pub const LOCAL_AUTOGEN: Self = Self(-1);
+    pub const GENERATED_FALLBACK: Self = Self(-1);
 
     pub const fn new(value: i32) -> Self {
         Self(value)
@@ -401,18 +401,15 @@ mod tests {
     #[test]
     fn repository_priority_higher_number_wins() {
         assert!(RepositoryPriority::LOCAL > RepositoryPriority::DEFAULT);
-        assert!(RepositoryPriority::DEFAULT > RepositoryPriority::LOCAL_AUTOGEN);
+        assert!(RepositoryPriority::DEFAULT > RepositoryPriority::GENERATED_FALLBACK);
         assert_eq!(RepositoryPriority::LOCAL.value(), 100);
         assert_eq!(RepositoryPriority::DEFAULT.value(), 0);
-        assert_eq!(RepositoryPriority::LOCAL_AUTOGEN.value(), -1);
+        assert_eq!(RepositoryPriority::GENERATED_FALLBACK.value(), -1);
     }
 
     #[test]
     fn repository_id_accepts_named_repositories() {
-        assert_eq!(
-            RepositoryId::new("local_autogen").unwrap().as_str(),
-            "local_autogen"
-        );
+        assert_eq!(RepositoryId::new("autogen").unwrap().as_str(), "autogen");
         assert_eq!(
             RepositoryId::new("community.1").unwrap().to_string(),
             "community.1"

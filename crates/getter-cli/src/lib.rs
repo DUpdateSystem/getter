@@ -7,7 +7,9 @@
 use getter_core::autogen::InstalledInventory;
 use getter_core::diagnostics::validate_repository_path;
 use getter_core::lua::evaluate_package_file;
-use getter_core::repository::{RepositoryLayout, RepositoryMetadata};
+use getter_core::repository::{
+    GetterDataDirLayout, RepositoryLayout, RepositoryMetadata, REPOSITORY_ROOT_METADATA_FILE,
+};
 use getter_core::runtime::{GetterRuntime, SealedActionPlan};
 use getter_core::task::{
     DownloadTaskRequest, InstallHandoffStatus, TaskEventPage, DOWNLOAD_REQUEST_FORMAT,
@@ -37,6 +39,18 @@ const MAIN_DB_FILE: &str = "main.db";
 const CACHE_DB_FILE: &str = "cache.db";
 const MIGRATION_REPORTS_DIR: &str = "migration-reports";
 const LEGACY_ROOM_MIGRATION_ID: &str = "legacy-room-v17";
+const REPOSITORY_ROOT_METADATA_STARTER: &str = r#"{
+  "version": 1,
+  // Autogen writes to "autogen" by default. Uncomment and change this
+  // if generated packages should target another existing repository alias.
+  // "generated_repository": "autogen",
+  "priority": {
+    "local": 100,
+    "official": 0,
+    "autogen": -1
+  }
+}
+"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliInvocation {
@@ -264,6 +278,9 @@ impl From<AutogenOperationError> for CliError {
         match value {
             AutogenOperationError::Storage(source) => Self::Storage(source.to_string()),
             AutogenOperationError::Repository(detail) => Self::Repository(detail),
+            AutogenOperationError::MissingGeneratedRepository { .. } => {
+                Self::Autogen(value.to_string())
+            }
             AutogenOperationError::Autogen(detail) => Self::Autogen(detail),
         }
     }
@@ -547,10 +564,14 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
     match invocation.command {
         CliCommand::Init => {
             initialize_storage(&invocation.data_dir)?;
+            let layout = initialize_data_dir_layout(&invocation.data_dir)?;
             Ok(json!({
-                "data_dir": invocation.data_dir,
-                "main_db": main_db_path(&invocation.data_dir),
-                "cache_db": cache_db_path(&invocation.data_dir),
+                "data_dir": layout.root,
+                "main_db": layout.main_db,
+                "cache_db": layout.cache_db,
+                "repo": layout.repository_root,
+                "rc": layout.runtime_config_root,
+                "repo_metadata": layout.repository_root.join(REPOSITORY_ROOT_METADATA_FILE),
             }))
         }
         CliCommand::AppList => {
@@ -691,8 +712,9 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
         CliCommand::AutogenInstalledPreview { inventory } => {
             let db = open_main_db(&invocation.data_dir)?;
             let inventory = read_installed_inventory(&inventory)?;
-            let plan = autogen::build_local_autogen_plan(&db, &inventory)?;
-            Ok(autogen::installed_preview_json(&invocation.data_dir, &plan))
+            let plan =
+                autogen::build_installed_autogen_plan(&invocation.data_dir, &db, &inventory)?;
+            autogen::installed_preview_json(&invocation.data_dir, &plan).map_err(CliError::from)
         }
         CliCommand::AutogenInstalledApply {
             preview,
@@ -805,6 +827,26 @@ fn initialize_storage(data_dir: &Path) -> Result<(), CliError> {
     MainDb::open(main_db_path(data_dir))?;
     CacheDb::open(cache_db_path(data_dir))?;
     Ok(())
+}
+
+fn initialize_data_dir_layout(data_dir: &Path) -> Result<GetterDataDirLayout, CliError> {
+    let layout = GetterDataDirLayout::new(data_dir);
+    fs::create_dir_all(&layout.repository_root).map_err(|source| {
+        CliError::Storage(format!("failed to create repository root: {source}"))
+    })?;
+    fs::create_dir_all(&layout.runtime_config_root).map_err(|source| {
+        CliError::Storage(format!("failed to create runtime config root: {source}"))
+    })?;
+    let metadata_path = layout.repository_root.join(REPOSITORY_ROOT_METADATA_FILE);
+    if !metadata_path.exists() {
+        fs::write(&metadata_path, REPOSITORY_ROOT_METADATA_STARTER).map_err(|source| {
+            CliError::Storage(format!(
+                "failed to write repository root metadata '{}': {source}",
+                metadata_path.display()
+            ))
+        })?;
+    }
+    Ok(layout)
 }
 
 fn open_initialized_storage(data_dir: &Path) -> Result<(), CliError> {

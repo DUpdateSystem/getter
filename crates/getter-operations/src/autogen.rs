@@ -1,18 +1,20 @@
 //! Getter-owned installed-inventory autogen operations.
 //!
 //! The CLI and native bridge both call this module so there is one implementation
-//! of `local_autogen` preview/apply semantics. Platform layers provide installed
+//! of installed-autogen preview/apply semantics. Platform layers provide installed
 //! inventory facts; this module decides generated package ids, repository
 //! coverage, file writes, manifest updates, preservation behavior, and tracked
 //! state updates.
 
 use getter_core::autogen::{
-    content_hash, local_autogen_repo_toml, local_repo_toml, plan_local_autogen, AutogenManifest,
-    AutogenManifestEntry, AutogenPlan, AutogenSkipReason, InstalledInventory,
-    LOCAL_AUTOGEN_REPOSITORY_ID, LOCAL_AUTOGEN_REPOSITORY_NAME, LOCAL_REPOSITORY_ID,
-    LOCAL_REPOSITORY_NAME,
+    content_hash, local_repo_toml, plan_installed_autogen, AutogenManifest, AutogenManifestEntry,
+    AutogenPlan, AutogenSkipReason, InstalledInventory, DEFAULT_AUTOGEN_REPOSITORY_ID,
+    DEFAULT_AUTOGEN_REPOSITORY_NAME, LOCAL_REPOSITORY_ID, LOCAL_REPOSITORY_NAME,
 };
-use getter_core::repository::{RepositoryLayout, RepositoryMetadata, REPO_API_VERSION_V1};
+use getter_core::repository::{
+    generated_repository_target, GeneratedRepositoryTarget, GetterDataDirLayout, RepositoryLayout,
+    RepositoryLoadError, RepositoryMetadata, RepositoryRootConfig, REPO_API_VERSION_V1,
+};
 use getter_core::{PackageId, RepositoryId, RepositoryPriority};
 use getter_storage::{MainDb, StorageError, StoredRepository};
 use serde_json::{json, Value};
@@ -34,28 +36,55 @@ pub enum AutogenOperationError {
     Storage(#[from] StorageError),
     #[error("repository error: {0}")]
     Repository(String),
+    #[error("configured generated repository '{alias}' does not exist at {path}")]
+    MissingGeneratedRepository { alias: RepositoryId, path: PathBuf },
     #[error("autogen error: {0}")]
     Autogen(String),
 }
 
+impl From<RepositoryLoadError> for AutogenOperationError {
+    fn from(value: RepositoryLoadError) -> Self {
+        match value {
+            RepositoryLoadError::MissingGeneratedRepository { alias, path } => {
+                Self::MissingGeneratedRepository { alias, path }
+            }
+            other => Self::Repository(other.to_string()),
+        }
+    }
+}
+
 pub type AutogenOperationResult<T> = Result<T, AutogenOperationError>;
 
-pub fn build_local_autogen_plan(
+pub fn build_installed_autogen_plan(
+    data_dir: &Path,
     db: &MainDb,
     inventory: &InstalledInventory,
 ) -> AutogenOperationResult<AutogenPlan> {
-    let covered = higher_priority_package_coverage(db)?;
-    plan_local_autogen(inventory, &covered)
-        .map_err(|source| AutogenOperationError::Autogen(source.to_string()))
+    let (target_alias, _target_path, target_priority) = generated_repository_config(data_dir)?;
+    let covered = higher_priority_package_coverage(db, &target_alias, target_priority)?;
+    let mut plan = plan_installed_autogen(inventory, &covered)
+        .map_err(|source| AutogenOperationError::Autogen(source.to_string()))?;
+    plan.repository_id = target_alias.clone();
+    plan.repository_name = if target_alias.as_str() == DEFAULT_AUTOGEN_REPOSITORY_ID {
+        DEFAULT_AUTOGEN_REPOSITORY_NAME.to_owned()
+    } else {
+        target_alias.to_string()
+    };
+    plan.repository_priority = target_priority;
+    Ok(plan)
 }
 
-pub fn installed_preview_json(data_dir: &Path, plan: &AutogenPlan) -> Value {
+pub fn installed_preview_json(
+    data_dir: &Path,
+    plan: &AutogenPlan,
+) -> AutogenOperationResult<Value> {
+    let (target_alias, target_path, _target_priority) = generated_repository_config(data_dir)?;
     let candidates: Vec<Value> = plan.candidates.iter().map(autogen_candidate_json).collect();
     let skipped: Vec<Value> = plan.skipped.iter().map(autogen_skip_json).collect();
-    json!({
+    Ok(json!({
         "operation": "installed.preview",
-        "target_repo_id": plan.repository_id.as_str(),
-        "target_repo_path": local_autogen_repo_path(data_dir),
+        "target_repo_id": target_alias.as_str(),
+        "target_repo_path": target_path,
         "summary": {
             "candidate_count": candidates.len(),
             "skipped_count": skipped.len(),
@@ -65,7 +94,7 @@ pub fn installed_preview_json(data_dir: &Path, plan: &AutogenPlan) -> Value {
         "candidates": candidates,
         "skipped": skipped,
         "diagnostics": [],
-    })
+    }))
 }
 
 pub fn cleanup_preview_json(
@@ -73,11 +102,11 @@ pub fn cleanup_preview_json(
     db: &MainDb,
     inventory: &InstalledInventory,
 ) -> AutogenOperationResult<Value> {
-    let repo_path = local_autogen_repo_path(data_dir);
+    let (target_alias, repo_path, _target_priority) = generated_repository_config(data_dir)?;
     let Some(manifest) = read_autogen_manifest(&repo_path)? else {
         return Ok(json!({
             "operation": "cleanup.preview",
-            "target_repo_id": LOCAL_AUTOGEN_REPOSITORY_ID,
+            "target_repo_id": target_alias.as_str(),
             "target_repo_path": repo_path,
             "summary": { "candidate_count": 0, "skipped_count": 0, "write_count": 0, "delete_count": 0 },
             "candidates": [],
@@ -85,7 +114,7 @@ pub fn cleanup_preview_json(
             "diagnostics": [],
         }));
     };
-    let plan = build_local_autogen_plan(db, inventory)?;
+    let plan = build_installed_autogen_plan(data_dir, db, inventory)?;
     let installed_ids: BTreeSet<String> = plan
         .candidates
         .iter()
@@ -113,7 +142,7 @@ pub fn cleanup_preview_json(
     });
     Ok(json!({
         "operation": "cleanup.preview",
-        "target_repo_id": LOCAL_AUTOGEN_REPOSITORY_ID,
+        "target_repo_id": target_alias.as_str(),
         "target_repo_path": repo_path,
         "summary": {
             "candidate_count": candidates.len(),
@@ -133,10 +162,17 @@ pub fn apply_installed_preview(
     preview: &Value,
     acceptance: &AutogenAcceptance,
 ) -> AutogenOperationResult<Value> {
-    let repo_path = local_autogen_repo_path(data_dir);
-    ensure_local_autogen_repository(data_dir, db)?;
+    let (target_alias, repo_path, target_priority) = generated_repository_config(data_dir)?;
+    if preview.get("target_repo_id").and_then(Value::as_str) != Some(target_alias.as_str()) {
+        return Err(AutogenOperationError::Autogen(format!(
+            "installed preview target_repo_id must be '{}'",
+            target_alias.as_str()
+        )));
+    }
+    ensure_generated_repository(&repo_path, db, &target_alias, target_priority)?;
     let accepted = accepted_preview_candidates(preview, acceptance)?;
-    let mut manifest = read_autogen_manifest(&repo_path)?.unwrap_or_else(empty_autogen_manifest);
+    let mut manifest =
+        read_autogen_manifest(&repo_path)?.unwrap_or_else(|| empty_autogen_manifest(&target_alias));
     let mut applied = Vec::new();
     let mut preserved = Vec::new();
 
@@ -203,10 +239,7 @@ pub fn apply_installed_preview(
                 content_hash: expected_hash.to_owned(),
             },
         );
-        db.upsert_generated_tracked_package_preserving_user_state(
-            &package_id,
-            &RepositoryId::new(LOCAL_AUTOGEN_REPOSITORY_ID).expect("valid id"),
-        )?;
+        db.upsert_generated_tracked_package_preserving_user_state(&package_id, &target_alias)?;
         applied.push(json!({
             "package_id": package_id.to_string(),
             "output_relative_path": relative_path,
@@ -215,7 +248,7 @@ pub fn apply_installed_preview(
 
     write_autogen_manifest(&repo_path, &manifest)?;
     Ok(json!({
-        "target_repo_id": LOCAL_AUTOGEN_REPOSITORY_ID,
+        "target_repo_id": target_alias.as_str(),
         "target_repo_path": repo_path,
         "applied_count": applied.len(),
         "applied": applied,
@@ -229,17 +262,18 @@ pub fn apply_cleanup_preview(
     preview: &Value,
     acceptance: &AutogenAcceptance,
 ) -> AutogenOperationResult<Value> {
-    if preview.get("target_repo_id").and_then(Value::as_str) != Some(LOCAL_AUTOGEN_REPOSITORY_ID) {
+    let (target_alias, repo_path, _target_priority) = generated_repository_config(data_dir)?;
+    if preview.get("target_repo_id").and_then(Value::as_str) != Some(target_alias.as_str()) {
         return Err(AutogenOperationError::Autogen(format!(
-            "cleanup preview target_repo_id must be '{LOCAL_AUTOGEN_REPOSITORY_ID}'"
+            "cleanup preview target_repo_id must be '{}'",
+            target_alias.as_str()
         )));
     }
-    let repo_path = local_autogen_repo_path(data_dir);
     let accepted = accepted_preview_candidates(preview, acceptance)?;
-    let mut manifest = read_autogen_manifest(&repo_path)?.unwrap_or_else(empty_autogen_manifest);
+    let mut manifest =
+        read_autogen_manifest(&repo_path)?.unwrap_or_else(|| empty_autogen_manifest(&target_alias));
     let mut deleted = Vec::new();
     let mut preserved = Vec::new();
-    let local_autogen_id = RepositoryId::new(LOCAL_AUTOGEN_REPOSITORY_ID).expect("valid id");
     for candidate in accepted {
         let package_id = preview_package_id(candidate)?;
         let relative_path = preview_relative_path(candidate)?;
@@ -253,14 +287,14 @@ pub fn apply_cleanup_preview(
             })?;
         let manifest_entry = manifest.package(&package_id).ok_or_else(|| {
             AutogenOperationError::Autogen(format!(
-                "cleanup preview candidate {package_id} is not managed by local_autogen manifest"
+                "cleanup preview candidate {package_id} is not managed by autogen manifest"
             ))
         })?;
         if manifest_entry.relative_path != relative_path
             || manifest_entry.content_hash != expected_hash
         {
             return Err(AutogenOperationError::Autogen(format!(
-                "cleanup preview candidate {package_id} does not match local_autogen manifest"
+                "cleanup preview candidate {package_id} does not match autogen manifest"
             )));
         }
         let target = safe_join(&repo_path, &relative_path)?;
@@ -289,7 +323,7 @@ pub fn apply_cleanup_preview(
         manifest
             .packages
             .retain(|entry| entry.package_id != package_id);
-        db.delete_generated_tracked_package(&package_id, &local_autogen_id)?;
+        db.delete_generated_tracked_package(&package_id, &target_alias)?;
         deleted.push(json!({
             "package_id": package_id.to_string(),
             "output_relative_path": relative_path,
@@ -297,7 +331,7 @@ pub fn apply_cleanup_preview(
     }
     write_autogen_manifest(&repo_path, &manifest)?;
     Ok(json!({
-        "target_repo_id": LOCAL_AUTOGEN_REPOSITORY_ID,
+        "target_repo_id": target_alias.as_str(),
         "target_repo_path": repo_path,
         "deleted_count": deleted.len(),
         "deleted": deleted,
@@ -322,21 +356,36 @@ pub fn unwrap_preview_payload(
     Ok(payload)
 }
 
-pub fn local_autogen_repo_path(data_dir: &Path) -> PathBuf {
-    data_dir
-        .join("repositories")
-        .join(LOCAL_AUTOGEN_REPOSITORY_ID)
+pub fn default_autogen_repo_path(data_dir: &Path) -> PathBuf {
+    GetterDataDirLayout::new(data_dir)
+        .repository_path(&RepositoryId::new(DEFAULT_AUTOGEN_REPOSITORY_ID).expect("valid id"))
+}
+
+fn generated_repository_config(
+    data_dir: &Path,
+) -> AutogenOperationResult<(RepositoryId, PathBuf, RepositoryPriority)> {
+    let layout = GetterDataDirLayout::new(data_dir);
+    let config = RepositoryRootConfig::load(&layout.repository_root)?;
+    let target = generated_repository_target(data_dir)?;
+    let (alias, path) = match target {
+        GeneratedRepositoryTarget::CreateDefault { alias, path }
+        | GeneratedRepositoryTarget::Existing { alias, path } => (alias, path),
+    };
+    let priority = config.priority_for(&alias);
+    Ok((alias, path, priority))
 }
 
 fn higher_priority_package_coverage(
     db: &MainDb,
+    target_alias: &RepositoryId,
+    target_priority: RepositoryPriority,
 ) -> AutogenOperationResult<HashMap<PackageId, RepositoryId>> {
     let mut covered = HashMap::new();
     for repo in db.repositories()? {
-        if repo.id.as_str() == LOCAL_AUTOGEN_REPOSITORY_ID {
+        if &repo.id == target_alias {
             continue;
         }
-        if repo.priority <= RepositoryPriority::LOCAL_AUTOGEN {
+        if repo.priority <= target_priority {
             continue;
         }
         let Some(path) = repo.path.as_ref() else {
@@ -431,23 +480,41 @@ fn preview_relative_path(candidate: &Value) -> AutogenOperationResult<PathBuf> {
         })
 }
 
-fn ensure_local_autogen_repository(
-    data_dir: &Path,
+fn ensure_generated_repository(
+    repo_path: &Path,
     db: &MainDb,
-) -> AutogenOperationResult<PathBuf> {
-    let repo_path = local_autogen_repo_path(data_dir);
-    ensure_repository_layout(&repo_path, &local_autogen_repo_toml())?;
+    alias: &RepositoryId,
+    priority: RepositoryPriority,
+) -> AutogenOperationResult<()> {
+    ensure_repository_layout(repo_path, &generated_repo_toml(alias, priority))?;
     db.upsert_repository(
         &RepositoryMetadata {
-            id: RepositoryId::new(LOCAL_AUTOGEN_REPOSITORY_ID).expect("valid id"),
-            name: LOCAL_AUTOGEN_REPOSITORY_NAME.to_owned(),
-            priority: RepositoryPriority::LOCAL_AUTOGEN,
+            id: alias.clone(),
+            name: generated_repository_name(alias),
+            priority,
             api_version: REPO_API_VERSION_V1.to_owned(),
         },
-        Some(&repo_path),
+        Some(repo_path),
         None,
     )?;
-    Ok(repo_path)
+    Ok(())
+}
+
+fn generated_repo_toml(alias: &RepositoryId, priority: RepositoryPriority) -> String {
+    format!(
+        "id = \"{}\"\nname = \"{}\"\npriority = {}\napi_version = \"{REPO_API_VERSION_V1}\"\n",
+        alias.as_str(),
+        generated_repository_name(alias),
+        priority.value()
+    )
+}
+
+fn generated_repository_name(alias: &RepositoryId) -> String {
+    if alias.as_str() == DEFAULT_AUTOGEN_REPOSITORY_ID {
+        DEFAULT_AUTOGEN_REPOSITORY_NAME.to_owned()
+    } else {
+        alias.to_string()
+    }
 }
 
 fn ensure_local_repository(data_dir: &Path, db: &MainDb) -> AutogenOperationResult<PathBuf> {
@@ -458,7 +525,8 @@ fn ensure_local_repository(data_dir: &Path, db: &MainDb) -> AutogenOperationResu
         return Ok(repo_path);
     }
 
-    let repo_path = data_dir.join("repositories").join(LOCAL_REPOSITORY_ID);
+    let repo_path = GetterDataDirLayout::new(data_dir)
+        .repository_path(&RepositoryId::new(LOCAL_REPOSITORY_ID).expect("valid id"));
     ensure_repository_layout(&repo_path, &local_repo_toml())?;
     db.upsert_repository(
         &RepositoryMetadata {
@@ -601,10 +669,10 @@ fn write_autogen_manifest(
     })
 }
 
-fn empty_autogen_manifest() -> AutogenManifest {
+fn empty_autogen_manifest(repository_id: &RepositoryId) -> AutogenManifest {
     AutogenManifest {
         version: getter_core::autogen::AUTOGEN_MANIFEST_VERSION,
-        repository_id: RepositoryId::new(LOCAL_AUTOGEN_REPOSITORY_ID).expect("valid id"),
+        repository_id: repository_id.clone(),
         packages: Vec::new(),
     }
 }
@@ -634,4 +702,110 @@ fn safe_join(root: &Path, relative: &Path) -> AutogenOperationResult<PathBuf> {
         )));
     }
     Ok(root.join(relative))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use getter_storage::MainDb;
+
+    fn test_inventory() -> InstalledInventory {
+        InstalledInventory::new(vec![
+            getter_core::autogen::InstalledInventoryItem::AndroidPackage {
+                package_name: "com.example.autogen".to_owned(),
+                label: Some("Example Autogen".to_owned()),
+                version_name: None,
+                version_code: None,
+            },
+        ])
+    }
+
+    #[test]
+    fn preview_uses_default_generated_repository_under_repo_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+
+        let plan = build_installed_autogen_plan(data_dir, &db, &test_inventory()).unwrap();
+        let preview = installed_preview_json(data_dir, &plan).unwrap();
+
+        assert_eq!(preview["target_repo_id"], "autogen");
+        assert_eq!(
+            preview["target_repo_path"].as_str(),
+            data_dir.join("repo/autogen").to_str()
+        );
+        assert!(!data_dir.join("repo/autogen").exists());
+    }
+
+    #[test]
+    fn apply_creates_default_generated_repository_and_registers_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        let plan = build_installed_autogen_plan(data_dir, &db, &test_inventory()).unwrap();
+        let preview = installed_preview_json(data_dir, &plan).unwrap();
+
+        let result =
+            apply_installed_preview(data_dir, &db, &preview, &AutogenAcceptance::AcceptAll)
+                .unwrap();
+
+        assert_eq!(result["target_repo_id"], "autogen");
+        assert!(data_dir.join("repo/autogen/repo.toml").is_file());
+        assert!(data_dir
+            .join("repo/autogen/packages/android/com.example.autogen.lua")
+            .is_file());
+        let repos = db.repositories().unwrap();
+        assert_eq!(repos[0].id.as_str(), "autogen");
+        assert_eq!(repos[0].priority.value(), -1);
+    }
+
+    #[test]
+    fn custom_generated_repository_must_already_exist() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        fs::create_dir_all(data_dir.join("repo")).unwrap();
+        fs::write(
+            data_dir.join("repo/metadata.jsonc"),
+            r#"{ "version": 1, "generated_repository": "generated" }"#,
+        )
+        .unwrap();
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+
+        let error = build_installed_autogen_plan(data_dir, &db, &test_inventory()).unwrap_err();
+
+        assert!(matches!(
+            error,
+            AutogenOperationError::MissingGeneratedRepository { ref alias, .. }
+                if alias.as_str() == "generated"
+        ));
+    }
+
+    #[test]
+    fn custom_generated_repository_uses_configured_priority() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        fs::create_dir_all(data_dir.join("repo/generated")).unwrap();
+        fs::write(
+            data_dir.join("repo/metadata.jsonc"),
+            r#"{
+  "version": 1,
+  "generated_repository": "generated",
+  "priority": { "generated": -5 }
+}"#,
+        )
+        .unwrap();
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+
+        let plan = build_installed_autogen_plan(data_dir, &db, &test_inventory()).unwrap();
+        let preview = installed_preview_json(data_dir, &plan).unwrap();
+        let result =
+            apply_installed_preview(data_dir, &db, &preview, &AutogenAcceptance::AcceptAll)
+                .unwrap();
+
+        assert_eq!(preview["target_repo_id"], "generated");
+        assert_eq!(result["target_repo_id"], "generated");
+        let repos = db.repositories().unwrap();
+        assert_eq!(repos[0].id.as_str(), "generated");
+        assert_eq!(repos[0].priority.value(), -5);
+    }
 }

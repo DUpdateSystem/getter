@@ -2,10 +2,19 @@
 
 use crate::{PackageId, PackageIdError, RepositoryId, RepositoryIdError, RepositoryPriority};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const REPO_API_VERSION_V1: &str = "getter.repo.v1";
+pub const MAIN_DB_FILE: &str = "main.db";
+pub const CACHE_DB_FILE: &str = "cache.db";
+pub const REPOSITORY_ROOT_DIR: &str = "repo";
+pub const RUNTIME_CONFIG_DIR: &str = "rc";
+pub const REPOSITORY_ROOT_METADATA_FILE: &str = "metadata.jsonc";
+pub const REPOSITORY_ROOT_METADATA_VERSION: u32 = 1;
+pub const LOCAL_REPOSITORY_ALIAS: &str = "local";
+pub const DEFAULT_GENERATED_REPOSITORY_ALIAS: &str = "autogen";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryLayout {
@@ -26,6 +35,200 @@ pub struct RepositoryMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetterDataDirLayout {
+    pub root: PathBuf,
+    pub main_db: PathBuf,
+    pub cache_db: PathBuf,
+    pub repository_root: PathBuf,
+    pub runtime_config_root: PathBuf,
+}
+
+impl GetterDataDirLayout {
+    pub fn new(root: impl AsRef<Path>) -> Self {
+        let root = root.as_ref().to_path_buf();
+        Self {
+            main_db: root.join(MAIN_DB_FILE),
+            cache_db: root.join(CACHE_DB_FILE),
+            repository_root: root.join(REPOSITORY_ROOT_DIR),
+            runtime_config_root: root.join(RUNTIME_CONFIG_DIR),
+            root,
+        }
+    }
+
+    pub fn repository_path(&self, alias: &RepositoryId) -> PathBuf {
+        self.repository_root.join(alias.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryRootConfig {
+    pub generated_repository: RepositoryId,
+    priority: HashMap<String, RepositoryPriority>,
+}
+
+impl RepositoryRootConfig {
+    pub fn load(repository_root: impl AsRef<Path>) -> Result<Self, RepositoryLoadError> {
+        let path = repository_root.as_ref().join(REPOSITORY_ROOT_METADATA_FILE);
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let bytes = fs::read(&path).map_err(|source| RepositoryLoadError::ReadRootMetadata {
+            path: path.clone(),
+            source,
+        })?;
+        let raw: RawRepositoryRootConfig = serde_json::from_reader(
+            json_comments::StripComments::new(bytes.as_slice()),
+        )
+        .map_err(|source| RepositoryLoadError::ParseRootMetadata {
+            path: path.clone(),
+            source,
+        })?;
+        if raw.version != REPOSITORY_ROOT_METADATA_VERSION {
+            return Err(RepositoryLoadError::UnsupportedRootMetadataVersion {
+                path,
+                found: raw.version,
+                expected: REPOSITORY_ROOT_METADATA_VERSION,
+            });
+        }
+        let priority = raw
+            .priority
+            .into_iter()
+            .map(|(alias, value)| (alias, RepositoryPriority::new(value)))
+            .collect();
+        Ok(Self {
+            generated_repository: RepositoryId::new(
+                raw.generated_repository
+                    .unwrap_or_else(|| DEFAULT_GENERATED_REPOSITORY_ALIAS.to_owned()),
+            )?,
+            priority,
+        })
+    }
+
+    pub fn priority_for(&self, alias: &RepositoryId) -> RepositoryPriority {
+        self.priority
+            .get(alias.as_str())
+            .copied()
+            .unwrap_or_else(|| default_repository_priority(alias.as_str()))
+    }
+}
+
+impl Default for RepositoryRootConfig {
+    fn default() -> Self {
+        Self {
+            generated_repository: RepositoryId::new(DEFAULT_GENERATED_REPOSITORY_ALIAS)
+                .expect("default generated repository alias is valid"),
+            priority: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryAliasEntry {
+    pub alias: RepositoryId,
+    pub path: PathBuf,
+    pub priority: RepositoryPriority,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryRootLayout {
+    pub root: PathBuf,
+    pub config: RepositoryRootConfig,
+    pub repositories: Vec<RepositoryAliasEntry>,
+}
+
+impl RepositoryRootLayout {
+    pub fn load(root: impl AsRef<Path>) -> Result<Self, RepositoryLoadError> {
+        let root = root.as_ref().to_path_buf();
+        let config = RepositoryRootConfig::load(&root)?;
+        let mut repositories = Vec::new();
+        match fs::read_dir(&root) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry =
+                        entry.map_err(|source| RepositoryLoadError::ReadRepositoryRoot {
+                            path: root.clone(),
+                            source,
+                        })?;
+                    let file_type = entry.file_type().map_err(|source| {
+                        RepositoryLoadError::ReadRepositoryRoot {
+                            path: root.clone(),
+                            source,
+                        }
+                    })?;
+                    if !file_type.is_dir() {
+                        continue;
+                    }
+                    let alias_text = entry.file_name().to_string_lossy().into_owned();
+                    let alias = RepositoryId::new(alias_text)?;
+                    let priority = config.priority_for(&alias);
+                    repositories.push(RepositoryAliasEntry {
+                        alias,
+                        path: entry.path(),
+                        priority,
+                    });
+                }
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(RepositoryLoadError::ReadRepositoryRoot {
+                    path: root.clone(),
+                    source,
+                })
+            }
+        }
+        repositories.sort_by(|left, right| {
+            right
+                .priority
+                .cmp(&left.priority)
+                .then_with(|| left.alias.as_str().cmp(right.alias.as_str()))
+        });
+        Ok(Self {
+            root,
+            config,
+            repositories,
+        })
+    }
+}
+
+pub fn default_repository_priority(alias: &str) -> RepositoryPriority {
+    match alias {
+        LOCAL_REPOSITORY_ALIAS => RepositoryPriority::LOCAL,
+        DEFAULT_GENERATED_REPOSITORY_ALIAS => RepositoryPriority::GENERATED_FALLBACK,
+        _ => RepositoryPriority::DEFAULT,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeneratedRepositoryTarget {
+    CreateDefault { alias: RepositoryId, path: PathBuf },
+    Existing { alias: RepositoryId, path: PathBuf },
+}
+
+pub fn generated_repository_target(
+    data_dir: impl AsRef<Path>,
+) -> Result<GeneratedRepositoryTarget, RepositoryLoadError> {
+    let layout = GetterDataDirLayout::new(data_dir);
+    let config = RepositoryRootConfig::load(&layout.repository_root)?;
+    let path = layout.repository_path(&config.generated_repository);
+    if config.generated_repository.as_str() == DEFAULT_GENERATED_REPOSITORY_ALIAS {
+        Ok(GeneratedRepositoryTarget::CreateDefault {
+            alias: config.generated_repository,
+            path,
+        })
+    } else if path.is_dir() {
+        Ok(GeneratedRepositoryTarget::Existing {
+            alias: config.generated_repository,
+            path,
+        })
+    } else {
+        Err(RepositoryLoadError::MissingGeneratedRepository {
+            alias: config.generated_repository,
+            path,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageFile {
     pub id: PackageId,
     pub path: PathBuf,
@@ -39,8 +242,43 @@ pub struct RepositoryPackageCacheKey {
     pub package_file_hash: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct RawRepositoryRootConfig {
+    version: u32,
+    #[serde(default)]
+    generated_repository: Option<String>,
+    #[serde(default)]
+    priority: HashMap<String, i32>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryLoadError {
+    #[error("failed to read repository root metadata at {path}: {source}")]
+    ReadRootMetadata {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse repository root metadata at {path}: {source}")]
+    ParseRootMetadata {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("unsupported repository root metadata version {found} at {path}; expected {expected}")]
+    UnsupportedRootMetadataVersion {
+        path: PathBuf,
+        found: u32,
+        expected: u32,
+    },
+    #[error("failed to read repository root {path}: {source}")]
+    ReadRepositoryRoot {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("configured generated repository '{alias}' does not exist at {path}")]
+    MissingGeneratedRepository { alias: RepositoryId, path: PathBuf },
     #[error("failed to read repo.toml at {path}: {source}")]
     ReadRepoToml {
         path: PathBuf,
@@ -281,6 +519,154 @@ mod tests {
     use std::io::Write;
 
     #[test]
+    fn data_dir_layout_uses_repo_and_rc_roots() {
+        let layout = GetterDataDirLayout::new("/tmp/ua-getter");
+
+        assert_eq!(layout.main_db, PathBuf::from("/tmp/ua-getter/main.db"));
+        assert_eq!(layout.cache_db, PathBuf::from("/tmp/ua-getter/cache.db"));
+        assert_eq!(layout.repository_root, PathBuf::from("/tmp/ua-getter/repo"));
+        assert_eq!(
+            layout.runtime_config_root,
+            PathBuf::from("/tmp/ua-getter/rc")
+        );
+    }
+
+    #[test]
+    fn missing_root_metadata_uses_default_priorities_and_generated_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir_all(root.join("community")).unwrap();
+        fs::create_dir_all(root.join("local")).unwrap();
+        fs::create_dir_all(root.join("autogen")).unwrap();
+
+        let layout = RepositoryRootLayout::load(&root).unwrap();
+
+        assert_eq!(
+            layout.config.generated_repository.as_str(),
+            DEFAULT_GENERATED_REPOSITORY_ALIAS
+        );
+        assert_eq!(
+            layout
+                .repositories
+                .iter()
+                .map(|repo| (repo.alias.as_str().to_owned(), repo.priority.value()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("local".to_owned(), 100),
+                ("community".to_owned(), 0),
+                ("autogen".to_owned(), -1),
+            ]
+        );
+    }
+
+    #[test]
+    fn root_metadata_priority_map_is_lookup_only_for_existing_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir_all(root.join("official")).unwrap();
+        fs::write(
+            root.join(REPOSITORY_ROOT_METADATA_FILE),
+            r#"{
+  "version": 1,
+  // This entry must not create or sort a missing repository.
+  "generated_repository": "autogen",
+  "priority": {
+    "missing": 500,
+    "not an alias": 400,
+    "official": 7
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let layout = RepositoryRootLayout::load(&root).unwrap();
+
+        assert_eq!(layout.repositories.len(), 1);
+        assert_eq!(layout.repositories[0].alias.as_str(), "official");
+        assert_eq!(layout.repositories[0].priority.value(), 7);
+        assert_eq!(
+            layout.config.generated_repository.as_str(),
+            DEFAULT_GENERATED_REPOSITORY_ALIAS
+        );
+    }
+
+    #[test]
+    fn malformed_root_metadata_is_an_error_instead_of_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(REPOSITORY_ROOT_METADATA_FILE), "{not-json").unwrap();
+
+        assert!(matches!(
+            RepositoryRootLayout::load(&root),
+            Err(RepositoryLoadError::ParseRootMetadata { .. })
+        ));
+    }
+
+    #[test]
+    fn generated_repository_target_creates_only_default_alias() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+
+        let target = generated_repository_target(data_dir).unwrap();
+
+        assert!(matches!(
+            target,
+            GeneratedRepositoryTarget::CreateDefault { ref alias, ref path }
+                if alias.as_str() == DEFAULT_GENERATED_REPOSITORY_ALIAS
+                    && path == &data_dir.join("repo").join(DEFAULT_GENERATED_REPOSITORY_ALIAS)
+        ));
+    }
+
+    #[test]
+    fn generated_repository_target_rejects_missing_custom_alias() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).unwrap();
+        fs::write(
+            repo_root.join(REPOSITORY_ROOT_METADATA_FILE),
+            r#"{
+  "version": 1,
+  "generated_repository": "generated",
+  "priority": {}
+}
+"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            generated_repository_target(temp.path()),
+            Err(RepositoryLoadError::MissingGeneratedRepository { ref alias, .. })
+                if alias.as_str() == "generated"
+        ));
+    }
+
+    #[test]
+    fn generated_repository_target_accepts_existing_custom_alias() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(repo_root.join("generated")).unwrap();
+        fs::write(
+            repo_root.join(REPOSITORY_ROOT_METADATA_FILE),
+            r#"{
+  "version": 1,
+  "generated_repository": "generated"
+}
+"#,
+        )
+        .unwrap();
+
+        let target = generated_repository_target(temp.path()).unwrap();
+
+        assert!(matches!(
+            target,
+            GeneratedRepositoryTarget::Existing { ref alias, ref path }
+                if alias.as_str() == "generated" && path == &repo_root.join("generated")
+        ));
+    }
+
+    #[test]
     fn derives_package_id_from_lua_path() {
         let root = PathBuf::from("repo/packages");
         let id =
@@ -362,7 +748,7 @@ api_version = "getter.repo.v1"
     #[test]
     fn highest_priority_selects_larger_number() {
         let priorities = [
-            RepositoryPriority::LOCAL_AUTOGEN,
+            RepositoryPriority::GENERATED_FALLBACK,
             RepositoryPriority::DEFAULT,
             RepositoryPriority::LOCAL,
         ];

@@ -7,7 +7,7 @@ Feature: Installed app autogen
     Then the command succeeds
     And the output is valid JSON
     And the autogen preview contains candidate "android/com.example.autogen"
-    And the local_autogen repository has not been written
+    And the autogen repository has not been written
 
   Scenario: User applies installed app autogen and evaluates the generated fallback package
     Given an initialized getter data directory
@@ -17,11 +17,11 @@ Feature: Installed app autogen
     And I save the autogen preview to a file
     When I run getter autogen installed apply for that preview with accept-all
     Then the command succeeds
-    And the local_autogen repository contains generated package "android/com.example.autogen"
+    And the autogen repository contains generated package "android/com.example.autogen"
     And the app list contains autogen tracked package "android/com.example.autogen"
-    When I run getter repo validate for local_autogen
+    When I run getter repo validate for autogen
     Then the output reports a valid repository without network
-    When I run getter package eval for package "android/com.example.autogen" from local_autogen
+    When I run getter package eval for package "android/com.example.autogen" from autogen
     Then the output contains package "android/com.example.autogen" named "Example Autogen"
 
   Scenario: Higher-priority repositories suppress installed app autogen candidates
@@ -49,7 +49,7 @@ Feature: Installed app autogen
     And I save the autogen preview to a file
     When I run getter autogen cleanup apply for that preview with accept-all
     Then the command succeeds
-    And the local_autogen repository does not contain generated package "android/com.example.old"
+    And the autogen repository does not contain generated package "android/com.example.old"
     And the app list does not contain package "android/com.example.old"
 
   Scenario: Cleanup rejects tampered previews for non-autogen tracked packages

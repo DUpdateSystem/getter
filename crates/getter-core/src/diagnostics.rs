@@ -87,6 +87,35 @@ pub fn validate_repository_path(path: impl AsRef<Path>) -> RepositoryValidationR
 
 fn repository_load_diagnostic(error: RepositoryLoadError) -> PackageValidationDiagnostic {
     let (code, path, message) = match error {
+        RepositoryLoadError::ReadRootMetadata { path, source } => (
+            "repository.read_root_metadata",
+            path,
+            format!("failed to read repository root metadata: {source}"),
+        ),
+        RepositoryLoadError::ParseRootMetadata { path, source } => (
+            "repository.parse_root_metadata",
+            path,
+            format!("failed to parse repository root metadata: {source}"),
+        ),
+        RepositoryLoadError::UnsupportedRootMetadataVersion {
+            path,
+            found,
+            expected,
+        } => (
+            "repository.unsupported_root_metadata_version",
+            path,
+            format!("unsupported repository root metadata version {found}; expected {expected}"),
+        ),
+        RepositoryLoadError::ReadRepositoryRoot { path, source } => (
+            "repository.read_root",
+            path,
+            format!("failed to read repository root: {source}"),
+        ),
+        RepositoryLoadError::MissingGeneratedRepository { alias, path } => (
+            "repository.missing_generated_repository",
+            path,
+            format!("configured generated repository '{alias}' does not exist"),
+        ),
         RepositoryLoadError::ReadRepoToml { path, source } => (
             "repository.read_repo_toml",
             path,
