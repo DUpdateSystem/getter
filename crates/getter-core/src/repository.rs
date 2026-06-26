@@ -18,6 +18,7 @@ pub const REPOSITORY_SELF_METADATA_DIR: &str = ".metadata";
 pub const REPOSITORY_LUACLASS_DIR: &str = "luaclass";
 pub const PACKAGE_METADATA_FILE: &str = "metadata.jsonc";
 pub const PACKAGE_MANIFEST_FILE: &str = "Manifest";
+pub const PACKAGE_LOCAL_FILES_DIR: &str = "files";
 pub const LUA_SCRIPT_EXTENSION: &str = "lua";
 pub const LUA_API_SHEBANG_V1: &str = "#!/bin/upa-lua v1";
 pub const LOCAL_REPOSITORY_ALIAS: &str = "local";
@@ -405,6 +406,8 @@ pub enum RepositoryLoadError {
         #[source]
         source: std::io::Error,
     },
+    #[error("invalid package-local file {path}: {reason}")]
+    InvalidPackageLocalFile { path: PathBuf, reason: String },
     #[error("failed to read package metadata at {path}: {source}")]
     ReadPackageMetadata {
         path: PathBuf,
@@ -840,19 +843,106 @@ pub fn package_directory_cache_key(
     package: &PackageDirectory,
     script: &PackageVersionScript,
 ) -> Result<RepositoryPackageCacheKey, RepositoryLoadError> {
-    let package_file_hash = format!(
-        "metadata={};script={};manifest={}",
-        package_file_content_hash(&package.metadata_path)?,
-        package_file_content_hash(&script.path)?,
-        optional_file_content_hash(&package.path.join(PACKAGE_MANIFEST_FILE))?
-            .unwrap_or_else(|| "missing".to_owned())
-    );
+    let package_file_hash = package_directory_dependency_hash(package, script)?;
     Ok(RepositoryPackageCacheKey {
         repository_id: repository_id.clone(),
         package_id: package.id.clone(),
         api_version: REPO_API_VERSION_V1.to_owned(),
         package_file_hash,
     })
+}
+
+fn package_directory_dependency_hash(
+    package: &PackageDirectory,
+    script: &PackageVersionScript,
+) -> Result<String, RepositoryLoadError> {
+    let mut entries = vec![
+        format!(
+            "metadata.jsonc={}",
+            package_file_content_hash(&package.metadata_path)?
+        ),
+        format!(
+            "{}={}",
+            script.file_name,
+            package_file_content_hash(&script.path)?
+        ),
+        format!(
+            "Manifest={}",
+            optional_file_content_hash(&package.path.join(PACKAGE_MANIFEST_FILE))?
+                .unwrap_or_else(|| "missing".to_owned())
+        ),
+    ];
+    for file in package_local_files(&package.path)? {
+        let hash = package_file_content_hash(&file.path)?;
+        entries.push(format!("files/{}={hash}", file.relative_path));
+    }
+    Ok(content_hash(entries.join("\n")))
+}
+
+struct PackageLocalFile {
+    relative_path: String,
+    path: PathBuf,
+}
+
+fn package_local_files(package_dir: &Path) -> Result<Vec<PackageLocalFile>, RepositoryLoadError> {
+    let files_root = package_dir.join(PACKAGE_LOCAL_FILES_DIR);
+    if !files_root.exists() {
+        return Ok(Vec::new());
+    }
+    if !files_root.is_dir() {
+        return Err(RepositoryLoadError::InvalidPackageLocalFile {
+            path: files_root,
+            reason: "package-local files entry must be a directory".to_owned(),
+        });
+    }
+    let mut files = Vec::new();
+    collect_package_local_files(&files_root, &files_root, &mut files)?;
+    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(files)
+}
+
+fn collect_package_local_files(
+    files_root: &Path,
+    current: &Path,
+    out: &mut Vec<PackageLocalFile>,
+) -> Result<(), RepositoryLoadError> {
+    for entry in read_dir_entries(current)? {
+        let path = entry.path();
+        let file_type = entry_file_type(&entry, current)?;
+        if file_type.is_dir() {
+            collect_package_local_files(files_root, &path, out)?;
+        } else if file_type.is_file() {
+            let relative = path.strip_prefix(files_root).map_err(|_| {
+                RepositoryLoadError::InvalidPackageLocalFile {
+                    path: path.clone(),
+                    reason: format!("path is not under {}", files_root.display()),
+                }
+            })?;
+            out.push(PackageLocalFile {
+                relative_path: logical_relative_path(&path, relative)?,
+                path,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn logical_relative_path(path: &Path, relative: &Path) -> Result<String, RepositoryLoadError> {
+    let value = relative
+        .to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    if value.is_empty() {
+        return Err(RepositoryLoadError::InvalidPackageLocalFile {
+            path: path.to_path_buf(),
+            reason: "missing relative file path".to_owned(),
+        });
+    }
+    Ok(value)
+}
+
+fn content_hash(content: impl AsRef<[u8]>) -> String {
+    let hash = Sha512::digest(content.as_ref());
+    format!("sha512:{hash:x}")
 }
 
 fn optional_file_content_hash(path: &Path) -> Result<Option<String>, RepositoryLoadError> {
@@ -1258,6 +1348,45 @@ api_version = "getter.repo.v1"
         assert_eq!(first.repository_id.as_str(), "official");
         assert_eq!(first.package_id.to_string(), "android/org.fdroid.fdroid");
         assert_eq!(first.api_version, REPO_API_VERSION_V1);
+        assert_ne!(first.package_file_hash, second.package_file_hash);
+    }
+
+    #[test]
+    fn package_directory_cache_key_changes_when_local_files_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let package_dir = root.join("android/app/example");
+        fs::create_dir_all(package_dir.join(PACKAGE_LOCAL_FILES_DIR)).unwrap();
+        fs::write(
+            package_dir.join(PACKAGE_METADATA_FILE),
+            r#"{ "type": "android:app", "android": { "package_name": "example" } }"#,
+        )
+        .unwrap();
+        fs::write(package_dir.join("9999.lua"), "return {}").unwrap();
+        fs::write(
+            package_dir.join(PACKAGE_LOCAL_FILES_DIR).join("data.txt"),
+            "one",
+        )
+        .unwrap();
+        let layout = RepositoryPackageDirectoryLayout::load(root).unwrap();
+        let package = &layout.packages[0];
+        let script = layout.unambiguous_version_script(package).unwrap();
+        let first =
+            package_directory_cache_key(&RepositoryId::new("repo").unwrap(), package, script)
+                .unwrap();
+
+        fs::write(
+            package_dir.join(PACKAGE_LOCAL_FILES_DIR).join("data.txt"),
+            "two",
+        )
+        .unwrap();
+        let layout = RepositoryPackageDirectoryLayout::load(root).unwrap();
+        let package = &layout.packages[0];
+        let script = layout.unambiguous_version_script(package).unwrap();
+        let second =
+            package_directory_cache_key(&RepositoryId::new("repo").unwrap(), package, script)
+                .unwrap();
+
         assert_ne!(first.package_file_hash, second.package_file_hash);
     }
 

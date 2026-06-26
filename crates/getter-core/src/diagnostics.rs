@@ -215,6 +215,9 @@ fn repository_load_diagnostic(error: RepositoryLoadError) -> PackageValidationDi
             path,
             format!("failed to hash package file: {source}"),
         ),
+        RepositoryLoadError::InvalidPackageLocalFile { path, reason } => {
+            ("package.local_file", path, reason)
+        }
         RepositoryLoadError::ReadPackageMetadata { path, source } => (
             "package.read_metadata",
             path,
