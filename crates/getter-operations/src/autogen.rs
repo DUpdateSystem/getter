@@ -128,7 +128,12 @@ pub fn cleanup_preview_json(
     let mut diagnostics = Vec::new();
     for package in layout.packages {
         let relative_path = relative_package_path(&repo_path, &package.path)?;
-        let ownership = match read_owned_record(&package.path, &package.id, &relative_path) {
+        let ownership = match read_owned_record(
+            &package.path,
+            &package.id,
+            &relative_path,
+            INSTALLED_AUTOGEN_GENERATOR,
+        ) {
             Ok(ownership) => ownership,
             Err(error) => {
                 diagnostics.push(autogen_diagnostic(
@@ -173,10 +178,33 @@ pub fn apply_installed_preview(
     preview: &Value,
     acceptance: &AutogenAcceptance,
 ) -> AutogenOperationResult<Value> {
+    apply_preview(
+        data_dir,
+        db,
+        preview,
+        acceptance,
+        "installed.preview",
+        INSTALLED_AUTOGEN_GENERATOR,
+    )
+}
+
+pub(crate) fn apply_preview(
+    data_dir: &Path,
+    db: &MainDb,
+    preview: &Value,
+    acceptance: &AutogenAcceptance,
+    expected_operation: &str,
+    expected_generator: &str,
+) -> AutogenOperationResult<Value> {
+    if preview.get("operation").and_then(Value::as_str) != Some(expected_operation) {
+        return Err(AutogenOperationError::Autogen(format!(
+            "autogen preview operation must be '{expected_operation}'"
+        )));
+    }
     let (target_alias, repo_path, target_priority) = generated_repository_config(data_dir)?;
     if preview.get("target_repo_id").and_then(Value::as_str) != Some(target_alias.as_str()) {
         return Err(AutogenOperationError::Autogen(format!(
-            "installed preview target_repo_id must be '{}'",
+            "{expected_operation} target_repo_id must be '{}'",
             target_alias.as_str()
         )));
     }
@@ -187,10 +215,11 @@ pub fn apply_installed_preview(
     for candidate in accepted {
         let package_id = preview_package_id(candidate)?;
         let relative_path = preview_relative_path(candidate)?;
-        let payload = preview_candidate_payload(candidate, &package_id, &relative_path)?;
+        let payload =
+            preview_candidate_payload(candidate, &package_id, &relative_path, expected_generator)?;
         let target_dir = safe_join(&repo_path, &relative_path)?;
         if target_dir.exists() {
-            read_owned_record(&target_dir, &package_id, &relative_path)?;
+            read_owned_record(&target_dir, &package_id, &relative_path, expected_generator)?;
             clear_directory_contents(&target_dir)?;
         } else {
             fs::create_dir_all(&target_dir).map_err(|source| {
@@ -243,7 +272,12 @@ pub fn apply_cleanup_preview(
                 )
             })?;
         let target_dir = safe_join(&repo_path, &relative_path)?;
-        let ownership = read_owned_record(&target_dir, &package_id, &relative_path)?;
+        let ownership = read_owned_record(
+            &target_dir,
+            &package_id,
+            &relative_path,
+            INSTALLED_AUTOGEN_GENERATOR,
+        )?;
         if ownership.content_hash != expected_hash {
             return Err(AutogenOperationError::Autogen(format!(
                 "cleanup preview candidate {package_id} does not match current autogen record"
@@ -286,7 +320,7 @@ pub fn default_autogen_repo_path(data_dir: &Path) -> PathBuf {
         .repository_path(&RepositoryId::new(DEFAULT_AUTOGEN_REPOSITORY_ID).expect("valid id"))
 }
 
-fn generated_repository_config(
+pub(crate) fn generated_repository_config(
     data_dir: &Path,
 ) -> AutogenOperationResult<(RepositoryId, PathBuf, RepositoryPriority)> {
     let layout = GetterDataDirLayout::new(data_dir);
@@ -300,7 +334,7 @@ fn generated_repository_config(
     Ok((alias, path, priority))
 }
 
-fn higher_priority_package_coverage(
+pub(crate) fn higher_priority_package_coverage(
     db: &MainDb,
     target_alias: &RepositoryId,
     target_priority: RepositoryPriority,
@@ -465,6 +499,7 @@ fn preview_candidate_payload(
     candidate: &Value,
     package_id: &PackageId,
     relative_path: &Path,
+    expected_generator: &str,
 ) -> AutogenOperationResult<PreviewCandidatePayload> {
     let record_content = candidate
         .get("autogen_record_content")
@@ -489,7 +524,13 @@ fn preview_candidate_payload(
     }
     let files = preview_generated_files(candidate)?;
     let record = parse_record_content(&record_content)?;
-    validate_record(&record, package_id, relative_path, &files)?;
+    validate_record(
+        &record,
+        package_id,
+        relative_path,
+        &files,
+        expected_generator,
+    )?;
     Ok(PreviewCandidatePayload {
         record_content,
         files,
@@ -590,6 +631,7 @@ fn read_owned_record(
     package_dir: &Path,
     package_id: &PackageId,
     relative_path: &Path,
+    expected_generator: &str,
 ) -> AutogenOperationResult<LoadedAutogenRecord> {
     let record_path = package_dir.join(AUTOGEN_RECORD_FILE);
     if !record_path.is_file() {
@@ -614,7 +656,13 @@ fn read_owned_record(
         ))
     })?;
     let files = read_recorded_files(package_dir, &record)?;
-    validate_record(&record, package_id, relative_path, &files)?;
+    validate_record(
+        &record,
+        package_id,
+        relative_path,
+        &files,
+        expected_generator,
+    )?;
     Ok(LoadedAutogenRecord {
         content_hash: content_hash_bytes(&bytes),
     })
@@ -674,6 +722,7 @@ fn validate_record(
     package_id: &PackageId,
     relative_path: &Path,
     files: &[GeneratedPackageFile],
+    expected_generator: &str,
 ) -> AutogenOperationResult<()> {
     if record.version != AUTOGEN_RECORD_VERSION {
         return Err(AutogenOperationError::Autogen(format!(
@@ -681,9 +730,9 @@ fn validate_record(
             record.version
         )));
     }
-    if record.generator != INSTALLED_AUTOGEN_GENERATOR {
+    if record.generator != expected_generator {
         return Err(AutogenOperationError::Autogen(format!(
-            "autogen record generator '{}' does not match '{INSTALLED_AUTOGEN_GENERATOR}'",
+            "autogen record generator '{}' does not match '{expected_generator}'",
             record.generator
         )));
     }

@@ -1,5 +1,40 @@
 @getter-cli @autogen
 Feature: Installed app autogen
+  Scenario: User previews explicit F-Droid package generation without writing files
+    Given an initialized getter data directory
+    And a fixture F-Droid catalog index with package "org.fdroid.fdroid"
+    When I run getter autogen fdroid preview for package "org.fdroid.fdroid"
+    Then the command succeeds
+    And the output is valid JSON
+    And the F-Droid autogen preview contains candidate "android/f-droid/app/org.fdroid.fdroid"
+    And the autogen repository has not been written
+
+  Scenario: User applies explicit F-Droid autogen and validates the generated package directory
+    Given an initialized getter data directory
+    And a fixture F-Droid catalog index with package "org.fdroid.fdroid"
+    When I run getter autogen fdroid preview for package "org.fdroid.fdroid"
+    Then the command succeeds
+    And I save the autogen preview to a file
+    When I run getter autogen fdroid apply for that preview with accept-all
+    Then the command succeeds
+    And the autogen repository contains generated F-Droid package "android/f-droid/app/org.fdroid.fdroid"
+    And the app list contains autogen tracked package "android/f-droid/app/org.fdroid.fdroid"
+    When I run getter repo validate for autogen
+    Then the output reports a valid repository without network
+    When I run getter package eval for package "android/f-droid/app/org.fdroid.fdroid"
+    Then the command succeeds
+    And the package eval contains update version_code 1020000
+
+  Scenario: Higher-priority repositories suppress explicit F-Droid autogen candidates
+    Given an initialized getter data directory
+    And a package-directory repository "official" with package "android/f-droid/app/org.fdroid.fdroid"
+    And a fixture F-Droid catalog index with package "org.fdroid.fdroid"
+    When I run getter repo add for that repository with priority 0
+    Then the command succeeds
+    When I run getter autogen fdroid preview for package "org.fdroid.fdroid"
+    Then the command succeeds
+    And the F-Droid autogen preview skips package "android/f-droid/app/org.fdroid.fdroid" because repository "official" covers it
+
   Scenario: User previews installed app fallback generation without writing files
     Given an initialized getter data directory
     And an installed inventory with Android app "com.example.autogen" labeled "Example Autogen"

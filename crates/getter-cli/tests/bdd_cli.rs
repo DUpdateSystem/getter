@@ -15,6 +15,7 @@ struct CliWorld {
     inventory: Option<PathBuf>,
     autogen_preview: Option<PathBuf>,
     update_fixture: Option<PathBuf>,
+    fdroid_index: Option<PathBuf>,
     task_request: Option<PathBuf>,
     runtime_script: Option<PathBuf>,
     remembered_task_id: Option<String>,
@@ -140,6 +141,35 @@ fn installed_inventory_with_android_app(world: &mut CliWorld, package_name: Stri
     )
     .expect("write inventory");
     world.inventory = Some(inventory);
+}
+
+#[given(expr = "a fixture F-Droid catalog index with package {string}")]
+fn fixture_fdroid_catalog_index_with_package(world: &mut CliWorld, package_name: String) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let index = temp.path().join("fdroid-index.xml");
+    fs::write(
+        &index,
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<fdroid>
+  <repo name="F-Droid" timestamp="1700000000" url="https://f-droid.org/repo" />
+  <application id="{package_name}">
+    <name>F-Droid</name>
+    <summary>App repository client</summary>
+    <package>
+      <version>1.20.0</version>
+      <versioncode>1020000</versioncode>
+      <apkname>{package_name}_1020000.apk</apkname>
+      <hash type="sha256">aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</hash>
+      <size>1234567</size>
+    </package>
+  </application>
+</fdroid>
+"#
+        ),
+    )
+    .expect("write F-Droid fixture index");
+    world.fdroid_index = Some(index);
 }
 
 #[given("an empty installed inventory")]
@@ -824,6 +854,46 @@ fn run_getter_autogen_installed_apply_accept_all(world: &mut CliWorld) {
     world.json = None;
 }
 
+#[when(expr = "I run getter autogen fdroid preview for package {string}")]
+fn run_getter_autogen_fdroid_preview(world: &mut CliWorld, package_name: String) {
+    let index = world.fdroid_index.as_ref().expect("F-Droid index exists");
+    let output = run_getter(
+        world,
+        [
+            "autogen".to_owned(),
+            "fdroid".to_owned(),
+            "preview".to_owned(),
+            "--index".to_owned(),
+            index.to_string_lossy().to_string(),
+            "--package".to_owned(),
+            package_name,
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter autogen fdroid apply for that preview with accept-all")]
+fn run_getter_autogen_fdroid_apply_accept_all(world: &mut CliWorld) {
+    let preview = world
+        .autogen_preview
+        .as_ref()
+        .expect("autogen preview exists");
+    let output = run_getter(
+        world,
+        [
+            "autogen".to_owned(),
+            "fdroid".to_owned(),
+            "apply".to_owned(),
+            "--preview".to_owned(),
+            preview.to_string_lossy().to_string(),
+            "--accept-all".to_owned(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
 #[when("I run getter autogen cleanup preview for that inventory")]
 fn run_getter_autogen_cleanup_preview(world: &mut CliWorld) {
     let inventory = world.inventory.as_ref().expect("inventory exists");
@@ -924,7 +994,7 @@ fn command_fails_with_autogen_error(world: &mut CliWorld) {
     assert_eq!(json["ok"], false);
     assert!(matches!(
         json["command"].as_str(),
-        Some("autogen cleanup apply" | "autogen installed apply")
+        Some("autogen cleanup apply" | "autogen installed apply" | "autogen fdroid apply")
     ));
     assert_eq!(json["error"]["code"], "autogen.error");
     world.json = Some(json);
@@ -1272,6 +1342,22 @@ fn package_eval_name_is(world: &mut CliWorld, package_name: String) {
     assert_eq!(json["data"]["package"]["name"], package_name);
 }
 
+#[then(expr = "the package eval contains update version_code {int}")]
+fn package_eval_contains_update_version_code(world: &mut CliWorld, version_code: i64) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "package eval");
+    let updates = json["data"]["package"]["updates"]
+        .as_array()
+        .expect("updates array");
+    assert!(
+        updates
+            .iter()
+            .any(|update| update["version_code"].as_i64() == Some(version_code)),
+        "package eval should contain version_code {version_code}: {updates:?}"
+    );
+}
+
 #[then(expr = "the pinned package version is {string}")]
 fn pinned_package_version_is(world: &mut CliWorld, version: String) {
     let json = current_json(world);
@@ -1322,6 +1408,23 @@ fn update_check_has_no_selected_update(world: &mut CliWorld) {
     assert_eq!(json["data"]["actions"], Value::Array(Vec::new()));
 }
 
+#[then(expr = "the F-Droid autogen preview contains candidate {string}")]
+fn fdroid_autogen_preview_contains_candidate(world: &mut CliWorld, package_id: String) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "autogen fdroid preview");
+    assert_eq!(json["data"]["operation"], "fdroid.autogen.preview");
+    let candidates = json["data"]["candidates"]
+        .as_array()
+        .expect("candidates array");
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate["package_id"].as_str() == Some(package_id.as_str())),
+        "preview should contain {package_id}: {candidates:?}"
+    );
+}
+
 #[then(expr = "the autogen preview contains candidate {string}")]
 fn autogen_preview_contains_candidate(world: &mut CliWorld, package_id: String) {
     let json = current_json(world);
@@ -1363,6 +1466,15 @@ fn save_autogen_preview_to_file(world: &mut CliWorld) {
     world.autogen_preview = Some(preview);
 }
 
+#[then(expr = "the autogen repository contains generated F-Droid package {string}")]
+fn autogen_repository_contains_generated_fdroid_package(world: &mut CliWorld, package_id: String) {
+    autogen_repository_contains_generated_package(world, package_id.clone());
+    let path = autogen_repo_path(world).join(package_relative_path(&package_id));
+    let content = fs::read_to_string(path.join("9999.lua")).expect("generated package readable");
+    assert!(content.contains("return fdroid.package"));
+    assert!(content.contains("version_code = 1020000"));
+}
+
 #[then(expr = "the autogen repository contains generated package {string}")]
 fn autogen_repository_contains_generated_package(world: &mut CliWorld, package_id: String) {
     let path = autogen_repo_path(world).join(package_relative_path(&package_id));
@@ -1391,6 +1503,26 @@ fn app_list_contains_autogen_tracked_package(world: &mut CliWorld, package_id: S
         .unwrap_or_else(|| panic!("app list should contain {package_id}: {apps:?}"));
     assert_eq!(app["repository_id"], "autogen");
     assert_eq!(app["package_resolution"], "generate_local_package");
+}
+
+#[then(
+    expr = "the F-Droid autogen preview skips package {string} because repository {string} covers it"
+)]
+fn fdroid_autogen_preview_skips_package_because_repository_covers_it(
+    world: &mut CliWorld,
+    package_id: String,
+    repository_id: String,
+) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "autogen fdroid preview");
+    let skipped = json["data"]["skipped"].as_array().expect("skipped array");
+    let skip = skipped
+        .iter()
+        .find(|skip| skip["package_id"].as_str() == Some(package_id.as_str()))
+        .unwrap_or_else(|| panic!("skipped should contain {package_id}: {skipped:?}"));
+    assert_eq!(skip["reason"], "covered_by_higher_priority_repo");
+    assert_eq!(skip["covering_repo_id"], repository_id);
 }
 
 #[then(expr = "the autogen preview skips package {string} because repository {string} covers it")]

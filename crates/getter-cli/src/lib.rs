@@ -22,6 +22,7 @@ use getter_downloader::{
     cancel_download_task, record_install_result, run_fake_download_task, submit_fake_download_task,
 };
 use getter_operations::autogen::{self, AutogenAcceptance, AutogenOperationError};
+use getter_operations::fdroid_autogen;
 use getter_operations::legacy_room::{self, LegacyRoomOperationError};
 use getter_operations::runtime as runtime_operations;
 use getter_storage::legacy_room::{
@@ -123,6 +124,14 @@ pub enum CliCommand {
         inventory: PathBuf,
     },
     AutogenCleanupApply {
+        preview: PathBuf,
+        acceptance: AutogenAcceptance,
+    },
+    AutogenFdroidPreview {
+        index: PathBuf,
+        package_names: Vec<String>,
+    },
+    AutogenFdroidApply {
         preview: PathBuf,
         acceptance: AutogenAcceptance,
     },
@@ -526,6 +535,26 @@ where
                 inventory: PathBuf::from(inventory),
             }
         }
+        [domain, subject, action, rest @ ..]
+            if domain == "autogen" && subject == "fdroid" && action == "preview" =>
+        {
+            let (index, package_names) = parse_fdroid_autogen_preview_args(rest)?;
+            CliCommand::AutogenFdroidPreview {
+                index,
+                package_names,
+            }
+        }
+        [domain, subject, action, flag, preview, rest @ ..]
+            if domain == "autogen"
+                && subject == "fdroid"
+                && action == "apply"
+                && flag == "--preview" =>
+        {
+            CliCommand::AutogenFdroidApply {
+                preview: PathBuf::from(preview),
+                acceptance: parse_autogen_acceptance(rest)?,
+            }
+        }
         [domain, subject, action, flag, preview, rest @ ..]
             if domain == "autogen"
                 && subject == "cleanup"
@@ -727,6 +756,39 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
             autogen::apply_cleanup_preview(&invocation.data_dir, &db, &preview, &acceptance)
                 .map_err(CliError::from)
         }
+        CliCommand::AutogenFdroidPreview {
+            index,
+            package_names,
+        } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            let cache_db = open_cache_db(&invocation.data_dir)?;
+            let index_xml = read_fdroid_index(&index)?;
+            let request = json!({
+                "index_xml": index_xml,
+                "package_names": package_names,
+            });
+            fdroid_autogen::preview_fdroid_packages_json(
+                &invocation.data_dir,
+                &db,
+                &cache_db,
+                &request.to_string(),
+            )
+            .map_err(CliError::from)
+        }
+        CliCommand::AutogenFdroidApply {
+            preview,
+            acceptance,
+        } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            let preview = read_autogen_preview(&preview, "fdroid.autogen.preview")?;
+            fdroid_autogen::apply_fdroid_preview_json(
+                &invocation.data_dir,
+                &db,
+                &preview,
+                &acceptance,
+            )
+            .map_err(CliError::from)
+        }
         CliCommand::LegacyImportRoomBundle { bundle } => {
             let db = open_main_db(&invocation.data_dir)?;
             if db.migration_record_exists(LEGACY_ROOM_MIGRATION_ID)? {
@@ -845,6 +907,11 @@ fn open_main_db(data_dir: &Path) -> Result<MainDb, CliError> {
     Ok(MainDb::open(main_db_path(data_dir))?)
 }
 
+fn open_cache_db(data_dir: &Path) -> Result<CacheDb, CliError> {
+    initialize_storage(data_dir)?;
+    Ok(CacheDb::open(cache_db_path(data_dir))?)
+}
+
 fn parse_repository_id(value: &str) -> Result<RepositoryId, CliError> {
     RepositoryId::new(value).map_err(|source| CliError::Usage(source.to_string()))
 }
@@ -892,6 +959,46 @@ fn parse_priority(value: &str) -> Result<RepositoryPriority, CliError> {
         .parse::<i32>()
         .map(RepositoryPriority::new)
         .map_err(|source| CliError::Usage(format!("invalid repository priority: {source}")))
+}
+
+fn parse_fdroid_autogen_preview_args(args: &[String]) -> Result<(PathBuf, Vec<String>), CliError> {
+    let mut index = None;
+    let mut package_names = Vec::new();
+    let mut position = 0;
+    while position < args.len() {
+        match args[position].as_str() {
+            "--index" => {
+                let path = args.get(position + 1).ok_or_else(|| {
+                    CliError::Usage("autogen fdroid preview --index requires a path".to_owned())
+                })?;
+                index = Some(PathBuf::from(path));
+                position += 2;
+            }
+            "--package" => {
+                let package_name = args.get(position + 1).ok_or_else(|| {
+                    CliError::Usage(
+                        "autogen fdroid preview --package requires a package name".to_owned(),
+                    )
+                })?;
+                package_names.push(package_name.clone());
+                position += 2;
+            }
+            other => {
+                return Err(CliError::Usage(format!(
+                    "unsupported autogen fdroid preview argument '{other}'"
+                )))
+            }
+        }
+    }
+    let index = index.ok_or_else(|| {
+        CliError::Usage("autogen fdroid preview requires --index <index.xml>".to_owned())
+    })?;
+    if package_names.is_empty() {
+        return Err(CliError::Usage(
+            "autogen fdroid preview requires at least one --package <package-name>".to_owned(),
+        ));
+    }
+    Ok((index, package_names))
 }
 
 fn parse_autogen_acceptance(args: &[String]) -> Result<AutogenAcceptance, CliError> {
@@ -1063,6 +1170,11 @@ fn evaluate_package_directory(
         .map_err(|error| CliError::PackageEval(error.to_string()))?;
     evaluate_package_directory_script(repo_id, package, &metadata, script)
         .map_err(|error| CliError::PackageEval(error.to_string()))
+}
+
+fn read_fdroid_index(path: &Path) -> Result<String, CliError> {
+    fs::read_to_string(path)
+        .map_err(|source| CliError::Autogen(format!("failed to read F-Droid index: {source}")))
 }
 
 fn read_installed_inventory(path: &Path) -> Result<InstalledInventory, CliError> {
@@ -1594,7 +1706,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
+    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> --package <package-name> [--package <package-name>...]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1661,6 +1773,8 @@ impl CliCommand {
             Self::AutogenInstalledApply { .. } => "autogen installed apply",
             Self::AutogenCleanupPreview { .. } => "autogen cleanup preview",
             Self::AutogenCleanupApply { .. } => "autogen cleanup apply",
+            Self::AutogenFdroidPreview { .. } => "autogen fdroid preview",
+            Self::AutogenFdroidApply { .. } => "autogen fdroid apply",
             Self::LegacyImportRoomBundle { .. } => "legacy import-room-bundle",
             Self::LegacyImportRoomDb { .. } => "legacy import-room-db",
             Self::LegacyReportList => "legacy report-list",
