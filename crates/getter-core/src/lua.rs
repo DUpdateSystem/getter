@@ -10,6 +10,7 @@ use crate::{
 };
 use mlua::{Function, Lua, Table, Value};
 use serde_json::{Map, Number, Value as JsonValue};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -345,17 +346,137 @@ fn install_package_file_helpers(lua: &Lua, package: &PackageDirectory) -> mlua::
     })?;
 
     let globals = lua.globals();
-    let getter_builtin = match globals.get::<Value>("getter_builtin")? {
-        Value::Table(table) => table,
+    let getter_builtin = getter_builtin_table(lua)?;
+    getter_builtin.set("read_package_file", read_package_file.clone())?;
+    globals.set("read_package_file", read_package_file)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LuaHttpGetRequest {
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub cache: bool,
+}
+
+/// Installs the Lua `http_get` host seam for a caller-provided transport.
+///
+/// Plain package evaluation does not install this function. Higher-level
+/// getter operations/runtime code must deliberately provide a handler and own
+/// provider policy, permission checks, Manifest validation, and cache behavior.
+pub fn install_http_get_host<F>(lua: &Lua, handler: F) -> mlua::Result<()>
+where
+    F: Fn(LuaHttpGetRequest) -> mlua::Result<Vec<u8>> + 'static,
+{
+    let http_get = lua.create_function(move |lua, args: mlua::Variadic<Value>| {
+        let request = lua_http_get_request_from_args(args)?;
+        let bytes = handler(request)?;
+        lua.create_string(&bytes)
+    })?;
+    let globals = lua.globals();
+    let getter_builtin = getter_builtin_table(lua)?;
+    getter_builtin.set("http_get", http_get.clone())?;
+    globals.set("http_get", http_get)
+}
+
+fn getter_builtin_table(lua: &Lua) -> mlua::Result<Table> {
+    let globals = lua.globals();
+    match globals.get::<Value>("getter_builtin")? {
+        Value::Table(table) => Ok(table),
         Value::Nil => {
             let table = lua.create_table()?;
             globals.set("getter_builtin", table.clone())?;
-            table
+            Ok(table)
         }
-        _ => return Err(mlua::Error::external("getter_builtin must be a table")),
+        _ => Err(mlua::Error::external("getter_builtin must be a table")),
+    }
+}
+
+fn lua_http_get_request_from_args(args: mlua::Variadic<Value>) -> mlua::Result<LuaHttpGetRequest> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(mlua::Error::external(
+            "http_get expects url and optional options table",
+        ));
+    }
+    let url = match &args[0] {
+        Value::String(value) => value.to_str()?.to_owned(),
+        _ => return Err(mlua::Error::external("http_get url must be a string")),
     };
-    getter_builtin.set("read_package_file", read_package_file.clone())?;
-    globals.set("read_package_file", read_package_file)
+    if url.trim().is_empty() {
+        return Err(mlua::Error::external("http_get url must not be empty"));
+    }
+    let mut request = LuaHttpGetRequest {
+        url,
+        headers: BTreeMap::new(),
+        cache: false,
+    };
+    match args.get(1) {
+        None | Some(Value::Nil) => {}
+        Some(Value::Table(options)) => apply_http_get_options(&mut request, options)?,
+        Some(_) => return Err(mlua::Error::external("http_get options must be a table")),
+    }
+    Ok(request)
+}
+
+fn apply_http_get_options(request: &mut LuaHttpGetRequest, options: &Table) -> mlua::Result<()> {
+    for pair in options.clone().pairs::<Value, Value>() {
+        let (key, _) = pair?;
+        match key {
+            Value::String(value) if matches!(value.to_str()?.as_ref(), "cache" | "headers") => {}
+            Value::String(value) => {
+                return Err(mlua::Error::external(format!(
+                    "http_get unsupported option '{}'",
+                    value.to_str()?
+                )))
+            }
+            _ => {
+                return Err(mlua::Error::external(
+                    "http_get option keys must be strings",
+                ))
+            }
+        }
+    }
+
+    match options.get::<Value>("cache")? {
+        Value::Nil => {}
+        Value::Boolean(value) => request.cache = value,
+        _ => {
+            return Err(mlua::Error::external(
+                "http_get options.cache must be a boolean",
+            ))
+        }
+    }
+
+    match options.get::<Value>("headers")? {
+        Value::Nil => {}
+        Value::Table(headers) => {
+            for pair in headers.pairs::<Value, Value>() {
+                let (key, value) = pair?;
+                let key = match key {
+                    Value::String(value) => value.to_str()?.to_owned(),
+                    _ => {
+                        return Err(mlua::Error::external(
+                            "http_get headers keys must be strings",
+                        ))
+                    }
+                };
+                let value = match value {
+                    Value::String(value) => value.to_str()?.to_owned(),
+                    _ => {
+                        return Err(mlua::Error::external(
+                            "http_get headers values must be strings",
+                        ))
+                    }
+                };
+                request.headers.insert(key, value);
+            }
+        }
+        _ => {
+            return Err(mlua::Error::external(
+                "http_get options.headers must be a table",
+            ))
+        }
+    }
+    Ok(())
 }
 
 fn package_file_relative_path(path: &str) -> mlua::Result<PathBuf> {
@@ -800,6 +921,21 @@ mod tests {
             &metadata,
             script,
         )
+    }
+
+    fn write_simple_android_package(root: &Path, script_source: &str) {
+        let package_dir = root.join("android/app/com.example.autogen");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "Example Autogen",
+  "android": { "package_name": "com.example.autogen" }
+}"#,
+        )
+        .unwrap();
+        fs::write(package_dir.join("9999.lua"), script_source).unwrap();
     }
 
     #[test]
@@ -1390,6 +1526,160 @@ return github_android.package {
         assert_eq!(
             package.updates[0].artifacts[0].file_name.as_deref(),
             Some("F-Droid.apk")
+        );
+    }
+
+    #[test]
+    fn package_directory_http_get_is_not_installed_by_plain_eval() {
+        let temp = tempfile::tempdir().unwrap();
+        write_simple_android_package(
+            temp.path(),
+            r#"#!/bin/upa-lua v1
+local builtin_http_get = getter_builtin and getter_builtin.http_get
+return package_version { name = (http_get == nil and builtin_http_get == nil) and "not installed" or "installed" }
+"#,
+        );
+
+        let package = evaluate_single_package_directory(temp.path(), "official").unwrap();
+
+        assert_eq!(package.name, "not installed");
+    }
+
+    #[test]
+    fn package_directory_http_get_host_parses_request_and_defaults_cache_false() {
+        let temp = tempfile::tempdir().unwrap();
+        write_simple_android_package(
+            temp.path(),
+            r#"#!/bin/upa-lua v1
+local first = http_get("https://example.invalid/a")
+local second = http_get("https://example.invalid/b", {
+  headers = { Accept = "application/json", ["X-Test"] = "yes" },
+  cache = true,
+})
+return package_version { name = first .. "|" .. second }
+"#,
+        );
+        let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+        let package_dir = &layout.packages[0];
+        let metadata = layout.package_metadata(package_dir).unwrap();
+        let script = layout.unambiguous_version_script(package_dir).unwrap();
+        let requests = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+
+        let package = evaluate_package_directory_script_with_host_bindings(
+            &RepositoryId::new("autogen").unwrap(),
+            package_dir,
+            &metadata,
+            script,
+            {
+                let requests = std::rc::Rc::clone(&requests);
+                move |lua| {
+                    install_http_get_host(lua, move |request| {
+                        let body = if request.url.ends_with("/a") {
+                            b"first".to_vec()
+                        } else {
+                            b"second".to_vec()
+                        };
+                        requests.borrow_mut().push(request);
+                        Ok(body)
+                    })
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(package.name, "first|second");
+        let requests = requests.borrow();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].url, "https://example.invalid/a");
+        assert!(!requests[0].cache);
+        assert!(requests[0].headers.is_empty());
+        assert_eq!(requests[1].url, "https://example.invalid/b");
+        assert!(requests[1].cache);
+        assert_eq!(
+            requests[1].headers.get("Accept").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(
+            requests[1].headers.get("X-Test").map(String::as_str),
+            Some("yes")
+        );
+    }
+
+    #[test]
+    fn package_directory_http_get_rejects_unsupported_options() {
+        let temp = tempfile::tempdir().unwrap();
+        write_simple_android_package(
+            temp.path(),
+            r#"#!/bin/upa-lua v1
+local extra_ok = pcall(http_get, "https://example.invalid/a", { method = "POST" })
+local header_ok = pcall(http_get, "https://example.invalid/b", { headers = { Accept = 1 } })
+return package_version { name = (not extra_ok and not header_ok) and "rejected" or "accepted" }
+"#,
+        );
+        let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+        let package_dir = &layout.packages[0];
+        let metadata = layout.package_metadata(package_dir).unwrap();
+        let script = layout.unambiguous_version_script(package_dir).unwrap();
+
+        let package = evaluate_package_directory_script_with_host_bindings(
+            &RepositoryId::new("autogen").unwrap(),
+            package_dir,
+            &metadata,
+            script,
+            |lua| install_http_get_host(lua, |_| Ok(Vec::new())),
+        )
+        .unwrap();
+
+        assert_eq!(package.name, "rejected");
+    }
+
+    #[test]
+    fn getter_builtin_exposes_http_get_for_lua_wrappers() {
+        let temp = tempfile::tempdir().unwrap();
+        write_simple_android_package(
+            temp.path(),
+            r#"#!/bin/upa-lua v1
+local upstream_http_get = getter_builtin.http_get
+function http_get(url, opts)
+  opts = opts or {}
+  opts.headers = opts.headers or {}
+  opts.headers["X-Rewritten"] = "yes"
+  return upstream_http_get(url .. "?mirror=1", opts)
+end
+return package_version { name = http_get("https://example.invalid/file", { cache = true }) }
+"#,
+        );
+        let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+        let package_dir = &layout.packages[0];
+        let metadata = layout.package_metadata(package_dir).unwrap();
+        let script = layout.unambiguous_version_script(package_dir).unwrap();
+        let requests = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+
+        let package = evaluate_package_directory_script_with_host_bindings(
+            &RepositoryId::new("autogen").unwrap(),
+            package_dir,
+            &metadata,
+            script,
+            {
+                let requests = std::rc::Rc::clone(&requests);
+                move |lua| {
+                    install_http_get_host(lua, move |request| {
+                        requests.borrow_mut().push(request);
+                        Ok(b"wrapped".to_vec())
+                    })
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(package.name, "wrapped");
+        let requests = requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url, "https://example.invalid/file?mirror=1");
+        assert!(requests[0].cache);
+        assert_eq!(
+            requests[0].headers.get("X-Rewritten").map(String::as_str),
+            Some("yes")
         );
     }
 
