@@ -23,6 +23,7 @@ use getter_downloader::{
 };
 use getter_operations::autogen::{self, AutogenAcceptance, AutogenOperationError};
 use getter_operations::fdroid_autogen;
+use getter_operations::github_latest_commit::{self, GithubLatestCommitOperationError};
 use getter_operations::github_releases::{self, GithubReleaseOperationError};
 use getter_operations::legacy_room::{self, LegacyRoomOperationError};
 use getter_operations::runtime as runtime_operations;
@@ -144,6 +145,13 @@ pub enum CliCommand {
         asset_include: Option<String>,
         asset_exclude: Option<String>,
         include_prereleases: bool,
+        refresh: bool,
+    },
+    ProviderGithubLatestCommit {
+        owner: String,
+        repo: String,
+        reference: Option<String>,
+        commit: PathBuf,
         refresh: bool,
     },
     LegacyImportRoomBundle {
@@ -325,6 +333,16 @@ impl From<LegacyRoomOperationError> for CliError {
             LegacyRoomOperationError::InvalidDb { report_path } => {
                 Self::InvalidLegacyDb { report_path }
             }
+        }
+    }
+}
+
+impl From<GithubLatestCommitOperationError> for CliError {
+    fn from(value: GithubLatestCommitOperationError) -> Self {
+        match value {
+            GithubLatestCommitOperationError::Storage(source) => Self::Storage(source.to_string()),
+            GithubLatestCommitOperationError::InvalidRequest(detail) => Self::Usage(detail),
+            other => Self::Provider(other.to_string()),
         }
     }
 }
@@ -599,6 +617,18 @@ where
                 refresh: args.refresh,
             }
         }
+        [domain, provider, action, rest @ ..]
+            if domain == "provider" && provider == "github" && action == "latest-commit" =>
+        {
+            let args = parse_provider_github_latest_commit_args(rest)?;
+            CliCommand::ProviderGithubLatestCommit {
+                owner: args.owner,
+                repo: args.repo,
+                reference: args.reference,
+                commit: args.commit,
+                refresh: args.refresh,
+            }
+        }
         [domain, subject, action, flag, preview, rest @ ..]
             if domain == "autogen"
                 && subject == "cleanup"
@@ -863,6 +893,25 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
             });
             github_releases::github_releases_json(&db, &request.to_string()).map_err(CliError::from)
         }
+        CliCommand::ProviderGithubLatestCommit {
+            owner,
+            repo,
+            reference,
+            commit,
+            refresh,
+        } => {
+            let db = open_cache_db(&invocation.data_dir)?;
+            let commit_json = read_github_commit_fixture(&commit)?;
+            let request = json!({
+                "owner": owner,
+                "repo": repo,
+                "ref": reference,
+                "mode": if refresh { "force_refresh" } else { "use_cached" },
+                "commit_json": commit_json,
+            });
+            github_latest_commit::github_latest_commit_json(&db, &request.to_string())
+                .map_err(CliError::from)
+        }
         CliCommand::LegacyImportRoomBundle { bundle } => {
             let db = open_main_db(&invocation.data_dir)?;
             if db.migration_record_exists(LEGACY_ROOM_MIGRATION_ID)? {
@@ -1099,6 +1148,15 @@ struct ProviderGithubReleasesArgs {
     refresh: bool,
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ProviderGithubLatestCommitArgs {
+    owner: String,
+    repo: String,
+    reference: Option<String>,
+    commit: PathBuf,
+    refresh: bool,
+}
+
 fn parse_provider_github_releases_args(
     args: &[String],
 ) -> Result<ProviderGithubReleasesArgs, CliError> {
@@ -1192,6 +1250,87 @@ fn parse_provider_github_releases_args(
     if parsed.releases.as_os_str().is_empty() {
         return Err(CliError::Usage(
             "provider github releases requires --releases <fixture.json>".to_owned(),
+        ));
+    }
+
+    Ok(parsed)
+}
+
+fn parse_provider_github_latest_commit_args(
+    args: &[String],
+) -> Result<ProviderGithubLatestCommitArgs, CliError> {
+    let mut parsed = ProviderGithubLatestCommitArgs::default();
+    let mut position = 0;
+    while position < args.len() {
+        match args[position].as_str() {
+            "--owner" => {
+                parsed.owner = args
+                    .get(position + 1)
+                    .ok_or_else(|| {
+                        CliError::Usage(
+                            "provider github latest-commit --owner requires an owner".to_owned(),
+                        )
+                    })?
+                    .clone();
+                position += 2;
+            }
+            "--repo" => {
+                parsed.repo = args
+                    .get(position + 1)
+                    .ok_or_else(|| {
+                        CliError::Usage(
+                            "provider github latest-commit --repo requires a repo".to_owned(),
+                        )
+                    })?
+                    .clone();
+                position += 2;
+            }
+            "--commit" => {
+                let path = args.get(position + 1).ok_or_else(|| {
+                    CliError::Usage(
+                        "provider github latest-commit --commit requires a fixture path".to_owned(),
+                    )
+                })?;
+                parsed.commit = PathBuf::from(path);
+                position += 2;
+            }
+            "--ref" => {
+                parsed.reference = Some(
+                    args.get(position + 1)
+                        .ok_or_else(|| {
+                            CliError::Usage(
+                                "provider github latest-commit --ref requires a ref".to_owned(),
+                            )
+                        })?
+                        .clone(),
+                );
+                position += 2;
+            }
+            "--refresh" => {
+                parsed.refresh = true;
+                position += 1;
+            }
+            other => {
+                return Err(CliError::Usage(format!(
+                    "unsupported provider github latest-commit argument '{other}'"
+                )))
+            }
+        }
+    }
+
+    if parsed.owner.trim().is_empty() {
+        return Err(CliError::Usage(
+            "provider github latest-commit requires --owner <owner>".to_owned(),
+        ));
+    }
+    if parsed.repo.trim().is_empty() {
+        return Err(CliError::Usage(
+            "provider github latest-commit requires --repo <repo>".to_owned(),
+        ));
+    }
+    if parsed.commit.as_os_str().is_empty() {
+        return Err(CliError::Usage(
+            "provider github latest-commit requires --commit <fixture.json>".to_owned(),
         ));
     }
 
@@ -1337,6 +1476,12 @@ fn read_fdroid_index(path: &Path) -> Result<String, CliError> {
 fn read_github_releases_fixture(path: &Path) -> Result<String, CliError> {
     fs::read_to_string(path).map_err(|source| {
         CliError::Provider(format!("failed to read GitHub releases fixture: {source}"))
+    })
+}
+
+fn read_github_commit_fixture(path: &Path) -> Result<String, CliError> {
+    fs::read_to_string(path).map_err(|source| {
+        CliError::Provider(format!("failed to read GitHub commit fixture: {source}"))
     })
 }
 
@@ -1869,7 +2014,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> [--package <package-name>...] [--inventory <installed.json>]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|provider github releases --owner <owner> --repo <repo> --releases <fixture.json> [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases] [--refresh]|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
+    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> [--package <package-name>...] [--inventory <installed.json>]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|provider github releases --owner <owner> --repo <repo> --releases <fixture.json> [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases] [--refresh]|provider github latest-commit --owner <owner> --repo <repo> --commit <fixture.json> [--ref <ref>] [--refresh]|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1939,6 +2084,7 @@ impl CliCommand {
             Self::AutogenFdroidPreview { .. } => "autogen fdroid preview",
             Self::AutogenFdroidApply { .. } => "autogen fdroid apply",
             Self::ProviderGithubReleases { .. } => "provider github releases",
+            Self::ProviderGithubLatestCommit { .. } => "provider github latest-commit",
             Self::LegacyImportRoomBundle { .. } => "legacy import-room-bundle",
             Self::LegacyImportRoomDb { .. } => "legacy import-room-db",
             Self::LegacyReportList => "legacy report-list",
@@ -1994,6 +2140,84 @@ mod tests {
                 package_id: "android/org.fdroid.fdroid".parse().unwrap(),
             }
         );
+    }
+
+    #[test]
+    fn parses_provider_github_latest_commit_command() {
+        let parsed = parse_args([
+            "getter",
+            "--data-dir",
+            "/tmp/ua-getter",
+            "provider",
+            "github",
+            "latest-commit",
+            "--owner",
+            "DUpdateSystem",
+            "--repo",
+            "UpgradeAll",
+            "--commit",
+            "/tmp/commit.json",
+            "--ref",
+            "main",
+            "--refresh",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            parsed.command,
+            CliCommand::ProviderGithubLatestCommit {
+                owner: "DUpdateSystem".to_owned(),
+                repo: "UpgradeAll".to_owned(),
+                reference: Some("main".to_owned()),
+                commit: PathBuf::from("/tmp/commit.json"),
+                refresh: true,
+            }
+        );
+    }
+
+    #[test]
+    fn provider_github_latest_commit_missing_cli_flags_is_usage_error() {
+        let output = run([
+            "getter",
+            "--data-dir",
+            "/tmp/ua-getter",
+            "provider",
+            "github",
+            "latest-commit",
+            "--owner",
+            "DUpdateSystem",
+        ]);
+
+        assert_eq!(output.exit_code, ExitCode::Usage);
+        let json: Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(json["error"]["code"], "cli.usage");
+    }
+
+    #[test]
+    fn provider_github_latest_commit_malformed_fixture_is_provider_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("getter-data");
+        let commit = temp.path().join("commit.json");
+        fs::write(&commit, "not json").unwrap();
+
+        let output = run([
+            "getter".to_owned(),
+            "--data-dir".to_owned(),
+            data_dir.to_string_lossy().to_string(),
+            "provider".to_owned(),
+            "github".to_owned(),
+            "latest-commit".to_owned(),
+            "--owner".to_owned(),
+            "DUpdateSystem".to_owned(),
+            "--repo".to_owned(),
+            "UpgradeAll".to_owned(),
+            "--commit".to_owned(),
+            commit.to_string_lossy().to_string(),
+        ]);
+
+        assert_eq!(output.exit_code, ExitCode::Provider);
+        let json: Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(json["error"]["code"], "provider.error");
     }
 
     #[test]

@@ -17,6 +17,7 @@ struct CliWorld {
     update_fixture: Option<PathBuf>,
     fdroid_index: Option<PathBuf>,
     github_releases: Option<PathBuf>,
+    github_commit: Option<PathBuf>,
     task_request: Option<PathBuf>,
     runtime_script: Option<PathBuf>,
     remembered_task_id: Option<String>,
@@ -238,6 +239,31 @@ fn fixture_github_releases_response(world: &mut CliWorld, project: String) {
     )
     .expect("write GitHub releases fixture");
     world.github_releases = Some(releases);
+}
+
+#[given(expr = "a fixture GitHub commit response for {string}")]
+fn fixture_github_commit_response(world: &mut CliWorld, project: String) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let commit = temp.path().join("github-commit.json");
+    fs::write(
+        &commit,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "sha": "0123456789abcdef0123456789abcdef01234567",
+            "html_url": "https://github.com/DUpdateSystem/UpgradeAll/commit/0123456789abcdef0123456789abcdef01234567",
+            "commit": {
+                "message": format!("{project} live commit"),
+                "author": {
+                    "date": "2026-06-02T03:04:05Z"
+                },
+                "committer": {
+                    "date": "2026-06-02T04:05:06Z"
+                }
+            }
+        }))
+        .expect("GitHub commit serializes"),
+    )
+    .expect("write GitHub commit fixture");
+    world.github_commit = Some(commit);
 }
 
 #[given("an empty installed inventory")]
@@ -985,6 +1011,30 @@ fn run_getter_provider_github_releases(world: &mut CliWorld, owner: String, repo
     world.json = None;
 }
 
+#[when(expr = "I run getter provider github latest-commit for owner {string} repo {string}")]
+fn run_getter_provider_github_latest_commit(world: &mut CliWorld, owner: String, repo: String) {
+    let commit = world
+        .github_commit
+        .as_ref()
+        .expect("GitHub commit fixture exists");
+    let output = run_getter(
+        world,
+        [
+            "provider".to_owned(),
+            "github".to_owned(),
+            "latest-commit".to_owned(),
+            "--owner".to_owned(),
+            owner,
+            "--repo".to_owned(),
+            repo,
+            "--commit".to_owned(),
+            commit.to_string_lossy().to_string(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
 #[when("I run getter autogen fdroid apply for that preview with accept-all")]
 fn run_getter_autogen_fdroid_apply_accept_all(world: &mut CliWorld) {
     let preview = world
@@ -1602,6 +1652,30 @@ fn github_release_provider_returns_candidate(
         candidates[0]["artifacts"][0]["url"],
         "https://github.com/DUpdateSystem/UpgradeAll/releases/download/v1.2.0/app-release.apk"
     );
+    assert!(json["data"]["diagnostics"].as_array().unwrap().is_empty());
+}
+
+#[then(expr = "the GitHub latest-commit provider returns live revision {string}")]
+fn github_latest_commit_provider_returns_live_revision(world: &mut CliWorld, revision: String) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "provider github latest-commit");
+    assert_eq!(json["data"]["operation"], "github.latest_commit");
+    assert_eq!(json["data"]["provider"], "github");
+    assert_eq!(json["data"]["source"], "refreshed");
+    assert_eq!(json["data"]["live"], true);
+    assert_eq!(json["data"]["version"], revision);
+    assert_eq!(json["data"]["revision"], revision);
+    assert_eq!(json["data"]["latest_commit"]["revision"], revision);
+    assert_eq!(
+        json["data"]["latest_commit"]["published_at"],
+        "2026-06-02T03:04:05Z"
+    );
+    assert!(json["data"].get("candidates").is_none());
+    assert!(json["data"].get("selected_update").is_none());
+    assert!(json["data"].get("artifacts").is_none());
+    assert!(json["data"].get("actions").is_none());
+    assert!(json["data"].get("action_id").is_none());
     assert!(json["data"]["diagnostics"].as_array().unwrap().is_empty());
 }
 

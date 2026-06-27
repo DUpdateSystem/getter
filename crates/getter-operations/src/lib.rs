@@ -8,6 +8,7 @@
 pub mod autogen;
 pub mod fdroid_autogen;
 pub mod fdroid_catalog;
+pub mod github_latest_commit;
 pub mod github_releases;
 pub mod legacy_room;
 pub mod provider_cache;

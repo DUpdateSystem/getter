@@ -262,6 +262,42 @@ pub struct GithubReleaseAsset {
     pub digest: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GithubCommit {
+    pub sha: String,
+    #[serde(default)]
+    pub html_url: Option<String>,
+    #[serde(default)]
+    pub commit: GithubCommitDetails,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GithubCommitDetails {
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub author: Option<GithubCommitActor>,
+    #[serde(default)]
+    pub committer: Option<GithubCommitActor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GithubCommitActor {
+    #[serde(default)]
+    pub date: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GithubLiveRevision {
+    pub version: String,
+    pub revision: String,
+    pub live: bool,
+    pub source: String,
+    pub published_at: Option<String>,
+    pub html_url: Option<String>,
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GithubReleaseCandidateOptions {
     pub include_prereleases: bool,
@@ -276,8 +312,13 @@ pub struct GithubAssetFilter {
 
 #[derive(Debug, thiserror::Error)]
 pub enum GithubProviderError {
-    #[error("failed to parse GitHub releases JSON: {0}")]
+    #[error("failed to parse GitHub provider JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("invalid GitHub commit field {field}: {message}")]
+    InvalidCommit {
+        field: &'static str,
+        message: String,
+    },
     #[error("invalid GitHub asset {filter_kind} regex '{pattern}': {source}")]
     AssetFilterRegex {
         filter_kind: &'static str,
@@ -289,6 +330,43 @@ pub enum GithubProviderError {
 
 pub fn parse_github_releases_json(json: &str) -> Result<Vec<GithubRelease>, GithubProviderError> {
     Ok(serde_json::from_str(json)?)
+}
+
+pub fn parse_github_commit_json(json: &str) -> Result<GithubCommit, GithubProviderError> {
+    Ok(serde_json::from_str(json)?)
+}
+
+pub fn github_latest_commit_live_revision(
+    commit: &GithubCommit,
+) -> Result<GithubLiveRevision, GithubProviderError> {
+    let revision = commit.sha.trim();
+    if revision.is_empty() {
+        return Err(GithubProviderError::InvalidCommit {
+            field: "sha",
+            message: "commit sha must not be empty".to_owned(),
+        });
+    }
+
+    Ok(GithubLiveRevision {
+        version: revision.to_owned(),
+        revision: revision.to_owned(),
+        live: true,
+        source: "github".to_owned(),
+        published_at: commit
+            .commit
+            .author
+            .as_ref()
+            .and_then(|author| author.date.clone())
+            .or_else(|| {
+                commit
+                    .commit
+                    .committer
+                    .as_ref()
+                    .and_then(|committer| committer.date.clone())
+            }),
+        html_url: commit.html_url.clone(),
+        message: commit.commit.message.clone(),
+    })
 }
 
 pub fn github_release_update_candidates(
@@ -580,6 +658,76 @@ mod tests {
         assert_eq!(candidates[0].artifacts[0].sha256, None);
     }
 
+    #[test]
+    fn parses_github_commit_json_into_live_revision() {
+        let commit = parse_github_commit_json(GITHUB_COMMIT_FIXTURE).unwrap();
+
+        assert_eq!(commit.sha, "0123456789abcdef0123456789abcdef01234567");
+        let revision = github_latest_commit_live_revision(&commit).unwrap();
+
+        assert!(revision.live);
+        assert_eq!(revision.source, "github");
+        assert_eq!(revision.version, "0123456789abcdef0123456789abcdef01234567");
+        assert_eq!(
+            revision.revision,
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+        assert_eq!(
+            revision.published_at.as_deref(),
+            Some("2026-06-02T03:04:05Z")
+        );
+        assert_eq!(revision.message.as_deref(), Some("Update app metadata"));
+        assert_eq!(
+            revision.html_url.as_deref(),
+            Some("https://github.com/DUpdateSystem/UpgradeAll/commit/0123456789abcdef0123456789abcdef01234567")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_committer_date_for_live_revision() {
+        let commit = parse_github_commit_json(
+            r#"{
+  "sha": "fedcba9876543210fedcba9876543210fedcba98",
+  "commit": { "committer": { "date": "2026-06-03T03:04:05Z" } }
+}"#,
+        )
+        .unwrap();
+
+        let revision = github_latest_commit_live_revision(&commit).unwrap();
+
+        assert_eq!(
+            revision.published_at.as_deref(),
+            Some("2026-06-03T03:04:05Z")
+        );
+    }
+
+    #[test]
+    fn omits_live_revision_date_when_commit_dates_are_missing() {
+        let commit = parse_github_commit_json(
+            r#"{
+  "sha": "fedcba9876543210fedcba9876543210fedcba98",
+  "commit": { "message": "No dates" }
+}"#,
+        )
+        .unwrap();
+
+        let revision = github_latest_commit_live_revision(&commit).unwrap();
+
+        assert_eq!(revision.published_at, None);
+    }
+
+    #[test]
+    fn rejects_empty_github_commit_sha() {
+        let commit = parse_github_commit_json(r#"{ "sha": "", "commit": {} }"#).unwrap();
+
+        let error = github_latest_commit_live_revision(&commit).unwrap_err();
+
+        assert!(matches!(
+            error,
+            GithubProviderError::InvalidCommit { field: "sha", .. }
+        ));
+    }
+
     const GITHUB_RELEASES_FIXTURE: &str = r#"[
   {
     "tag_name": "v1.2.0",
@@ -651,4 +799,18 @@ mod tests {
     ]
   }
 ]"#;
+
+    const GITHUB_COMMIT_FIXTURE: &str = r#"{
+  "sha": "0123456789abcdef0123456789abcdef01234567",
+  "html_url": "https://github.com/DUpdateSystem/UpgradeAll/commit/0123456789abcdef0123456789abcdef01234567",
+  "commit": {
+    "message": "Update app metadata",
+    "author": {
+      "date": "2026-06-02T03:04:05Z"
+    },
+    "committer": {
+      "date": "2026-06-02T04:05:06Z"
+    }
+  }
+}"#;
 }
