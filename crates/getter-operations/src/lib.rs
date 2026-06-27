@@ -17,6 +17,9 @@ pub mod lua_http_policy;
 #[cfg(feature = "lua-provider-host-dev")]
 #[doc(hidden)]
 pub mod lua_provider_host;
+#[cfg(feature = "lua")]
+#[doc(hidden)]
+pub mod lua_runtime_hooks;
 pub mod provider_cache;
 pub mod read_model;
 pub mod runtime;
