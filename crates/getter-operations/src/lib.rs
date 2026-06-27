@@ -11,6 +11,9 @@ pub mod fdroid_catalog;
 pub mod github_latest_commit;
 pub mod github_releases;
 pub mod legacy_room;
+#[cfg(feature = "lua-provider-host-dev")]
+#[doc(hidden)]
+pub mod lua_provider_host;
 pub mod provider_cache;
 pub mod read_model;
 pub mod runtime;

@@ -618,6 +618,7 @@ dependencies = [
  "getter-providers",
  "getter-storage",
  "json_comments",
+ "mlua",
  "serde",
  "serde_json",
  "sha2",
