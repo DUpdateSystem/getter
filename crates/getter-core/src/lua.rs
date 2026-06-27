@@ -1009,6 +1009,86 @@ return android.package_version {
     }
 
     #[test]
+    fn package_directory_can_use_repository_local_fdroid_luaclass_shape() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/f-droid/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::create_dir_all(temp.path().join("luaclass")).unwrap();
+        fs::write(
+            temp.path().join("luaclass/fdroid_android.lua"),
+            r#"
+local fdroid = {}
+
+function fdroid.package(spec)
+  if spec.package_name ~= "org.fdroid.fdroid" then
+    error("F-Droid package_name fixture mismatch")
+  end
+  return package_version {
+    updates = {
+      {
+        version = "1.20.0",
+        version_code = 1020000,
+        source = "fdroid",
+        artifacts = {
+          {
+            name = "org.fdroid.fdroid_1020000.apk",
+            url = "https://f-droid.org/repo/org.fdroid.fdroid_1020000.apk",
+            file_name = "org.fdroid.fdroid_1020000.apk",
+          },
+        },
+      },
+    },
+  }
+end
+
+return fdroid
+"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "android": { "package_name": "org.fdroid.fdroid" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+local fdroid = require("luaclass.fdroid_android")
+return fdroid.package {
+  package_name = "org.fdroid.fdroid",
+}
+"#,
+        )
+        .unwrap();
+
+        let package = evaluate_single_package_directory(temp.path(), "official").unwrap();
+
+        assert_eq!(
+            package.id.to_string(),
+            "android/f-droid/app/org.fdroid.fdroid"
+        );
+        assert_eq!(package.repository.as_str(), "official");
+        assert_eq!(package.name, "android/f-droid/app/org.fdroid.fdroid");
+        assert_eq!(
+            package.installed,
+            vec![InstalledTarget::AndroidPackage {
+                package_name: "org.fdroid.fdroid".to_owned()
+            }]
+        );
+        assert_eq!(package.updates.len(), 1);
+        assert_eq!(package.updates[0].version, "1.20.0");
+        assert_eq!(package.updates[0].version_code, Some(1020000));
+        assert_eq!(package.updates[0].source.as_deref(), Some("fdroid"));
+        assert_eq!(
+            package.updates[0].artifacts[0].file_name.as_deref(),
+            Some("org.fdroid.fdroid_1020000.apk")
+        );
+    }
+
+    #[test]
     fn package_directory_can_read_package_local_files() {
         let temp = tempfile::tempdir().unwrap();
         let package_dir = temp.path().join("android/app/com.example.autogen");
