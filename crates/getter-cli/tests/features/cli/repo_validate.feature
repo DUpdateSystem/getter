@@ -27,16 +27,16 @@ Feature: Getter CLI repository validation
     Then the command succeeds
     And the output reports repository diagnostic "package.schema"
 
-  Scenario: User receives diagnostics for package path mismatch
+  Scenario: User receives diagnostics for package scripts declaring an id
     Given an initialized getter data directory
     And a fixture Lua repository "broken" with mismatched package path "android/org.fdroid.fdroid"
     When I run getter repo validate for that repository
     Then the command succeeds
-    And the output reports repository diagnostic "package.domain"
+    And the output reports repository diagnostic "package.schema"
 
-  Scenario: User receives diagnostics for an incomplete repository layout
+  Scenario: User receives diagnostics for invalid package metadata
     Given an initialized getter data directory
     And an incomplete Lua repository "broken"
     When I run getter repo validate for that repository
     Then the command succeeds
-    And the output reports repository diagnostic "repository.missing_directory"
+    And the output reports repository diagnostic "package.metadata"

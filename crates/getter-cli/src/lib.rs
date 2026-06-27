@@ -6,9 +6,9 @@
 
 use getter_core::autogen::InstalledInventory;
 use getter_core::diagnostics::validate_repository_path;
-use getter_core::lua::{evaluate_package_directory_script, evaluate_package_file};
+use getter_core::lua::evaluate_package_directory_script;
 use getter_core::repository::{
-    default_repository_priority, GetterDataDirLayout, RepositoryLayout, RepositoryMetadata,
+    default_repository_priority, GetterDataDirLayout, RepositoryMetadata,
     RepositoryPackageDirectoryLayout, REPOSITORY_ROOT_METADATA_FILE, REPO_API_VERSION_V1,
 };
 use getter_core::runtime::{GetterRuntime, SealedActionPlan};
@@ -1225,10 +1225,6 @@ fn parse_autogen_acceptance(args: &[String]) -> Result<AutogenAcceptance, CliErr
     }
 }
 
-fn load_repository_layout(path: &Path) -> Result<RepositoryLayout, CliError> {
-    RepositoryLayout::load(path).map_err(|source| CliError::Repository(source.to_string()))
-}
-
 fn load_package_directory_layout(
     path: &Path,
 ) -> Result<RepositoryPackageDirectoryLayout, CliError> {
@@ -1241,20 +1237,6 @@ fn load_repository_metadata(
     path: &Path,
     priority: Option<RepositoryPriority>,
 ) -> Result<RepositoryMetadata, CliError> {
-    if path.join("repo.toml").is_file() {
-        let layout = load_repository_layout(path)?;
-        if &layout.metadata.id != id {
-            return Err(CliError::Repository(format!(
-                "repo.toml id '{}' does not match requested id '{}'",
-                layout.metadata.id, id
-            )));
-        }
-        return Ok(RepositoryMetadata {
-            priority: priority.unwrap_or(layout.metadata.priority),
-            ..layout.metadata
-        });
-    }
-
     RepositoryPackageDirectoryLayout::load(path)
         .map_err(|source| CliError::Repository(source.to_string()))?;
     Ok(RepositoryMetadata {
@@ -1312,18 +1294,6 @@ fn evaluate_repository_packages(
     repo: &StoredRepository,
 ) -> Result<Vec<getter_core::ResolvedPackage>, CliError> {
     let path = repo_path(repo)?;
-    if path.join("repo.toml").is_file() {
-        let layout = load_repository_layout(&path)?;
-        return layout
-            .packages
-            .iter()
-            .map(|package_file| {
-                evaluate_package_file(&layout, &package_file.path)
-                    .map_err(|error| CliError::PackageEval(error.to_string()))
-            })
-            .collect();
-    }
-
     let layout = load_package_directory_layout(&path)?;
     layout
         .packages
@@ -1337,16 +1307,6 @@ fn evaluate_package_in_repository(
     package_id: &PackageId,
 ) -> Result<Option<getter_core::ResolvedPackage>, CliError> {
     let path = repo_path(repo)?;
-    if path.join("repo.toml").is_file() {
-        let layout = load_repository_layout(&path)?;
-        let Some(package_file) = layout.package_file(package_id) else {
-            return Ok(None);
-        };
-        return evaluate_package_file(&layout, &package_file.path)
-            .map(Some)
-            .map_err(|error| CliError::PackageEval(error.to_string()));
-    }
-
     let layout = load_package_directory_layout(&path)?;
     let Some(package) = layout.package(package_id) else {
         return Ok(None);

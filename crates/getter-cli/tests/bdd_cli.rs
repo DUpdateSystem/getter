@@ -507,8 +507,8 @@ fn fixture_lua_repository_invalid_lua(world: &mut CliWorld, repo_id: String, pac
     create_custom_fixture_lua_repository(
         world,
         repo_id,
-        package_id.clone(),
-        format!("return package_def {{ id = \"{package_id}\", name = "),
+        package_id,
+        "#!/bin/upa-lua v1\nreturn package_version { name = ".to_owned(),
     );
 }
 
@@ -521,8 +521,8 @@ fn fixture_lua_repository_invalid_schema(
     create_custom_fixture_lua_repository(
         world,
         repo_id,
-        package_id.clone(),
-        format!("return {{ id = \"{package_id}\" }}"),
+        package_id,
+        "#!/bin/upa-lua v1\nreturn package_version { source_priority = \"fdroid\" }".to_owned(),
     );
 }
 
@@ -536,7 +536,7 @@ fn fixture_lua_repository_mismatched_path(
         world,
         repo_id,
         package_id,
-        "return { id = \"android/com.termux\", name = \"Termux\" }".to_owned(),
+        "#!/bin/upa-lua v1\nreturn package_version { id = \"android/com.termux\", name = \"Termux\" }".to_owned(),
     );
 }
 
@@ -544,14 +544,10 @@ fn fixture_lua_repository_mismatched_path(
 fn incomplete_lua_repository(world: &mut CliWorld, repo_id: String) {
     let temp = world.temp.as_ref().expect("tempdir exists");
     let repo_path = temp.path().join(format!("repo-{repo_id}"));
-    fs::create_dir_all(&repo_path).expect("create incomplete repo dir");
-    fs::write(
-        repo_path.join("repo.toml"),
-        format!(
-            "id = \"{repo_id}\"\nname = \"Fixture {repo_id}\"\npriority = 0\napi_version = \"getter.repo.v1\"\n"
-        ),
-    )
-    .expect("write repo.toml");
+    let package_dir = repo_path.join("android/app/broken");
+    fs::create_dir_all(&package_dir).expect("create incomplete package dir");
+    fs::write(package_dir.join("metadata.jsonc"), "{not-json")
+        .expect("write invalid package metadata");
     world.fixture_repo_id = Some(repo_id);
     world.fixture_repo_path = Some(repo_path);
     world.fixture_package_id = None;
@@ -1402,7 +1398,7 @@ fn output_reports_repository_diagnostic(world: &mut CliWorld, code: String) {
     assert!(diagnostic["location"]["path"].as_str().is_some());
     if code == "package.schema" {
         assert_eq!(diagnostic["package_id"], "android/org.fdroid.fdroid");
-        assert_eq!(diagnostic["location"]["field"], "name");
+        assert!(diagnostic["location"]["field"].as_str().is_some());
     }
 }
 
@@ -1958,61 +1954,34 @@ fn create_fixture_lua_repository(
 ) {
     let temp = world.temp.as_ref().expect("tempdir exists");
     let repo_path = temp.path().join(format!("repo-{repo_id}"));
-    if let Some(package_name_path) = package_id.strip_prefix("android/app/") {
-        let package_dir = repo_path.join(package_relative_path(&package_id));
-        fs::create_dir_all(&package_dir).expect("create package dir");
-        fs::write(
-            package_dir.join("metadata.jsonc"),
-            format!(
-                r#"{{ "type": "android:app", "display_name": {name:?}, "android": {{ "package_name": {package_name_path:?} }} }}"#,
-                name = package_name,
-            ),
-        )
-        .expect("write package metadata");
-        fs::write(package_dir.join("Manifest"), "").expect("write Manifest");
-        fs::write(
-            package_dir.join("9999.lua"),
-            format!(
-                r#"#!/bin/upa-lua v1
+    let android_package_name = package_id
+        .strip_prefix("android/app/")
+        .or_else(|| package_id.strip_prefix("android/"))
+        .expect("fixture package id should be android package id");
+    let package_dir = repo_path.join(package_relative_path(&package_id));
+    fs::create_dir_all(&package_dir).expect("create package dir");
+    fs::write(
+        package_dir.join("metadata.jsonc"),
+        format!(
+            r#"{{ "type": "android:app", "display_name": {name:?}, "android": {{ "package_name": {android_package_name:?} }} }}"#,
+            name = package_name,
+        ),
+    )
+    .expect("write package metadata");
+    fs::write(package_dir.join("Manifest"), "").expect("write Manifest");
+    fs::write(
+        package_dir.join("9999.lua"),
+        format!(
+            r#"#!/bin/upa-lua v1
 return package_version {{
   installed = {{
-    {{ kind = "android_package", package_name = "{package_name_path}" }},
+    {{ kind = "android_package", package_name = "{android_package_name}" }},
   }},
 }}
 "#
-            ),
-        )
-        .expect("write package Lua");
-    } else {
-        let package_name_path = package_id
-            .strip_prefix("android/")
-            .expect("fixture package id should be android package id");
-        fs::create_dir_all(repo_path.join("packages/android")).expect("create packages dir");
-        fs::create_dir(repo_path.join("lib")).expect("create lib dir");
-        fs::create_dir(repo_path.join("templates")).expect("create templates dir");
-        fs::write(
-            repo_path.join("repo.toml"),
-            format!(
-                "id = \"{repo_id}\"\nname = \"Fixture {repo_id}\"\npriority = 0\napi_version = \"getter.repo.v1\"\n"
-            ),
-        )
-        .expect("write repo.toml");
-        fs::write(
-            repo_path.join(format!("packages/android/{package_name_path}.lua")),
-            format!(
-                r#"
-return package_def {{
-  id = "{package_id}",
-  name = "{package_name}",
-  installed = {{
-    {{ kind = "android_package", package_name = "{package_name_path}" }},
-  }},
-}}
-"#
-            ),
-        )
-        .expect("write package Lua");
-    }
+        ),
+    )
+    .expect("write package Lua");
 
     world.fixture_repo_id = Some(repo_id);
     world.fixture_repo_path = Some(repo_path);
@@ -2184,24 +2153,14 @@ fn create_custom_fixture_lua_repository(
 ) {
     let temp = world.temp.as_ref().expect("tempdir exists");
     let repo_path = temp.path().join(format!("repo-{repo_id}"));
-    let package_name_path = package_id
-        .strip_prefix("android/")
-        .expect("fixture package id should be android package id");
-    fs::create_dir_all(repo_path.join("packages/android")).expect("create packages dir");
-    fs::create_dir(repo_path.join("lib")).expect("create lib dir");
-    fs::create_dir(repo_path.join("templates")).expect("create templates dir");
+    let package_dir = repo_path.join(package_id.replace('/', std::path::MAIN_SEPARATOR_STR));
+    fs::create_dir_all(&package_dir).expect("create package dir");
     fs::write(
-        repo_path.join("repo.toml"),
-        format!(
-            "id = \"{repo_id}\"\nname = \"Fixture {repo_id}\"\npriority = 0\napi_version = \"getter.repo.v1\"\n"
-        ),
+        package_dir.join("metadata.jsonc"),
+        r#"{ "type": "android:app", "display_name": "F-Droid", "android": { "package_name": "org.fdroid.fdroid" } }"#,
     )
-    .expect("write repo.toml");
-    fs::write(
-        repo_path.join(format!("packages/android/{package_name_path}.lua")),
-        package_source,
-    )
-    .expect("write package Lua");
+    .expect("write package metadata");
+    fs::write(package_dir.join("1.20.0.lua"), package_source).expect("write package Lua");
 
     world.fixture_repo_id = Some(repo_id);
     world.fixture_repo_path = Some(repo_path);

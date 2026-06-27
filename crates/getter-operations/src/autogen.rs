@@ -13,7 +13,7 @@ use getter_core::autogen::{
     DEFAULT_AUTOGEN_REPOSITORY_ID, DEFAULT_AUTOGEN_REPOSITORY_NAME, INSTALLED_AUTOGEN_GENERATOR,
 };
 use getter_core::repository::{
-    generated_repository_target, GeneratedRepositoryTarget, GetterDataDirLayout, RepositoryLayout,
+    generated_repository_target, GeneratedRepositoryTarget, GetterDataDirLayout,
     RepositoryLoadError, RepositoryMetadata, RepositoryPackageDirectoryLayout,
     RepositoryRootConfig, REPO_API_VERSION_V1,
 };
@@ -358,23 +358,13 @@ pub(crate) fn higher_priority_package_coverage(
 }
 
 fn load_repository_package_ids(path: &Path) -> AutogenOperationResult<Vec<PackageId>> {
-    if path.join("repo.toml").is_file() {
-        let layout = RepositoryLayout::load(path)
-            .map_err(|source| AutogenOperationError::Repository(source.to_string()))?;
-        Ok(layout
-            .packages
-            .into_iter()
-            .map(|package| package.id)
-            .collect())
-    } else {
-        let layout = RepositoryPackageDirectoryLayout::load(path)
-            .map_err(|source| AutogenOperationError::Repository(source.to_string()))?;
-        Ok(layout
-            .packages
-            .into_iter()
-            .map(|package| package.id)
-            .collect())
-    }
+    let layout = RepositoryPackageDirectoryLayout::load(path)
+        .map_err(|source| AutogenOperationError::Repository(source.to_string()))?;
+    Ok(layout
+        .packages
+        .into_iter()
+        .map(|package| package.id)
+        .collect())
 }
 
 fn autogen_candidate_json(candidate: &AutogenCandidate) -> AutogenOperationResult<Value> {

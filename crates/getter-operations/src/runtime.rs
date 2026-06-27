@@ -8,10 +8,9 @@
 
 #[cfg(feature = "lua")]
 use getter_core::{
-    lua::{evaluate_package_directory_script, evaluate_package_file},
+    lua::evaluate_package_directory_script,
     repository::{
-        package_cache_key, package_directory_cache_key, RepositoryLayout, RepositoryLoadError,
-        RepositoryPackageDirectoryLayout,
+        package_directory_cache_key, RepositoryLoadError, RepositoryPackageDirectoryLayout,
     },
 };
 use getter_core::{
@@ -386,21 +385,6 @@ fn evaluate_registered_package(
             continue;
         };
         let root = PathBuf::from(root);
-        if root.join("repo.toml").is_file() {
-            let layout = RepositoryLayout::load(&root)?;
-            let Some(package_file) = layout.package_file(&request.package_id) else {
-                continue;
-            };
-            let package = evaluate_package_file(&layout, &package_file.path)
-                .map_err(|source| RuntimeOperationError::PackageEval(source.to_string()))?;
-            let cache_key = package_cache_key(&layout, package_file)?;
-            let dependency_digest = format!(
-                "repo:{}:package:{}:hash:{}",
-                cache_key.repository_id, cache_key.package_id, cache_key.package_file_hash
-            );
-            return Ok((package, dependency_digest));
-        }
-
         let layout = RepositoryPackageDirectoryLayout::load(&root)?;
         let Some(package_directory) = layout.package(&request.package_id) else {
             continue;
@@ -467,46 +451,6 @@ mod tests {
 
     #[cfg(feature = "lua")]
     #[test]
-    fn registered_package_update_check_issues_action_from_lua_static_updates() {
-        let temp = tempfile::tempdir().unwrap();
-        let repo_root = temp.path().join("repo");
-        write_static_update_repo(&repo_root);
-        let db = MainDb::open_in_memory().unwrap();
-        db.upsert_repository(
-            &RepositoryMetadata {
-                id: "official".parse().unwrap(),
-                name: "Official".to_owned(),
-                priority: RepositoryPriority::new(0),
-                api_version: REPO_API_VERSION_V1.to_owned(),
-            },
-            Some(&repo_root),
-            None,
-        )
-        .unwrap();
-        let mut runtime = GetterRuntime::new();
-
-        let issued = issue_action_from_registered_package_json(
-            &mut runtime,
-            &db,
-            &json!({
-                "package_id": "android/org.fdroid.fdroid",
-                "installed_version": "1.0.0"
-            })
-            .to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(issued["package"]["repository"], "official");
-        assert_eq!(issued["update"]["status"], "update_available");
-        let action_id = issued["action"]["action_id"].as_str().unwrap();
-        let submitted =
-            submit_action_json(&mut runtime, &json!({ "action_id": action_id }).to_string())
-                .unwrap();
-        assert_eq!(submitted["package_id"], "android/org.fdroid.fdroid");
-    }
-
-    #[cfg(feature = "lua")]
-    #[test]
     fn registered_package_update_check_issues_action_from_package_directory_static_updates() {
         let temp = tempfile::tempdir().unwrap();
         let repo_root = temp.path().join("repo");
@@ -551,13 +495,13 @@ mod tests {
     fn registered_package_update_check_without_update_does_not_issue_action() {
         let temp = tempfile::tempdir().unwrap();
         let repo_root = temp.path().join("repo");
-        write_static_update_repo(&repo_root);
+        write_package_directory_static_update_repo(&repo_root);
         let db = MainDb::open_in_memory().unwrap();
         db.upsert_repository(
             &RepositoryMetadata {
-                id: "official".parse().unwrap(),
-                name: "Official".to_owned(),
-                priority: RepositoryPriority::new(0),
+                id: "autogen".parse().unwrap(),
+                name: "Autogen".to_owned(),
+                priority: RepositoryPriority::new(-1),
                 api_version: REPO_API_VERSION_V1.to_owned(),
             },
             Some(&repo_root),
@@ -570,7 +514,7 @@ mod tests {
             &mut runtime,
             &db,
             &json!({
-                "package_id": "android/org.fdroid.fdroid",
+                "package_id": "android/app/com.example.autogen",
                 "installed_version": "1.2.0"
             })
             .to_string(),
@@ -704,44 +648,6 @@ mod tests {
     fn submit_plan(runtime: &mut GetterRuntime, plan: SealedActionPlan) -> String {
         let action = runtime.issue_action(plan);
         runtime.submit_action(&action.action_id).unwrap().task_id
-    }
-
-    #[cfg(feature = "lua")]
-    fn write_static_update_repo(root: &std::path::Path) {
-        fs::create_dir_all(root.join("packages/android")).unwrap();
-        fs::create_dir(root.join("lib")).unwrap();
-        fs::create_dir(root.join("templates")).unwrap();
-        fs::write(
-            root.join("repo.toml"),
-            r#"id = "official"
-name = "Official"
-priority = 0
-api_version = "getter.repo.v1"
-"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("packages/android/org.fdroid.fdroid.lua"),
-            r#"
-return package_def {
-  id = "android/org.fdroid.fdroid",
-  name = "F-Droid",
-  updates = {
-    {
-      version = "1.2.0",
-      artifacts = {
-        {
-          name = "app.apk",
-          url = "https://example.invalid/app.apk",
-          file_name = "app.apk",
-        },
-      },
-    },
-  },
-}
-"#,
-        )
-        .unwrap();
     }
 
     #[cfg(feature = "lua")]

@@ -3,10 +3,9 @@
 //! Diagnostics are getter-owned DTOs used by CLI and future app bridges. They
 //! describe what getter observed; Flutter should only render them.
 
-use crate::lua::{evaluate_package_directory_script, evaluate_package_file, LuaPackageError};
+use crate::lua::{evaluate_package_directory_script, LuaPackageError};
 use crate::repository::{
-    package_cache_key, InvalidPackageDirectory, RepositoryLayout, RepositoryLoadError,
-    RepositoryPackageDirectoryLayout,
+    InvalidPackageDirectory, RepositoryLoadError, RepositoryPackageDirectoryLayout,
 };
 use crate::PackageId;
 use serde::{Deserialize, Serialize};
@@ -64,36 +63,7 @@ impl RepositoryValidationReport {
 /// This intentionally loads and evaluates local Lua package files only. It must
 /// not perform provider/network checks.
 pub fn validate_repository_path(path: impl AsRef<Path>) -> RepositoryValidationReport {
-    let root = path.as_ref();
-    if root.join("repo.toml").is_file() {
-        validate_legacy_repository_path(root)
-    } else {
-        validate_package_directory_repository_path(root)
-    }
-}
-
-fn validate_legacy_repository_path(root: &Path) -> RepositoryValidationReport {
-    let layout = match RepositoryLayout::load(root) {
-        Ok(layout) => layout,
-        Err(error) => {
-            return RepositoryValidationReport::new(0, vec![repository_load_diagnostic(error)])
-        }
-    };
-
-    let mut diagnostics = Vec::new();
-    let mut package_count = 0usize;
-    for package_file in &layout.packages {
-        if let Err(error) = package_cache_key(&layout, package_file) {
-            diagnostics.push(repository_load_diagnostic(error));
-            continue;
-        }
-        match evaluate_package_file(&layout, &package_file.path) {
-            Ok(_) => package_count += 1,
-            Err(error) => diagnostics.push(lua_diagnostic(error, Some(package_file.id.clone()))),
-        }
-    }
-
-    RepositoryValidationReport::new(package_count, diagnostics)
+    validate_package_directory_repository_path(path.as_ref())
 }
 
 fn validate_package_directory_repository_path(root: &Path) -> RepositoryValidationReport {
@@ -167,40 +137,20 @@ fn repository_load_diagnostic(error: RepositoryLoadError) -> PackageValidationDi
             path,
             format!("failed to read repository root: {source}"),
         ),
+        RepositoryLoadError::RepositoryId(source) => (
+            "repository.invalid_id",
+            PathBuf::from("repo"),
+            source.to_string(),
+        ),
         RepositoryLoadError::MissingGeneratedRepository { alias, path } => (
             "repository.missing_generated_repository",
             path,
             format!("configured generated repository '{alias}' does not exist"),
         ),
-        RepositoryLoadError::ReadRepoToml { path, source } => (
-            "repository.read_repo_toml",
-            path,
-            format!("failed to read repo.toml: {source}"),
-        ),
-        RepositoryLoadError::ParseRepoToml { path, source } => (
-            "repository.parse_repo_toml",
-            path,
-            format!("failed to parse repo.toml: {source}"),
-        ),
-        RepositoryLoadError::RepositoryId(source) => (
-            "repository.invalid_id",
-            PathBuf::from("repo.toml"),
-            source.to_string(),
-        ),
-        RepositoryLoadError::UnsupportedApiVersion(version) => (
-            "repository.unsupported_api_version",
-            PathBuf::from("repo.toml"),
-            format!("unsupported repository api_version '{version}'"),
-        ),
-        RepositoryLoadError::MissingDirectory { path, directory } => (
-            "repository.missing_directory",
-            path,
-            format!("missing required directory '{directory}'"),
-        ),
         RepositoryLoadError::ReadPackagesDir { path, source } => (
-            "repository.read_packages_dir",
+            "repository.read_package_directory",
             path,
-            format!("failed to read packages directory: {source}"),
+            format!("failed to read package directory: {source}"),
         ),
         RepositoryLoadError::InvalidPackagePath { path, reason } => {
             ("repository.invalid_package_path", path, reason)
@@ -351,40 +301,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn fixture_repo() -> tempfile::TempDir {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        fs::write(
-            root.join("repo.toml"),
-            r#"id = "official"
-name = "Official"
-priority = 0
-api_version = "getter.repo.v1"
-"#,
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("packages/android")).unwrap();
-        fs::create_dir(root.join("lib")).unwrap();
-        fs::create_dir(root.join("templates")).unwrap();
-        temp
-    }
-
-    #[test]
-    fn valid_repository_has_no_diagnostics() {
-        let temp = fixture_repo();
-        fs::write(
-            temp.path().join("packages/android/org.fdroid.fdroid.lua"),
-            r#"return package_def { id = "android/org.fdroid.fdroid", name = "F-Droid" }"#,
-        )
-        .unwrap();
-
-        let report = validate_repository_path(temp.path());
-        assert!(report.valid, "{report:?}");
-        assert_eq!(report.package_count, 1);
-        assert!(report.diagnostics.is_empty());
-        assert!(!report.network_required);
-    }
-
     #[test]
     fn package_directory_repository_has_no_diagnostics() {
         let temp = tempfile::tempdir().unwrap();
@@ -478,28 +394,18 @@ api_version = "getter.repo.v1"
     }
 
     #[test]
-    fn missing_directory_is_stable_repository_diagnostic() {
+    fn lua_schema_error_is_stable_package_diagnostic() {
         let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
         fs::write(
-            temp.path().join("repo.toml"),
-            r#"id = "official"
-name = "Official"
-api_version = "getter.repo.v1"
-"#,
+            package_dir.join("metadata.jsonc"),
+            r#"{ "type": "android:app", "android": { "package_name": "org.fdroid.fdroid" } }"#,
         )
         .unwrap();
-
-        let report = validate_repository_path(temp.path());
-        assert!(!report.valid);
-        assert_eq!(report.diagnostics[0].code, "repository.missing_directory");
-    }
-
-    #[test]
-    fn lua_schema_error_is_stable_package_diagnostic() {
-        let temp = fixture_repo();
         fs::write(
-            temp.path().join("packages/android/org.fdroid.fdroid.lua"),
-            r#"return { id = "android/org.fdroid.fdroid" }"#,
+            package_dir.join("9999.lua"),
+            "#!/bin/upa-lua v1\nreturn package_version { source_priority = \"fdroid\" }",
         )
         .unwrap();
 
@@ -507,50 +413,36 @@ api_version = "getter.repo.v1"
         assert!(!report.valid);
         assert_eq!(report.diagnostics[0].code, "package.schema");
         assert_eq!(
-            report.diagnostics[0].location.field.as_deref(),
-            Some("name")
-        );
-        assert_eq!(
             report.diagnostics[0]
                 .package_id
                 .as_ref()
                 .unwrap()
                 .to_string(),
-            "android/org.fdroid.fdroid"
+            "android/app/org.fdroid.fdroid"
         );
     }
 
     #[test]
-    fn package_id_path_mismatch_is_domain_diagnostic() {
-        let temp = fixture_repo();
-        fs::write(
-            temp.path().join("packages/android/org.fdroid.fdroid.lua"),
-            r#"return { id = "android/com.termux", name = "Termux" }"#,
-        )
-        .unwrap();
-
-        let report = validate_repository_path(temp.path());
-        assert!(!report.valid);
-        assert_eq!(report.diagnostics[0].code, "package.domain");
-    }
-
-    #[test]
-    fn unsupported_api_version_is_stable_repository_diagnostic() {
+    fn package_version_script_id_field_is_schema_diagnostic() {
         let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
         fs::write(
-            temp.path().join("repo.toml"),
-            r#"id = "official"
-name = "Official"
-api_version = "getter.repo.v2"
-"#,
+            package_dir.join("metadata.jsonc"),
+            r#"{ "type": "android:app", "android": { "package_name": "org.fdroid.fdroid" } }"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            "#!/bin/upa-lua v1\nreturn package_version { id = \"android/app/org.fdroid.fdroid\" }",
         )
         .unwrap();
 
         let report = validate_repository_path(temp.path());
         assert!(!report.valid);
-        assert_eq!(
-            report.diagnostics[0].code,
-            "repository.unsupported_api_version"
-        );
+        assert_eq!(report.diagnostics[0].code, "package.schema");
+        assert!(report.diagnostics[0]
+            .message
+            .contains("must not be declared"));
     }
 }

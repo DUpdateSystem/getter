@@ -2,8 +2,7 @@
 
 use crate::repository::{
     PackageDirectory, PackageDirectoryMetadata, PackageLuaPermission, PackageTypeMetadata,
-    PackageVersionScript, RepositoryLayout, RepositoryLoadError, LUA_API_SHEBANG_V1,
-    REPOSITORY_LUACLASS_DIR,
+    PackageVersionScript, RepositoryLoadError, LUA_API_SHEBANG_V1, REPOSITORY_LUACLASS_DIR,
 };
 use crate::{
     InstalledTarget, PackageId, PackagePermissions, RepositoryId, ResolvedPackage, UpdateArtifact,
@@ -46,35 +45,6 @@ pub enum LuaPackageError {
         #[source]
         source: Box<RepositoryLoadError>,
     },
-}
-
-/// Evaluate and validate a Lua package file from a repository layout.
-pub fn evaluate_package_file(
-    repository: &RepositoryLayout,
-    path: impl AsRef<Path>,
-) -> Result<ResolvedPackage, LuaPackageError> {
-    let path = path.as_ref();
-    let source = fs::read_to_string(path).map_err(|source| LuaPackageError::ReadFile {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    evaluate_package_source(repository, path, &source)
-}
-
-/// Evaluate package source text. This is public for focused tests and future CLI
-/// plumbing; repository callers should normally use [`evaluate_package_file`].
-pub fn evaluate_package_source(
-    repository: &RepositoryLayout,
-    path: impl AsRef<Path>,
-    source: &str,
-) -> Result<ResolvedPackage, LuaPackageError> {
-    let path = path.as_ref().to_path_buf();
-    let json = evaluate_package_source_to_json(
-        &LuaRepositoryEnvironment::Legacy(repository),
-        &path,
-        source,
-    )?;
-    validate_package_json(repository, &path, json)
 }
 
 pub fn evaluate_package_directory_script(
@@ -140,7 +110,6 @@ fn evaluate_package_source_to_json(
 }
 
 enum LuaRepositoryEnvironment<'a> {
-    Legacy(&'a RepositoryLayout),
     PackageDirectory { package: &'a PackageDirectory },
 }
 
@@ -152,17 +121,6 @@ fn configure_package_path(
     package.set("cpath", "")?;
     package.set("loadlib", Value::Nil)?;
     match environment {
-        LuaRepositoryEnvironment::Legacy(repository) => {
-            let lib_pattern = repository.lib_dir.join("?.lua");
-            let nested_lib_pattern = repository.lib_dir.join("?/init.lua");
-            let new_path = format!(
-                "{};{}",
-                lib_pattern.to_string_lossy(),
-                nested_lib_pattern.to_string_lossy()
-            );
-            package.set("path", new_path)?;
-            install_lib_prefix_searcher(lua, &package, repository.lib_dir.clone())?;
-        }
         LuaRepositoryEnvironment::PackageDirectory {
             package: package_dir,
         } => {
@@ -205,16 +163,6 @@ fn remove_unsafe_globals(lua: &Lua) -> mlua::Result<()> {
         globals.set(name, Value::Nil)?;
     }
     Ok(())
-}
-
-fn install_lib_prefix_searcher(lua: &Lua, package: &Table, lib_dir: PathBuf) -> mlua::Result<()> {
-    install_prefixed_file_searcher(
-        lua,
-        package,
-        "lib.",
-        lib_dir,
-        "constrained repository lib searcher only handles lib.* modules",
-    )
 }
 
 fn install_luaclass_prefix_searcher(
@@ -315,9 +263,8 @@ fn install_helpers(lua: &Lua, environment: &LuaRepositoryEnvironment<'_>) -> mlu
     lua.globals().set("android_app", package_fn.clone())?;
     lua.globals().set("magisk_module", package_fn.clone())?;
     lua.globals().set("generic_package", package_fn)?;
-    if let LuaRepositoryEnvironment::PackageDirectory { package } = environment {
-        install_package_file_helpers(lua, package)?;
-    }
+    let LuaRepositoryEnvironment::PackageDirectory { package } = environment;
+    install_package_file_helpers(lua, package)?;
     Ok(())
 }
 
@@ -470,45 +417,6 @@ fn is_array_table(table: &Table) -> mlua::Result<bool> {
         }
     }
     Ok(count == len)
-}
-
-fn validate_package_json(
-    repository: &RepositoryLayout,
-    path: &Path,
-    value: JsonValue,
-) -> Result<ResolvedPackage, LuaPackageError> {
-    let object = value.as_object().ok_or_else(|| LuaPackageError::Schema {
-        path: path.to_path_buf(),
-        message: "package value must be an object".to_owned(),
-    })?;
-
-    let id = required_string(path, object, "id")?;
-    let id: PackageId = id.parse().map_err(|source| LuaPackageError::Schema {
-        path: path.to_path_buf(),
-        message: format!("invalid package id: {source}"),
-    })?;
-    let path_id = crate::repository::package_id_from_path(&repository.packages_dir, path).map_err(
-        |source| LuaPackageError::Domain {
-            path: path.to_path_buf(),
-            message: format!("failed to derive package id from path: {source}"),
-        },
-    )?;
-    if id != path_id {
-        return Err(LuaPackageError::Domain {
-            path: path.to_path_buf(),
-            message: format!("package id '{id}' does not match path-derived id '{path_id}'"),
-        });
-    }
-
-    let name = required_string(path, object, "name")?.to_owned();
-    package_from_version_json(
-        repository.metadata.id.clone(),
-        id,
-        name,
-        PackagePermissions::default(),
-        path,
-        object,
-    )
 }
 
 fn validate_package_directory_version_json(
@@ -814,45 +722,48 @@ fn parse_string_array(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repository::{RepositoryLayout, RepositoryPackageDirectoryLayout};
+    use crate::repository::RepositoryPackageDirectoryLayout;
     use crate::RepositoryId;
     use std::fs;
 
-    fn fixture_repo() -> (tempfile::TempDir, RepositoryLayout, PathBuf) {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        fs::write(
-            root.join("repo.toml"),
-            r#"id = "official"
-name = "UpgradeAll Official"
-priority = 0
-api_version = "getter.repo.v1"
-"#,
+    fn evaluate_single_package_directory(
+        root: &Path,
+        repository_id: &str,
+    ) -> Result<ResolvedPackage, LuaPackageError> {
+        let layout = RepositoryPackageDirectoryLayout::load(root).unwrap();
+        let package = &layout.packages[0];
+        let metadata = layout.package_metadata(package).unwrap();
+        let script = layout.unambiguous_version_script(package).unwrap();
+        evaluate_package_directory_script(
+            &RepositoryId::new(repository_id).unwrap(),
+            package,
+            &metadata,
+            script,
         )
-        .unwrap();
-        fs::create_dir(root.join("packages")).unwrap();
-        fs::create_dir(root.join("packages/android")).unwrap();
-        fs::create_dir(root.join("lib")).unwrap();
-        fs::create_dir(root.join("templates")).unwrap();
-        let package_path = root.join("packages/android/org.fdroid.fdroid.lua");
-        fs::write(&package_path, "return {}").unwrap();
-        let layout = RepositoryLayout::load(root).unwrap();
-        (temp, layout, package_path)
     }
 
     #[test]
     fn evaluates_json_like_lua_package_table() {
-        let (_temp, layout, package_path) = fixture_repo();
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
         fs::write(
-            &package_path,
-            r#"
-return package_def {
-  id = "android/org.fdroid.fdroid",
-  name = "F-Droid",
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "F-Droid",
+  "android": { "package_name": "org.fdroid.fdroid" },
+  "lua": { "9999.lua": { "permission": ["allow_free_network"] } }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+return package_version {
   installed = {
     { kind = "android_package", package_name = "org.fdroid.fdroid" },
   },
-  permissions = { free_network = true },
   source_priority = { "github", "fdroid" },
   updates = {
     {
@@ -876,8 +787,8 @@ return package_def {
         )
         .unwrap();
 
-        let package = evaluate_package_file(&layout, &package_path).unwrap();
-        assert_eq!(package.id.to_string(), "android/org.fdroid.fdroid");
+        let package = evaluate_single_package_directory(temp.path(), "official").unwrap();
+        assert_eq!(package.id.to_string(), "android/app/org.fdroid.fdroid");
         assert_eq!(package.repository.as_str(), "official");
         assert_eq!(package.name, "F-Droid");
         assert_eq!(
@@ -1214,129 +1125,25 @@ return package_version { name = getter_builtin.read_package_file("name.txt") }
     }
 
     #[test]
-    fn rejects_package_id_that_does_not_match_path() {
-        let (_temp, layout, package_path) = fixture_repo();
-        fs::write(
-            &package_path,
-            r#"return { id = "android/com.termux", name = "Termux" }"#,
-        )
-        .unwrap();
-
-        let err = evaluate_package_file(&layout, &package_path).unwrap_err();
-        assert!(matches!(err, LuaPackageError::Domain { .. }));
-    }
-
-    #[test]
-    fn require_can_load_repository_lib_modules() {
-        let (_temp, layout, package_path) = fixture_repo();
-        fs::write(
-            layout.lib_dir.join("android.lua"),
-            r#"
-return {
-  local_app = function(input)
-    return {
-      id = input.id,
-      name = input.name,
-      installed = {
-        { kind = "android_package", package_name = input.package_name },
-      },
-    }
-  end
-}
-"#,
-        )
-        .unwrap();
-        fs::write(
-            &package_path,
-            r#"
-local android = require("android")
-return android.local_app {
-  id = "android/org.fdroid.fdroid",
-  name = "F-Droid",
-  package_name = "org.fdroid.fdroid",
-}
-"#,
-        )
-        .unwrap();
-
-        let package = evaluate_package_file(&layout, &package_path).unwrap();
-        assert_eq!(package.name, "F-Droid");
-        assert_eq!(package.installed.len(), 1);
-    }
-
-    #[test]
-    fn require_can_load_repository_lib_modules_with_lib_prefix() {
-        let (_temp, layout, package_path) = fixture_repo();
-        fs::write(
-            layout.lib_dir.join("android.lua"),
-            r#"
-return {
-  local_app = function(input)
-    return {
-      id = input.id,
-      name = input.name,
-      installed = {
-        { kind = "android_package", package_name = input.package_name },
-      },
-    }
-  end
-}
-"#,
-        )
-        .unwrap();
-        fs::write(
-            &package_path,
-            r#"
-local android = require("lib.android")
-return android.local_app {
-  id = "android/org.fdroid.fdroid",
-  name = "F-Droid",
-  package_name = "org.fdroid.fdroid",
-}
-"#,
-        )
-        .unwrap();
-
-        let package = evaluate_package_file(&layout, &package_path).unwrap();
-        assert_eq!(package.name, "F-Droid");
-        assert_eq!(package.installed.len(), 1);
-    }
-
-    #[test]
-    fn lib_prefixed_searcher_does_not_expose_repository_templates() {
-        let (_temp, layout, package_path) = fixture_repo();
-        fs::write(
-            layout.templates_dir.join("android.lua"),
-            r#"return { leaked = true }"#,
-        )
-        .unwrap();
-        fs::write(
-            &package_path,
-            r#"
-local ok = pcall(require, "templates.android")
-return {
-  id = "android/org.fdroid.fdroid",
-  name = ok and "leaked" or "F-Droid",
-}
-"#,
-        )
-        .unwrap();
-
-        let package = evaluate_package_file(&layout, &package_path).unwrap();
-        assert_eq!(package.name, "F-Droid");
-    }
-
-    #[test]
     fn lua_environment_does_not_expose_process_or_file_system_globals() {
         let temp = tempfile::tempdir().unwrap();
         let side_effect = temp.path().join("side-effect");
-        let (_repo_temp, layout, package_path) = fixture_repo();
+        let package_dir = temp.path().join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
         fs::write(
-            &package_path,
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "F-Droid",
+  "android": { "package_name": "org.fdroid.fdroid" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
             format!(
-                r#"
-return {{
-  id = "android/org.fdroid.fdroid",
+                r#"#!/bin/upa-lua v1
+return package_version {{
   name = (os == nil and io == nil and debug == nil and dofile == nil and loadfile == nil and package == nil) and "F-Droid" or "leaked",
   side_effect = rawget(_G, "os") and os.execute("touch {}"),
 }}
@@ -1346,40 +1153,43 @@ return {{
         )
         .unwrap();
 
-        let package = evaluate_package_file(&layout, &package_path).unwrap();
+        let package = evaluate_single_package_directory(temp.path(), "official").unwrap();
         assert_eq!(package.name, "F-Droid");
         assert!(!side_effect.exists());
     }
 
     #[test]
     fn repository_root_is_not_exposed_even_when_cwd_is_repository_root() {
-        let (_temp, layout, package_path) = fixture_repo();
+        let temp = tempfile::tempdir().unwrap();
         fs::write(
-            layout.root.join("rootleak.lua"),
+            temp.path().join("rootleak.lua"),
             r#"return { leaked = true }"#,
         )
         .unwrap();
+        let package_dir = temp.path().join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
         fs::write(
-            layout.templates_dir.join("android.lua"),
-            r#"return { leaked = true }"#,
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "F-Droid",
+  "android": { "package_name": "org.fdroid.fdroid" }
+}"#,
         )
         .unwrap();
         fs::write(
-            &package_path,
-            r#"
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
 local root_ok = pcall(require, "rootleak")
 local template_ok = pcall(require, "templates.android")
-return {
-  id = "android/org.fdroid.fdroid",
-  name = (root_ok or template_ok) and "leaked" or "F-Droid",
-}
+return package_version { name = (root_ok or template_ok) and "leaked" or "F-Droid" }
 "#,
         )
         .unwrap();
 
         let original_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&layout.root).unwrap();
-        let result = evaluate_package_file(&layout, &package_path);
+        std::env::set_current_dir(temp.path()).unwrap();
+        let result = evaluate_single_package_directory(temp.path(), "official");
         std::env::set_current_dir(original_cwd).unwrap();
 
         let package = result.unwrap();

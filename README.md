@@ -8,7 +8,7 @@ This repository is intentionally usable outside the UpgradeAll UI. The UpgradeAl
 
 - Rust workspace split into `getter-core`, `getter-storage`, `getter-cli`, and placeholder provider/downloader/RPC/FFI crates.
 - Package IDs are readable, for example `android/org.fdroid.fdroid`.
-- Lua package repositories use `repo.toml` plus `packages/`, `lib/`, and `templates/` directories.
+- Lua package repositories are repository alias directories under `repo/`; packages are directories containing `metadata.jsonc`, optional `Manifest`, and direct child version scripts such as `1.20.0.lua` or `9999.lua`. Shared Lua classes live under repository-root `luaclass/`.
 - SQLite storage uses a main DB and a separate cache DB.
 - `getter-cli` exposes JSON command contracts for init, app list, repository registration/evaluation, package evaluation, storage validation, legacy bridge-bundle import, and sanitized legacy report listing.
 
