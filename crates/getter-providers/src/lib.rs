@@ -231,6 +231,160 @@ fn fdroid_artifact_url(base: &str, apk_name: &str) -> String {
     format!("{}/{}", base.trim_end_matches('/'), apk_name)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GithubRelease {
+    pub tag_name: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub prerelease: bool,
+    #[serde(default)]
+    pub published_at: Option<String>,
+    #[serde(default)]
+    pub assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GithubReleaseAsset {
+    pub name: String,
+    pub browser_download_url: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GithubReleaseCandidateOptions {
+    pub include_prereleases: bool,
+    pub asset_filter: GithubAssetFilter,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GithubAssetFilter {
+    pub include: Option<String>,
+    pub exclude: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum GithubProviderError {
+    #[error("failed to parse GitHub releases JSON: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("invalid GitHub asset {filter_kind} regex '{pattern}': {source}")]
+    AssetFilterRegex {
+        filter_kind: &'static str,
+        pattern: String,
+        #[source]
+        source: regex::Error,
+    },
+}
+
+pub fn parse_github_releases_json(json: &str) -> Result<Vec<GithubRelease>, GithubProviderError> {
+    Ok(serde_json::from_str(json)?)
+}
+
+pub fn github_release_update_candidates(
+    releases: &[GithubRelease],
+    options: &GithubReleaseCandidateOptions,
+) -> Result<Vec<UpdateCandidate>, GithubProviderError> {
+    let filter = CompiledGithubAssetFilter::new(&options.asset_filter)?;
+    Ok(releases
+        .iter()
+        .filter(|release| !release.draft)
+        .filter(|release| options.include_prereleases || !release.prerelease)
+        .filter_map(|release| github_release_update_candidate(release, &filter))
+        .collect())
+}
+
+fn github_release_update_candidate(
+    release: &GithubRelease,
+    filter: &CompiledGithubAssetFilter,
+) -> Option<UpdateCandidate> {
+    let artifacts = release
+        .assets
+        .iter()
+        .filter(|asset| filter.matches(asset))
+        .map(github_asset_update_artifact)
+        .collect::<Vec<_>>();
+    if artifacts.is_empty() {
+        return None;
+    }
+
+    Some(UpdateCandidate {
+        version: release.tag_name.clone(),
+        version_code: None,
+        channel: release.prerelease.then(|| "prerelease".to_owned()),
+        source: Some("github".to_owned()),
+        artifacts,
+    })
+}
+
+fn github_asset_update_artifact(asset: &GithubReleaseAsset) -> UpdateArtifact {
+    UpdateArtifact {
+        name: asset.name.clone(),
+        url: asset.browser_download_url.clone(),
+        file_name: Some(asset.name.clone()),
+        sha256: github_asset_sha256(asset.digest.as_deref()),
+        size: asset.size,
+    }
+}
+
+fn github_asset_sha256(digest: Option<&str>) -> Option<String> {
+    digest
+        .and_then(|value| value.strip_prefix("sha256:"))
+        .filter(|value| {
+            value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit())
+        })
+        .map(str::to_owned)
+}
+
+struct CompiledGithubAssetFilter {
+    include: Option<regex::Regex>,
+    exclude: Option<regex::Regex>,
+}
+
+impl CompiledGithubAssetFilter {
+    fn new(filter: &GithubAssetFilter) -> Result<Self, GithubProviderError> {
+        Ok(Self {
+            include: compile_github_asset_regex("include", filter.include.as_deref())?,
+            exclude: compile_github_asset_regex("exclude", filter.exclude.as_deref())?,
+        })
+    }
+
+    fn matches(&self, asset: &GithubReleaseAsset) -> bool {
+        self.include
+            .as_ref()
+            .is_none_or(|include| include.is_match(&asset.name))
+            && !self
+                .exclude
+                .as_ref()
+                .is_some_and(|exclude| exclude.is_match(&asset.name))
+    }
+}
+
+fn compile_github_asset_regex(
+    filter_kind: &'static str,
+    pattern: Option<&str>,
+) -> Result<Option<regex::Regex>, GithubProviderError> {
+    pattern
+        .map(|pattern| {
+            regex::Regex::new(pattern).map_err(|source| GithubProviderError::AssetFilterRegex {
+                filter_kind,
+                pattern: pattern.to_owned(),
+                source,
+            })
+        })
+        .transpose()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,4 +496,159 @@ mod tests {
 
         assert!(matches!(error, FdroidCatalogError::Xml(_)));
     }
+
+    #[test]
+    fn parses_github_releases_json_into_provider_facts() {
+        let releases = parse_github_releases_json(GITHUB_RELEASES_FIXTURE).unwrap();
+
+        assert_eq!(releases.len(), 3);
+        let release = &releases[0];
+        assert_eq!(release.tag_name, "v1.2.0");
+        assert_eq!(release.name.as_deref(), Some("Release 1.2.0"));
+        assert_eq!(release.body.as_deref(), Some("Release notes"));
+        assert!(!release.draft);
+        assert!(!release.prerelease);
+        assert_eq!(
+            release.published_at.as_deref(),
+            Some("2026-06-01T00:00:00Z")
+        );
+        assert_eq!(release.assets.len(), 3);
+        let asset = &release.assets[0];
+        assert_eq!(asset.name, "app-release.apk");
+        assert_eq!(
+            asset.content_type.as_deref(),
+            Some("application/vnd.android.package-archive")
+        );
+        assert_eq!(asset.size, Some(1234));
+        assert_eq!(
+            asset.browser_download_url,
+            "https://github.com/example/app/releases/download/v1.2.0/app-release.apk"
+        );
+        assert_eq!(
+            asset.digest.as_deref(),
+            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+    }
+
+    #[test]
+    fn normalizes_github_release_assets_to_update_candidates_with_filters() {
+        let releases = parse_github_releases_json(GITHUB_RELEASES_FIXTURE).unwrap();
+        let options = GithubReleaseCandidateOptions {
+            asset_filter: GithubAssetFilter {
+                include: Some(r"\.apk$".to_owned()),
+                exclude: Some("debug".to_owned()),
+            },
+            ..Default::default()
+        };
+
+        let candidates = github_release_update_candidates(&releases, &options).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].version, "v1.2.0");
+        assert_eq!(candidates[0].source.as_deref(), Some("github"));
+        assert_eq!(candidates[0].artifacts.len(), 1);
+        let artifact = &candidates[0].artifacts[0];
+        assert_eq!(artifact.name, "app-release.apk");
+        assert_eq!(
+            artifact.url,
+            "https://github.com/example/app/releases/download/v1.2.0/app-release.apk"
+        );
+        assert_eq!(artifact.file_name.as_deref(), Some("app-release.apk"));
+        assert_eq!(
+            artifact.sha256.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(artifact.size, Some(1234));
+    }
+
+    #[test]
+    fn ignores_unrecognized_github_asset_digests() {
+        let releases = parse_github_releases_json(GITHUB_INVALID_DIGEST_FIXTURE).unwrap();
+
+        let candidates = github_release_update_candidates(
+            &releases,
+            &GithubReleaseCandidateOptions {
+                asset_filter: GithubAssetFilter {
+                    include: Some(r"\.apk$".to_owned()),
+                    exclude: None,
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(candidates[0].artifacts[0].sha256, None);
+    }
+
+    const GITHUB_RELEASES_FIXTURE: &str = r#"[
+  {
+    "tag_name": "v1.2.0",
+    "name": "Release 1.2.0",
+    "body": "Release notes",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-06-01T00:00:00Z",
+    "assets": [
+      {
+        "name": "app-release.apk",
+        "content_type": "application/vnd.android.package-archive",
+        "size": 1234,
+        "browser_download_url": "https://github.com/example/app/releases/download/v1.2.0/app-release.apk",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "name": "app-debug.apk",
+        "content_type": "application/vnd.android.package-archive",
+        "size": 2345,
+        "browser_download_url": "https://github.com/example/app/releases/download/v1.2.0/app-debug.apk"
+      },
+      {
+        "name": "notes.txt",
+        "content_type": "text/plain",
+        "size": 345,
+        "browser_download_url": "https://github.com/example/app/releases/download/v1.2.0/notes.txt"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.3.0-beta1",
+    "draft": false,
+    "prerelease": true,
+    "assets": [
+      {
+        "name": "app-beta.apk",
+        "size": 456,
+        "browser_download_url": "https://github.com/example/app/releases/download/v1.3.0-beta1/app-beta.apk"
+      }
+    ]
+  },
+  {
+    "tag_name": "v1.4.0-draft",
+    "draft": true,
+    "prerelease": false,
+    "assets": [
+      {
+        "name": "app-draft.apk",
+        "size": 567,
+        "browser_download_url": "https://github.com/example/app/releases/download/v1.4.0-draft/app-draft.apk"
+      }
+    ]
+  }
+]"#;
+
+    const GITHUB_INVALID_DIGEST_FIXTURE: &str = r#"[
+  {
+    "tag_name": "v1.2.0",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {
+        "name": "app-release.apk",
+        "size": 1234,
+        "browser_download_url": "https://github.com/example/app/releases/download/v1.2.0/app-release.apk",
+        "digest": "sha256:not-a-valid-sha256"
+      }
+    ]
+  }
+]"#;
 }

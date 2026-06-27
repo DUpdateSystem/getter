@@ -16,6 +16,7 @@ struct CliWorld {
     autogen_preview: Option<PathBuf>,
     update_fixture: Option<PathBuf>,
     fdroid_index: Option<PathBuf>,
+    github_releases: Option<PathBuf>,
     task_request: Option<PathBuf>,
     runtime_script: Option<PathBuf>,
     remembered_task_id: Option<String>,
@@ -170,6 +171,73 @@ fn fixture_fdroid_catalog_index_with_package(world: &mut CliWorld, package_name:
     )
     .expect("write F-Droid fixture index");
     world.fdroid_index = Some(index);
+}
+
+#[given(expr = "a fixture GitHub releases response for {string}")]
+fn fixture_github_releases_response(world: &mut CliWorld, project: String) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let releases = temp.path().join("github-releases.json");
+    fs::write(
+        &releases,
+        serde_json::to_vec_pretty(&serde_json::json!([
+            {
+                "tag_name": "v1.2.0",
+                "name": format!("{project} 1.2.0"),
+                "body": "Release notes",
+                "draft": false,
+                "prerelease": false,
+                "published_at": "2026-06-01T00:00:00Z",
+                "assets": [
+                    {
+                        "name": "app-release.apk",
+                        "content_type": "application/vnd.android.package-archive",
+                        "size": 1234,
+                        "browser_download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/v1.2.0/app-release.apk",
+                        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    {
+                        "name": "app-debug.apk",
+                        "content_type": "application/vnd.android.package-archive",
+                        "size": 2345,
+                        "browser_download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/v1.2.0/app-debug.apk"
+                    },
+                    {
+                        "name": "notes.txt",
+                        "content_type": "text/plain",
+                        "size": 345,
+                        "browser_download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/v1.2.0/notes.txt"
+                    }
+                ]
+            },
+            {
+                "tag_name": "v1.3.0-beta1",
+                "draft": false,
+                "prerelease": true,
+                "assets": [
+                    {
+                        "name": "app-beta.apk",
+                        "size": 456,
+                        "browser_download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/v1.3.0-beta1/app-beta.apk"
+                    }
+                ]
+            },
+            {
+                "tag_name": "v1.4.0-draft",
+                "draft": true,
+                "prerelease": false,
+                "assets": [
+                    {
+                        "name": "app-draft.apk",
+                        "size": 567,
+                        "browser_download_url": "https://github.com/DUpdateSystem/UpgradeAll/releases/download/v1.4.0-draft/app-draft.apk"
+                    }
+                ]
+            }
+        ]))
+        .expect("GitHub releases serializes"),
+    )
+    .expect("write GitHub releases fixture");
+    world.github_releases = Some(releases);
 }
 
 #[given("an empty installed inventory")]
@@ -893,6 +961,34 @@ fn run_getter_autogen_fdroid_preview_for_inventory(world: &mut CliWorld) {
     world.json = None;
 }
 
+#[when(expr = "I run getter provider github releases for owner {string} repo {string}")]
+fn run_getter_provider_github_releases(world: &mut CliWorld, owner: String, repo: String) {
+    let releases = world
+        .github_releases
+        .as_ref()
+        .expect("GitHub releases fixture exists");
+    let output = run_getter(
+        world,
+        [
+            "provider".to_owned(),
+            "github".to_owned(),
+            "releases".to_owned(),
+            "--owner".to_owned(),
+            owner,
+            "--repo".to_owned(),
+            repo,
+            "--releases".to_owned(),
+            releases.to_string_lossy().to_string(),
+            "--asset-include".to_owned(),
+            r"\.apk$".to_owned(),
+            "--asset-exclude".to_owned(),
+            "debug".to_owned(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
 #[when("I run getter autogen fdroid apply for that preview with accept-all")]
 fn run_getter_autogen_fdroid_apply_accept_all(world: &mut CliWorld) {
     let preview = world
@@ -1484,6 +1580,33 @@ fn save_autogen_preview_to_file(world: &mut CliWorld) {
     )
     .expect("write autogen preview");
     world.autogen_preview = Some(preview);
+}
+
+#[then(expr = "the GitHub release provider returns candidate {string} with artifact {string}")]
+fn github_release_provider_returns_candidate(
+    world: &mut CliWorld,
+    version: String,
+    artifact_name: String,
+) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "provider github releases");
+    assert_eq!(json["data"]["operation"], "github.releases");
+    assert_eq!(json["data"]["provider"], "github");
+    assert_eq!(json["data"]["source"], "refreshed");
+    let candidates = json["data"]["candidates"]
+        .as_array()
+        .expect("candidates array");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["version"], version);
+    assert_eq!(candidates[0]["source"], "github");
+    assert_eq!(candidates[0]["artifacts"][0]["name"], artifact_name);
+    assert_eq!(candidates[0]["artifacts"][0]["file_name"], artifact_name);
+    assert_eq!(
+        candidates[0]["artifacts"][0]["url"],
+        "https://github.com/DUpdateSystem/UpgradeAll/releases/download/v1.2.0/app-release.apk"
+    );
+    assert!(json["data"]["diagnostics"].as_array().unwrap().is_empty());
 }
 
 #[then(expr = "the autogen repository contains generated F-Droid package {string}")]

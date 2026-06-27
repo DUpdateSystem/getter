@@ -23,6 +23,7 @@ use getter_downloader::{
 };
 use getter_operations::autogen::{self, AutogenAcceptance, AutogenOperationError};
 use getter_operations::fdroid_autogen;
+use getter_operations::github_releases::{self, GithubReleaseOperationError};
 use getter_operations::legacy_room::{self, LegacyRoomOperationError};
 use getter_operations::runtime as runtime_operations;
 use getter_storage::legacy_room::{
@@ -136,6 +137,15 @@ pub enum CliCommand {
         preview: PathBuf,
         acceptance: AutogenAcceptance,
     },
+    ProviderGithubReleases {
+        owner: String,
+        repo: String,
+        releases: PathBuf,
+        asset_include: Option<String>,
+        asset_exclude: Option<String>,
+        include_prereleases: bool,
+        refresh: bool,
+    },
     LegacyImportRoomBundle {
         bundle: PathBuf,
     },
@@ -152,6 +162,7 @@ pub enum ExitCode {
     Usage = 2,
     Storage = 10,
     Migration = 20,
+    Provider = 30,
     Download = 40,
 }
 
@@ -179,6 +190,8 @@ pub enum CliError {
     Runtime(String),
     #[error("autogen error: {0}")]
     Autogen(String),
+    #[error("provider error: {0}")]
+    Provider(String),
     #[error("Legacy Room export bundle is invalid")]
     InvalidLegacyBundle { report_path: PathBuf },
     #[error("Legacy Room bundle import is not implemented yet")]
@@ -199,6 +212,7 @@ impl CliError {
             | Self::Update(_)
             | Self::Runtime(_)
             | Self::Autogen(_) => ExitCode::GenericFailure,
+            Self::Provider(_) => ExitCode::Provider,
             Self::Download(_) => ExitCode::Download,
             Self::InvalidLegacyBundle { .. }
             | Self::UnsupportedLegacyBundle { .. }
@@ -217,6 +231,7 @@ impl CliError {
             Self::Download(_) => "download.task_error",
             Self::Runtime(_) => "runtime.error",
             Self::Autogen(_) => "autogen.error",
+            Self::Provider(_) => "provider.error",
             Self::InvalidLegacyBundle { .. } => "migration.invalid_bundle",
             Self::UnsupportedLegacyBundle { .. } => "migration.unsupported_bundle",
             Self::InvalidLegacyDb { .. } => "migration.invalid_db",
@@ -234,6 +249,7 @@ impl CliError {
             Self::Download(_) => "Getter download task operation failed",
             Self::Runtime(_) => "Getter runtime operation failed",
             Self::Autogen(_) => "Getter autogen operation failed",
+            Self::Provider(_) => "Getter provider operation failed",
             Self::InvalidLegacyBundle { .. } => "Legacy Room export bundle is invalid",
             Self::UnsupportedLegacyBundle { .. } => {
                 "Legacy Room bundle import is not implemented yet"
@@ -252,7 +268,8 @@ impl CliError {
             | Self::Update(detail)
             | Self::Download(detail)
             | Self::Runtime(detail)
-            | Self::Autogen(detail) => Some(detail.as_str()),
+            | Self::Autogen(detail)
+            | Self::Provider(detail) => Some(detail.as_str()),
             Self::InvalidLegacyBundle { .. }
             | Self::UnsupportedLegacyBundle { .. }
             | Self::InvalidLegacyDb { .. }
@@ -273,7 +290,8 @@ impl CliError {
             | Self::Update(_)
             | Self::Download(_)
             | Self::Runtime(_)
-            | Self::Autogen(_) => None,
+            | Self::Autogen(_)
+            | Self::Provider(_) => None,
         }
     }
 }
@@ -307,6 +325,16 @@ impl From<LegacyRoomOperationError> for CliError {
             LegacyRoomOperationError::InvalidDb { report_path } => {
                 Self::InvalidLegacyDb { report_path }
             }
+        }
+    }
+}
+
+impl From<GithubReleaseOperationError> for CliError {
+    fn from(value: GithubReleaseOperationError) -> Self {
+        match value {
+            GithubReleaseOperationError::Storage(source) => Self::Storage(source.to_string()),
+            GithubReleaseOperationError::InvalidRequest(detail) => Self::Usage(detail),
+            other => Self::Provider(other.to_string()),
         }
     }
 }
@@ -557,6 +585,20 @@ where
                 acceptance: parse_autogen_acceptance(rest)?,
             }
         }
+        [domain, provider, action, rest @ ..]
+            if domain == "provider" && provider == "github" && action == "releases" =>
+        {
+            let args = parse_provider_github_releases_args(rest)?;
+            CliCommand::ProviderGithubReleases {
+                owner: args.owner,
+                repo: args.repo,
+                releases: args.releases,
+                asset_include: args.asset_include,
+                asset_exclude: args.asset_exclude,
+                include_prereleases: args.include_prereleases,
+                refresh: args.refresh,
+            }
+        }
         [domain, subject, action, flag, preview, rest @ ..]
             if domain == "autogen"
                 && subject == "cleanup"
@@ -797,6 +839,30 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
             )
             .map_err(CliError::from)
         }
+        CliCommand::ProviderGithubReleases {
+            owner,
+            repo,
+            releases,
+            asset_include,
+            asset_exclude,
+            include_prereleases,
+            refresh,
+        } => {
+            let db = open_cache_db(&invocation.data_dir)?;
+            let releases_json = read_github_releases_fixture(&releases)?;
+            let request = json!({
+                "owner": owner,
+                "repo": repo,
+                "mode": if refresh { "force_refresh" } else { "use_cached" },
+                "releases_json": releases_json,
+                "include_prereleases": include_prereleases,
+                "asset": {
+                    "include": asset_include,
+                    "exclude": asset_exclude,
+                },
+            });
+            github_releases::github_releases_json(&db, &request.to_string()).map_err(CliError::from)
+        }
         CliCommand::LegacyImportRoomBundle { bundle } => {
             let db = open_main_db(&invocation.data_dir)?;
             if db.migration_record_exists(LEGACY_ROOM_MIGRATION_ID)? {
@@ -1022,6 +1088,116 @@ fn parse_fdroid_autogen_preview_args(
     Ok((index, inventory, package_names))
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ProviderGithubReleasesArgs {
+    owner: String,
+    repo: String,
+    releases: PathBuf,
+    asset_include: Option<String>,
+    asset_exclude: Option<String>,
+    include_prereleases: bool,
+    refresh: bool,
+}
+
+fn parse_provider_github_releases_args(
+    args: &[String],
+) -> Result<ProviderGithubReleasesArgs, CliError> {
+    let mut parsed = ProviderGithubReleasesArgs::default();
+    let mut position = 0;
+    while position < args.len() {
+        match args[position].as_str() {
+            "--owner" => {
+                parsed.owner = args
+                    .get(position + 1)
+                    .ok_or_else(|| {
+                        CliError::Usage(
+                            "provider github releases --owner requires an owner".to_owned(),
+                        )
+                    })?
+                    .clone();
+                position += 2;
+            }
+            "--repo" => {
+                parsed.repo = args
+                    .get(position + 1)
+                    .ok_or_else(|| {
+                        CliError::Usage(
+                            "provider github releases --repo requires a repo".to_owned(),
+                        )
+                    })?
+                    .clone();
+                position += 2;
+            }
+            "--releases" => {
+                let path = args.get(position + 1).ok_or_else(|| {
+                    CliError::Usage(
+                        "provider github releases --releases requires a fixture path".to_owned(),
+                    )
+                })?;
+                parsed.releases = PathBuf::from(path);
+                position += 2;
+            }
+            "--asset-include" => {
+                parsed.asset_include = Some(
+                    args.get(position + 1)
+                        .ok_or_else(|| {
+                            CliError::Usage(
+                                "provider github releases --asset-include requires a regex"
+                                    .to_owned(),
+                            )
+                        })?
+                        .clone(),
+                );
+                position += 2;
+            }
+            "--asset-exclude" => {
+                parsed.asset_exclude = Some(
+                    args.get(position + 1)
+                        .ok_or_else(|| {
+                            CliError::Usage(
+                                "provider github releases --asset-exclude requires a regex"
+                                    .to_owned(),
+                            )
+                        })?
+                        .clone(),
+                );
+                position += 2;
+            }
+            "--include-prereleases" => {
+                parsed.include_prereleases = true;
+                position += 1;
+            }
+            "--refresh" => {
+                parsed.refresh = true;
+                position += 1;
+            }
+            other => {
+                return Err(CliError::Usage(format!(
+                    "unsupported provider github releases argument '{other}'"
+                )))
+            }
+        }
+    }
+
+    if parsed.owner.trim().is_empty() {
+        return Err(CliError::Usage(
+            "provider github releases requires --owner <owner>".to_owned(),
+        ));
+    }
+    if parsed.repo.trim().is_empty() {
+        return Err(CliError::Usage(
+            "provider github releases requires --repo <repo>".to_owned(),
+        ));
+    }
+    if parsed.releases.as_os_str().is_empty() {
+        return Err(CliError::Usage(
+            "provider github releases requires --releases <fixture.json>".to_owned(),
+        ));
+    }
+
+    Ok(parsed)
+}
+
 fn parse_autogen_acceptance(args: &[String]) -> Result<AutogenAcceptance, CliError> {
     match args {
         [flag] if flag == "--accept-all" => Ok(AutogenAcceptance::AcceptAll),
@@ -1196,6 +1372,12 @@ fn evaluate_package_directory(
 fn read_fdroid_index(path: &Path) -> Result<String, CliError> {
     fs::read_to_string(path)
         .map_err(|source| CliError::Autogen(format!("failed to read F-Droid index: {source}")))
+}
+
+fn read_github_releases_fixture(path: &Path) -> Result<String, CliError> {
+    fs::read_to_string(path).map_err(|source| {
+        CliError::Provider(format!("failed to read GitHub releases fixture: {source}"))
+    })
 }
 
 fn read_installed_inventory(path: &Path) -> Result<InstalledInventory, CliError> {
@@ -1727,7 +1909,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> [--package <package-name>...] [--inventory <installed.json>]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
+    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> [--package <package-name>...] [--inventory <installed.json>]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|provider github releases --owner <owner> --repo <repo> --releases <fixture.json> [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases] [--refresh]|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1796,6 +1978,7 @@ impl CliCommand {
             Self::AutogenCleanupApply { .. } => "autogen cleanup apply",
             Self::AutogenFdroidPreview { .. } => "autogen fdroid preview",
             Self::AutogenFdroidApply { .. } => "autogen fdroid apply",
+            Self::ProviderGithubReleases { .. } => "provider github releases",
             Self::LegacyImportRoomBundle { .. } => "legacy import-room-bundle",
             Self::LegacyImportRoomDb { .. } => "legacy import-room-db",
             Self::LegacyReportList => "legacy report-list",

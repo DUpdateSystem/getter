@@ -637,8 +637,10 @@ name = "getter-providers"
 version = "0.1.0"
 dependencies = [
  "getter-core",
+ "regex",
  "roxmltree",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 
