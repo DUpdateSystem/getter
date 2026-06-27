@@ -53,6 +53,30 @@ pub fn evaluate_package_directory_script(
     metadata: &PackageDirectoryMetadata,
     script: &PackageVersionScript,
 ) -> Result<ResolvedPackage, LuaPackageError> {
+    evaluate_package_directory_script_with_host_bindings(
+        repository_id,
+        package,
+        metadata,
+        script,
+        |_| Ok(()),
+    )
+}
+
+/// Evaluates a package version script with caller-installed Lua host bindings.
+///
+/// This is an internal seam for higher-level getter operations to provide
+/// getter-owned host functions while keeping `getter-core` independent from
+/// provider/cache crates. It does not define a stable public Lua provider API.
+pub fn evaluate_package_directory_script_with_host_bindings<F>(
+    repository_id: &RepositoryId,
+    package: &PackageDirectory,
+    metadata: &PackageDirectoryMetadata,
+    script: &PackageVersionScript,
+    install_host_bindings: F,
+) -> Result<ResolvedPackage, LuaPackageError>
+where
+    F: FnOnce(&Lua) -> mlua::Result<()>,
+{
     let source = fs::read_to_string(&script.path).map_err(|source| LuaPackageError::ReadFile {
         path: script.path.clone(),
         source,
@@ -70,15 +94,20 @@ pub fn evaluate_package_directory_script(
         &LuaRepositoryEnvironment::PackageDirectory { package },
         &script.path,
         &source,
+        install_host_bindings,
     )?;
     validate_package_directory_version_json(repository_id, package, metadata, script, json)
 }
 
-fn evaluate_package_source_to_json(
+fn evaluate_package_source_to_json<F>(
     environment: &LuaRepositoryEnvironment<'_>,
     path: &Path,
     source: &str,
-) -> Result<JsonValue, LuaPackageError> {
+    install_host_bindings: F,
+) -> Result<JsonValue, LuaPackageError>
+where
+    F: FnOnce(&Lua) -> mlua::Result<()>,
+{
     let path = path.to_path_buf();
     let lua = Lua::new();
     configure_package_path(&lua, environment).map_err(|source| LuaPackageError::Runtime {
@@ -90,6 +119,10 @@ fn evaluate_package_source_to_json(
         source: Box::new(source),
     })?;
     install_helpers(&lua, environment).map_err(|source| LuaPackageError::Runtime {
+        path: path.clone(),
+        source: Box::new(source),
+    })?;
+    install_host_bindings(&lua).map_err(|source| LuaPackageError::Runtime {
         path: path.clone(),
         source: Box::new(source),
     })?;
@@ -1181,6 +1214,117 @@ return github_android.package {
             package.updates[0].artifacts[0].url,
             "https://github.com/f-droid/fdroidclient/releases/download/v1.20.0/F-Droid.apk"
         );
+        assert_eq!(
+            package.updates[0].artifacts[0].file_name.as_deref(),
+            Some("F-Droid.apk")
+        );
+    }
+
+    #[test]
+    fn package_directory_luaclass_can_call_injected_provider_host() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::create_dir_all(temp.path().join("luaclass")).unwrap();
+        fs::write(
+            temp.path().join("luaclass/github_android_apk.lua"),
+            r#"
+local github_android = {}
+
+function github_android.package(spec)
+  local releases = getter_test_provider.github_releases(spec.owner, spec.repo, spec.asset)
+  return package_version {
+    name = spec.name,
+    source_priority = { "github" },
+    updates = releases,
+  }
+end
+
+return github_android
+"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "android": { "package_name": "org.fdroid.fdroid" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+local github_android = require("luaclass.github_android_apk")
+return github_android.package {
+  name = "F-Droid",
+  owner = "f-droid",
+  repo = "fdroidclient",
+  asset = { include = "%.apk$" },
+}
+"#,
+        )
+        .unwrap();
+        let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+        let package_dir = &layout.packages[0];
+        let metadata = layout.package_metadata(package_dir).unwrap();
+        let script = layout.unambiguous_version_script(package_dir).unwrap();
+
+        let package = evaluate_package_directory_script_with_host_bindings(
+            &RepositoryId::new("official").unwrap(),
+            package_dir,
+            &metadata,
+            script,
+            |lua| {
+                let provider = lua.create_table()?;
+                provider.set(
+                    "github_releases",
+                    lua.create_function(
+                        |lua, (owner, repo, asset): (String, String, Table)| {
+                            if owner != "f-droid" || repo != "fdroidclient" {
+                                return Err(mlua::Error::external("GitHub fixture mismatch"));
+                            }
+                            let include: String = asset.get("include")?;
+                            if include != "%.apk$" {
+                                return Err(mlua::Error::external("GitHub asset filter mismatch"));
+                            }
+                            let artifact = lua.create_table()?;
+                            artifact.set("name", "F-Droid.apk")?;
+                            artifact.set(
+                                "url",
+                                "https://github.com/f-droid/fdroidclient/releases/download/v1.20.0/F-Droid.apk",
+                            )?;
+                            artifact.set("file_name", "F-Droid.apk")?;
+                            let artifacts = lua.create_table()?;
+                            artifacts.raw_set(1, artifact)?;
+                            let candidate = lua.create_table()?;
+                            candidate.set("version", "v1.20.0")?;
+                            candidate.set("source", "github")?;
+                            candidate.set("artifacts", artifacts)?;
+                            let candidates = lua.create_table()?;
+                            candidates.raw_set(1, candidate)?;
+                            Ok(candidates)
+                        },
+                    )?,
+                )?;
+                lua.globals().set("getter_test_provider", provider)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(package.id.to_string(), "android/app/org.fdroid.fdroid");
+        assert_eq!(package.repository.as_str(), "official");
+        assert_eq!(package.name, "F-Droid");
+        assert_eq!(
+            package.installed,
+            vec![InstalledTarget::AndroidPackage {
+                package_name: "org.fdroid.fdroid".to_owned()
+            }]
+        );
+        assert_eq!(package.source_priority, vec!["github"]);
+        assert_eq!(package.updates.len(), 1);
+        assert_eq!(package.updates[0].version, "v1.20.0");
+        assert_eq!(package.updates[0].source.as_deref(), Some("github"));
         assert_eq!(
             package.updates[0].artifacts[0].file_name.as_deref(),
             Some("F-Droid.apk")
