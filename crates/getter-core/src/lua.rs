@@ -8,10 +8,13 @@ use crate::{
     InstalledTarget, PackageId, PackagePermissions, RepositoryId, ResolvedPackage, UpdateArtifact,
     UpdateCandidate,
 };
-use mlua::{Lua, Table, Value};
+use mlua::{Function, Lua, Table, Value};
 use serde_json::{Map, Number, Value as JsonValue};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const BUILTIN_LUACLASS_MODULES: &[(&str, &str)] =
+    &[("android", include_str!("luaclass/android.lua"))];
 
 #[derive(Debug, thiserror::Error)]
 pub enum LuaPackageError {
@@ -158,7 +161,8 @@ fn configure_package_path(
             package: package_dir,
         } => {
             package.set("path", "")?;
-            install_luaclass_prefix_searcher(
+            install_builtin_luaclass_searcher(lua, &package)?;
+            install_repository_luaclass_searcher(
                 lua,
                 &package,
                 package_directory_repository_root(package_dir).join(REPOSITORY_LUACLASS_DIR),
@@ -198,62 +202,85 @@ fn remove_unsafe_globals(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
-fn install_luaclass_prefix_searcher(
+fn install_repository_luaclass_searcher(
     lua: &Lua,
     package: &Table,
     luaclass_dir: PathBuf,
 ) -> mlua::Result<()> {
-    install_prefixed_file_searcher(
+    install_searcher(
         lua,
         package,
-        "luaclass.",
-        luaclass_dir,
-        "constrained repository luaclass searcher only handles luaclass.* modules",
+        lua.create_function(move |lua, module: String| {
+            let Some(module) = module.strip_prefix("luaclass.") else {
+                return lua
+                    .create_string("\n\tconstrained repository luaclass searcher only handles luaclass.* modules")
+                    .map(Value::String);
+            };
+
+            let Some(relative_module) = module_to_relative_path(module) else {
+                return lua
+                    .create_string(format!("\n\tinvalid repository module name 'luaclass.{module}'"))
+                    .map(Value::String);
+            };
+
+            let module_path = luaclass_dir.join(&relative_module).with_extension("lua");
+            let init_path = luaclass_dir.join(&relative_module).join("init.lua");
+            for candidate in [&module_path, &init_path] {
+                if candidate.is_file() {
+                    let source = fs::read_to_string(candidate).map_err(mlua::Error::external)?;
+                    let chunk = lua
+                        .load(&source)
+                        .set_name(candidate.to_string_lossy().as_ref());
+                    return chunk.into_function().map(Value::Function);
+                }
+            }
+
+            lua.create_string(format!(
+                "\n\tno repository module 'luaclass.{module}' in {}",
+                luaclass_dir.display()
+            ))
+            .map(Value::String)
+        })?,
     )
 }
 
-fn install_prefixed_file_searcher(
-    lua: &Lua,
-    package: &Table,
-    prefix: &'static str,
-    module_dir: PathBuf,
-    wrong_prefix_message: &'static str,
-) -> mlua::Result<()> {
-    let searchers = package_searchers(package)?;
-    let searcher = lua.create_function(move |lua, module: String| {
-        let Some(module) = module.strip_prefix(prefix) else {
-            return lua
-                .create_string(format!("\n\t{wrong_prefix_message}"))
-                .map(Value::String);
-        };
-
-        let Some(relative_module) = module_to_relative_path(module) else {
-            return lua
-                .create_string(format!(
-                    "\n\tinvalid repository module name '{prefix}{module}'"
-                ))
-                .map(Value::String);
-        };
-
-        let module_path = module_dir.join(&relative_module).with_extension("lua");
-        let init_path = module_dir.join(&relative_module).join("init.lua");
-        for candidate in [&module_path, &init_path] {
-            if candidate.is_file() {
-                let source = fs::read_to_string(candidate).map_err(mlua::Error::external)?;
-                let chunk = lua
-                    .load(&source)
-                    .set_name(candidate.to_string_lossy().as_ref());
-                return chunk.into_function().map(Value::Function);
+fn install_builtin_luaclass_searcher(lua: &Lua, package: &Table) -> mlua::Result<()> {
+    install_searcher(
+        lua,
+        package,
+        lua.create_function(move |lua, module: String| {
+            let Some(module) = module.strip_prefix("luaclass.") else {
+                return lua
+                    .create_string("\n\tbuiltin luaclass searcher only handles luaclass.* modules")
+                    .map(Value::String);
+            };
+            if module_to_relative_path(module).is_none() {
+                return lua
+                    .create_string(format!(
+                        "\n\tinvalid builtin luaclass module name 'luaclass.{module}'"
+                    ))
+                    .map(Value::String);
             }
-        }
+            let Some((_, source)) = BUILTIN_LUACLASS_MODULES
+                .iter()
+                .find(|(name, _)| *name == module)
+            else {
+                return lua
+                    .create_string(format!(
+                        "\n\tno builtin luaclass module 'luaclass.{module}'"
+                    ))
+                    .map(Value::String);
+            };
+            lua.load(*source)
+                .set_name(format!("@builtin/luaclass/{module}.lua"))
+                .into_function()
+                .map(Value::Function)
+        })?,
+    )
+}
 
-        lua.create_string(format!(
-            "\n\tno repository module '{prefix}{module}' in {}",
-            module_dir.display()
-        ))
-        .map(Value::String)
-    })?;
-
+fn install_searcher(_lua: &Lua, package: &Table, searcher: Function) -> mlua::Result<()> {
+    let searchers = package_searchers(package)?;
     let len = searchers.raw_len();
     for index in (2..=len).rev() {
         let value: Value = searchers.raw_get(index)?;
@@ -984,7 +1011,7 @@ return package_version { id = "android/app/com.example.autogen" }
     }
 
     #[test]
-    fn package_directory_can_load_luaclass_modules() {
+    fn package_directory_can_load_repository_luaclass_modules() {
         let temp = tempfile::tempdir().unwrap();
         let package_dir = temp.path().join("android/app/com.example.autogen");
         fs::create_dir_all(&package_dir).unwrap();
@@ -995,6 +1022,7 @@ return package_version { id = "android/app/com.example.autogen" }
 return {
   package_version = function(input)
     return {
+      name = "repository module",
       installed = input.installed,
       updates = input.updates,
     }
@@ -1037,7 +1065,41 @@ return android.package_version {
         )
         .unwrap();
 
-        assert_eq!(package.name, "Example Autogen");
+        assert_eq!(package.name, "repository module");
+        assert_eq!(package.installed.len(), 1);
+    }
+
+    #[test]
+    fn package_directory_can_load_builtin_luaclass_modules() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/com.example.autogen");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "display_name": "Example Autogen",
+  "android": { "package_name": "com.example.autogen" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+local android = require("luaclass.android")
+return android.package_version {
+  name = "builtin module",
+  installed = {
+    { kind = "android_package", package_name = "com.example.autogen" },
+  },
+}
+"#,
+        )
+        .unwrap();
+
+        let package = evaluate_single_package_directory(temp.path(), "official").unwrap();
+
+        assert_eq!(package.name, "builtin module");
         assert_eq!(package.installed.len(), 1);
     }
 
