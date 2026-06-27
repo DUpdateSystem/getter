@@ -6,6 +6,7 @@ edition.workspace = true
 [features]
 default = ["lua"]
 lua = ["dep:mlua"]
+provider-luaclass-dev = ["lua"]
 
 [dependencies]
 json_comments = "0.2"

@@ -14,8 +14,19 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const BUILTIN_LUACLASS_MODULES: &[(&str, &str)] =
-    &[("android", include_str!("luaclass/android.lua"))];
+const BUILTIN_LUACLASS_MODULES: &[(&str, &str)] = &[
+    ("android", include_str!("luaclass/android.lua")),
+    #[cfg(feature = "provider-luaclass-dev")]
+    (
+        "fdroid_android",
+        include_str!("luaclass/fdroid_android.lua"),
+    ),
+    #[cfg(feature = "provider-luaclass-dev")]
+    (
+        "github_android_apk",
+        include_str!("luaclass/github_android_apk.lua"),
+    ),
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum LuaPackageError {
@@ -1237,6 +1248,102 @@ return android.package_version {
 
         assert_eq!(package.name, "builtin module");
         assert_eq!(package.installed.len(), 1);
+    }
+
+    #[cfg(not(feature = "provider-luaclass-dev"))]
+    #[test]
+    fn provider_luaclass_dev_modules_are_not_default_builtins() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/f-droid/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "android": { "package_name": "org.fdroid.fdroid" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+local fdroid = require("luaclass.fdroid_android")
+return fdroid.package { package_name = "org.fdroid.fdroid" }
+"#,
+        )
+        .unwrap();
+
+        let err = evaluate_single_package_directory(temp.path(), "official").unwrap_err();
+
+        let message = err.to_string();
+        assert!(matches!(err, LuaPackageError::Runtime { .. }));
+        assert!(message.contains("no builtin luaclass module 'luaclass.fdroid_android'"));
+    }
+
+    #[cfg(feature = "provider-luaclass-dev")]
+    #[test]
+    fn provider_luaclass_dev_builtin_can_call_injected_host() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/f-droid/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "android": { "package_name": "org.fdroid.fdroid" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+local fdroid = require("luaclass.fdroid_android")
+return fdroid.package { package_name = "org.fdroid.fdroid" }
+"#,
+        )
+        .unwrap();
+        let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+        let package_dir = &layout.packages[0];
+        let metadata = layout.package_metadata(package_dir).unwrap();
+        let script = layout.unambiguous_version_script(package_dir).unwrap();
+
+        let package = evaluate_package_directory_script_with_host_bindings(
+            &RepositoryId::new("official").unwrap(),
+            package_dir,
+            &metadata,
+            script,
+            |lua| {
+                let getter_dev = lua.create_table()?;
+                getter_dev.set(
+                    "fdroid_update_candidates",
+                    lua.create_function(|lua, spec: Table| {
+                        let package_name: String = spec.get("package_name")?;
+                        if package_name != "org.fdroid.fdroid" {
+                            return Err(mlua::Error::external("F-Droid package mismatch"));
+                        }
+                        let artifact = lua.create_table()?;
+                        artifact.set("name", "org.fdroid.fdroid.apk")?;
+                        artifact.set("url", "https://f-droid.org/repo/org.fdroid.fdroid.apk")?;
+                        let artifacts = lua.create_table()?;
+                        artifacts.raw_set(1, artifact)?;
+                        let candidate = lua.create_table()?;
+                        candidate.set("version", "1.20.0")?;
+                        candidate.set("source", "fdroid")?;
+                        candidate.set("artifacts", artifacts)?;
+                        let candidates = lua.create_table()?;
+                        candidates.raw_set(1, candidate)?;
+                        Ok(candidates)
+                    })?,
+                )?;
+                lua.globals().set("getter_dev", getter_dev)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(package.name, "android/f-droid/app/org.fdroid.fdroid");
+        assert_eq!(package.source_priority, vec!["fdroid"]);
+        assert_eq!(package.updates[0].version, "1.20.0");
+        assert_eq!(package.updates[0].source.as_deref(), Some("fdroid"));
     }
 
     #[test]

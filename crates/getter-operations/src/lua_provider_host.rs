@@ -584,7 +584,7 @@ mod tests {
 ]"#;
 
     #[test]
-    fn fdroid_package_eval_uses_repository_luaclass_and_provider_cache() {
+    fn fdroid_package_eval_uses_dev_builtin_luaclass_and_provider_cache() {
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path();
         write_fdroid_package_fixture(data_dir, "org.fdroid.fdroid");
@@ -674,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn github_package_eval_uses_repository_luaclass_and_provider_cache() {
+    fn github_package_eval_uses_dev_builtin_luaclass_and_provider_cache() {
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path();
         write_github_package_fixture(data_dir, "[.]apk$");
@@ -749,21 +749,33 @@ mod tests {
         );
     }
 
-    fn write_fdroid_package_fixture(data_dir: &std::path::Path, package_name: &str) {
-        let repo_root = data_dir.join("repo/official");
-        let package_dir = repo_root.join("android/f-droid/app/org.fdroid.fdroid");
-        fs::create_dir_all(repo_root.join("luaclass")).unwrap();
-        fs::create_dir_all(&package_dir).unwrap();
+    #[test]
+    fn provider_package_eval_prefers_repository_luaclass_over_dev_builtin() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        write_fdroid_package_fixture(data_dir, "org.fdroid.fdroid");
+        let repo_luaclass = data_dir.join("repo/official/luaclass");
+        fs::create_dir_all(&repo_luaclass).unwrap();
         fs::write(
-            repo_root.join("luaclass/fdroid_android.lua"),
+            repo_luaclass.join("fdroid_android.lua"),
             r#"
 local fdroid = {}
 
 function fdroid.package(spec)
+  if spec.package_name ~= "org.fdroid.fdroid" then
+    error("repository override package_name mismatch")
+  end
   return package_version {
-    source_priority = { "fdroid" },
-    updates = getter_dev.fdroid_update_candidates {
-      package_name = spec.package_name,
+    name = "repository override",
+    source_priority = { "repository-override" },
+    updates = {
+      {
+        version = "9.9.9",
+        source = "repository-override",
+        artifacts = {
+          { name = "override.apk", url = "https://example.invalid/override.apk" },
+        },
+      },
     },
   }
 end
@@ -772,6 +784,34 @@ return fdroid
 "#,
         )
         .unwrap();
+
+        let result = fdroid_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/f-droid/app/org.fdroid.fdroid"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(result["provider_calls"], json!([]));
+        assert_eq!(result["package"]["name"], "repository override");
+        assert_eq!(
+            result["package"]["source_priority"],
+            json!(["repository-override"])
+        );
+        assert_eq!(result["package"]["updates"][0]["version"], "9.9.9");
+        assert_eq!(
+            result["package"]["updates"][0]["source"],
+            "repository-override"
+        );
+    }
+
+    fn write_fdroid_package_fixture(data_dir: &std::path::Path, package_name: &str) {
+        let repo_root = data_dir.join("repo/official");
+        let package_dir = repo_root.join("android/f-droid/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
         fs::write(
             package_dir.join("metadata.jsonc"),
             r#"{
@@ -795,29 +835,7 @@ return fdroid.package {
     fn write_github_package_fixture(data_dir: &std::path::Path, asset_include: &str) {
         let repo_root = data_dir.join("repo/official");
         let package_dir = repo_root.join("android/app/org.fdroid.fdroid");
-        fs::create_dir_all(repo_root.join("luaclass")).unwrap();
         fs::create_dir_all(&package_dir).unwrap();
-        fs::write(
-            repo_root.join("luaclass/github_android_apk.lua"),
-            r#"
-local github_android = {}
-
-function github_android.package(spec)
-  return package_version {
-    name = spec.name,
-    source_priority = { "github" },
-    updates = getter_dev.github_release_candidates {
-      owner = spec.owner,
-      repo = spec.repo,
-      asset = spec.asset,
-    },
-  }
-end
-
-return github_android
-"#,
-        )
-        .unwrap();
         fs::write(
             package_dir.join("metadata.jsonc"),
             r#"{
