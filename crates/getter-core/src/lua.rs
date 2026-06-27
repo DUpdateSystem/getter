@@ -1089,6 +1089,105 @@ return fdroid.package {
     }
 
     #[test]
+    fn package_directory_can_use_repository_local_github_android_luaclass_shape() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp.path().join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::create_dir_all(temp.path().join("luaclass")).unwrap();
+        fs::write(
+            temp.path().join("luaclass/github_android_apk.lua"),
+            r#"
+local github_android = {}
+
+function github_android.package(spec)
+  if spec.owner ~= "f-droid" or spec.repo ~= "fdroidclient" then
+    error("GitHub project fixture mismatch")
+  end
+  local asset_name = "F-Droid.apk"
+  if spec.asset.include and not string.match(asset_name, spec.asset.include) then
+    error("GitHub asset include fixture mismatch")
+  end
+  if spec.asset.exclude and string.match(asset_name, spec.asset.exclude) then
+    error("GitHub asset exclude fixture mismatch")
+  end
+  return package_version {
+    name = spec.name,
+    installed = {
+      { kind = "android_package", package_name = spec.android_package },
+    },
+    source_priority = { "github" },
+    updates = {
+      {
+        version = "v1.20.0",
+        source = "github",
+        artifacts = {
+          {
+            name = asset_name,
+            url = "https://github.com/f-droid/fdroidclient/releases/download/v1.20.0/F-Droid.apk",
+            file_name = asset_name,
+          },
+        },
+      },
+    },
+  }
+end
+
+return github_android
+"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "android": { "package_name": "org.fdroid.fdroid" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+local github_android = require("luaclass.github_android_apk")
+return github_android.package {
+  name = "F-Droid",
+  android_package = "org.fdroid.fdroid",
+  owner = "f-droid",
+  repo = "fdroidclient",
+  asset = {
+    include = "%.apk$",
+    exclude = "debug",
+  },
+}
+"#,
+        )
+        .unwrap();
+
+        let package = evaluate_single_package_directory(temp.path(), "official").unwrap();
+
+        assert_eq!(package.id.to_string(), "android/app/org.fdroid.fdroid");
+        assert_eq!(package.repository.as_str(), "official");
+        assert_eq!(package.name, "F-Droid");
+        assert_eq!(
+            package.installed,
+            vec![InstalledTarget::AndroidPackage {
+                package_name: "org.fdroid.fdroid".to_owned()
+            }]
+        );
+        assert_eq!(package.source_priority, vec!["github"]);
+        assert_eq!(package.updates.len(), 1);
+        assert_eq!(package.updates[0].version, "v1.20.0");
+        assert_eq!(package.updates[0].source.as_deref(), Some("github"));
+        assert_eq!(
+            package.updates[0].artifacts[0].url,
+            "https://github.com/f-droid/fdroidclient/releases/download/v1.20.0/F-Droid.apk"
+        );
+        assert_eq!(
+            package.updates[0].artifacts[0].file_name.as_deref(),
+            Some("F-Droid.apk")
+        );
+    }
+
+    #[test]
     fn package_directory_can_read_package_local_files() {
         let temp = tempfile::tempdir().unwrap();
         let package_dir = temp.path().join("android/app/com.example.autogen");
