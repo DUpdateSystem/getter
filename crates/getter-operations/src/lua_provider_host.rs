@@ -6,6 +6,10 @@
 //! provider cache/storage crates and without defining the final stable Lua
 //! provider API.
 
+use crate::fdroid_catalog::{
+    read_or_refresh_fdroid_catalog, FdroidCatalogOperationError, FdroidEndpointConfig,
+    DEFAULT_FDROID_ENDPOINT_ID, DEFAULT_FDROID_ENDPOINT_URL, FDROID_PROVIDER_ID,
+};
 use crate::github_releases::{
     read_or_refresh_github_releases, GithubReleaseConfig, GithubReleaseOperationError,
     DEFAULT_GITHUB_API_BASE_URL, GITHUB_ASSET_NOT_FOUND, GITHUB_PROVIDER_ID,
@@ -15,8 +19,8 @@ use getter_core::lua::{evaluate_package_directory_script_with_host_bindings, Lua
 use getter_core::repository::{RepositoryLoadError, RepositoryPackageDirectoryLayout};
 use getter_core::{PackageId, RepositoryId, UpdateArtifact, UpdateCandidate};
 use getter_providers::{
-    github_release_update_candidates, GithubAssetFilter, GithubProviderError, GithubRelease,
-    GithubReleaseCandidateOptions,
+    github_release_update_candidates, FdroidEndpoint, GithubAssetFilter, GithubProviderError,
+    GithubRelease, GithubReleaseCandidateOptions,
 };
 use getter_storage::{CacheDb, MainDb, StorageError, StoredRepository};
 use mlua::{Lua, Table, Value as LuaValue};
@@ -36,12 +40,106 @@ pub enum LuaProviderHostOperationError {
     Repository(#[from] RepositoryLoadError),
     #[error("package evaluation failed: {0}")]
     PackageEval(#[from] LuaPackageError),
+    #[error("F-Droid provider operation failed: {0}")]
+    Fdroid(#[from] FdroidCatalogOperationError),
     #[error("GitHub provider operation failed: {0}")]
     Github(#[from] GithubReleaseOperationError),
     #[error("GitHub provider normalization failed: {0}")]
     GithubProvider(#[from] GithubProviderError),
     #[error("Lua provider-host response serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
+}
+
+const FDROID_PACKAGE_NOT_FOUND: &str = "provider.fdroid.package_not_found";
+
+/// Evaluates a package with a fixture-backed F-Droid catalog host binding.
+///
+/// This is a development/provider-host tracer, not the stable package-eval or
+/// product update-check API. Repository packages can exercise repository-local
+/// `luaclass/` modules that call `getter_dev.fdroid_update_candidates { ... }`,
+/// while catalog parsing/cache behavior stays in `getter-operations`.
+pub fn fdroid_package_eval_json(
+    data_dir: &Path,
+    request_json: &str,
+) -> Result<Value, LuaProviderHostOperationError> {
+    let request: FdroidPackageEvalRequest = serde_json::from_str(request_json)
+        .map_err(|source| LuaProviderHostOperationError::InvalidRequest(source.to_string()))?;
+    let mode = provider_cache_mode(request.mode.as_deref())?;
+    let endpoint = FdroidEndpointConfig {
+        endpoint_id: request
+            .endpoint_id
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_FDROID_ENDPOINT_ID.to_owned()),
+        endpoint_url: request
+            .endpoint_url
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_FDROID_ENDPOINT_URL.to_owned()),
+    };
+    let main_db = MainDb::open(data_dir.join("main.db"))?;
+    let repository = find_repository(&main_db, &request.repository_id)?;
+    let repository_path = repo_path(&repository)?;
+    let layout = RepositoryPackageDirectoryLayout::load(&repository_path)?;
+    let package_directory = layout.package(&request.package_id).ok_or_else(|| {
+        LuaProviderHostOperationError::InvalidRequest(format!(
+            "package '{}' was not found in repository '{}'",
+            request.package_id, request.repository_id
+        ))
+    })?;
+    let metadata = layout.package_metadata(package_directory)?;
+    let script = layout.unambiguous_version_script(package_directory)?;
+    let provider_calls = Rc::new(RefCell::new(Vec::new()));
+    let cache_db_path = data_dir.join("cache.db");
+    let index_xml = request.index_xml;
+    let package = evaluate_package_directory_script_with_host_bindings(
+        &repository.id,
+        package_directory,
+        &metadata,
+        script,
+        {
+            let provider_calls = Rc::clone(&provider_calls);
+            move |lua| {
+                install_fdroid_dev_host(
+                    lua,
+                    FdroidDevHostConfig {
+                        cache_db_path,
+                        endpoint,
+                        mode,
+                        index_xml,
+                        provider_calls,
+                    },
+                )
+            }
+        },
+    )?;
+    let package = serde_json::to_value(package)?;
+
+    Ok(json!({
+        "operation": "fdroid.package_eval.fixture",
+        "package": package,
+        "provider_calls": provider_calls.borrow().clone(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct FdroidPackageEvalRequest {
+    repository_id: RepositoryId,
+    package_id: PackageId,
+    #[serde(default)]
+    endpoint_id: Option<String>,
+    #[serde(default)]
+    endpoint_url: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    index_xml: Option<String>,
+}
+
+struct FdroidDevHostConfig {
+    cache_db_path: PathBuf,
+    endpoint: FdroidEndpointConfig,
+    mode: ProviderCacheMode,
+    index_xml: Option<String>,
+    provider_calls: Rc<RefCell<Vec<Value>>>,
 }
 
 /// Evaluates a package with a fixture-backed GitHub release host binding.
@@ -129,6 +227,82 @@ struct GithubDevHostConfig {
     releases_json: Option<String>,
     default_include_prereleases: bool,
     provider_calls: Rc<RefCell<Vec<Value>>>,
+}
+
+fn install_fdroid_dev_host(lua: &Lua, config: FdroidDevHostConfig) -> mlua::Result<()> {
+    let host = lua.create_table()?;
+    host.set(
+        "fdroid_update_candidates",
+        lua.create_function(move |lua, spec: Table| {
+            let request = FdroidUpdateHostRequest::from_lua_table(&spec)?;
+            let db = CacheDb::open(&config.cache_db_path).map_err(mlua::Error::external)?;
+            let endpoint = config.endpoint.clone();
+            let refresh_fixture = config.index_xml.clone();
+            let result = read_or_refresh_fdroid_catalog(&db, endpoint, config.mode, || {
+                refresh_fixture.ok_or_else(|| {
+                    "fixture-backed F-Droid catalog host requires index_xml".to_owned()
+                })
+            })
+            .map_err(mlua::Error::external)?;
+            let mut diagnostics = result
+                .diagnostics
+                .iter()
+                .map(provider_diagnostic_json)
+                .collect::<Vec<_>>();
+            let candidates = result
+                .app(&request.package_name)
+                .map(|app| {
+                    let endpoint = FdroidEndpoint {
+                        name: result.catalog.endpoint.name.clone(),
+                        url: Some(result.endpoint.endpoint_url.clone()),
+                        timestamp: result.catalog.endpoint.timestamp.clone(),
+                    };
+                    app.update_candidates(&endpoint)
+                })
+                .unwrap_or_else(|| {
+                    diagnostics.push(json!({
+                        "code": FDROID_PACKAGE_NOT_FOUND,
+                        "message": format!("F-Droid package '{}' was not found in endpoint '{}'", request.package_name, result.endpoint.endpoint_id),
+                        "provider": FDROID_PROVIDER_ID,
+                        "endpoint_id": result.endpoint.endpoint_id,
+                        "package_name": request.package_name,
+                        "cache_key": result.cache_key,
+                    }));
+                    Vec::new()
+                });
+            config.provider_calls.borrow_mut().push(json!({
+                "provider": FDROID_PROVIDER_ID,
+                "request": "catalog",
+                "endpoint_id": result.endpoint.endpoint_id,
+                "endpoint_url": result.endpoint.endpoint_url,
+                "package_name": request.package_name,
+                "cache_key": result.cache_key,
+                "source": provider_source_json(result.source),
+                "diagnostics": diagnostics,
+            }));
+            update_candidates_to_lua(lua, &candidates)
+        })?,
+    )?;
+    lua.globals().set("getter_dev", host)
+}
+
+struct FdroidUpdateHostRequest {
+    package_name: String,
+}
+
+impl FdroidUpdateHostRequest {
+    fn from_lua_table(table: &Table) -> mlua::Result<Self> {
+        let package_name: Option<String> = table.get("package_name")?;
+        Ok(Self {
+            package_name: package_name
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    mlua::Error::external(
+                        "getter_dev.fdroid_update_candidates missing package_name",
+                    )
+                })?,
+        })
+    }
 }
 
 fn install_github_dev_host(lua: &Lua, config: GithubDevHostConfig) -> mlua::Result<()> {
@@ -373,6 +547,23 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
+    const FDROID_INDEX_FIXTURE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<fdroid>
+  <repo name="F-Droid" timestamp="1700000000" url="https://f-droid.org/repo" />
+  <application id="org.fdroid.fdroid">
+    <name>F-Droid</name>
+    <summary>App repository client</summary>
+    <package>
+      <version>1.20.0</version>
+      <versioncode>1020000</versioncode>
+      <apkname>org.fdroid.fdroid_1020000.apk</apkname>
+      <hash type="sha256">aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</hash>
+      <size>1234567</size>
+    </package>
+  </application>
+</fdroid>
+"#;
+
     const GITHUB_RELEASES_FIXTURE: &str = r#"[
   {
     "tag_name": "v1.20.0",
@@ -391,6 +582,96 @@ mod tests {
     ]
   }
 ]"#;
+
+    #[test]
+    fn fdroid_package_eval_uses_repository_luaclass_and_provider_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        write_fdroid_package_fixture(data_dir, "org.fdroid.fdroid");
+
+        let first = fdroid_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/f-droid/app/org.fdroid.fdroid",
+                "index_xml": FDROID_INDEX_FIXTURE
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(first["operation"], "fdroid.package_eval.fixture");
+        assert_eq!(first["provider_calls"][0]["source"], "refreshed");
+        assert_eq!(first["provider_calls"][0]["endpoint_id"], "official");
+        assert_eq!(
+            first["provider_calls"][0]["package_name"],
+            "org.fdroid.fdroid"
+        );
+        assert_eq!(first["package"]["name"], "F-Droid");
+        assert_eq!(first["package"]["source_priority"], json!(["fdroid"]));
+        assert_eq!(first["package"]["updates"][0]["version"], "1.20.0");
+        assert_eq!(first["package"]["updates"][0]["version_code"], 1020000);
+        assert_eq!(first["package"]["updates"][0]["source"], "fdroid");
+        assert_eq!(
+            first["package"]["updates"][0]["artifacts"][0]["url"],
+            "https://f-droid.org/repo/org.fdroid.fdroid_1020000.apk"
+        );
+        assert_eq!(
+            first["package"]["updates"][0]["artifacts"][0]["sha256"],
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        let cache_key = first["provider_calls"][0]["cache_key"].as_str().unwrap();
+        assert!(CacheDb::open(data_dir.join("cache.db"))
+            .unwrap()
+            .provider_response(cache_key)
+            .unwrap()
+            .is_some());
+
+        let second = fdroid_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/f-droid/app/org.fdroid.fdroid"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(second["provider_calls"][0]["source"], "cache");
+        assert_eq!(second["package"]["updates"][0]["version"], "1.20.0");
+    }
+
+    #[test]
+    fn fdroid_package_eval_reports_package_not_found_diagnostics() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        write_fdroid_package_fixture(data_dir, "missing.package");
+
+        let result = fdroid_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/f-droid/app/org.fdroid.fdroid",
+                "index_xml": FDROID_INDEX_FIXTURE
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(result["package"]["updates"], json!([]));
+        assert_eq!(
+            result["provider_calls"][0]["diagnostics"][0]["code"],
+            FDROID_PACKAGE_NOT_FOUND
+        );
+        assert_eq!(
+            result["provider_calls"][0]["diagnostics"][0]["provider"],
+            FDROID_PROVIDER_ID
+        );
+        assert_eq!(
+            result["provider_calls"][0]["diagnostics"][0]["package_name"],
+            "missing.package"
+        );
+    }
 
     #[test]
     fn github_package_eval_uses_repository_luaclass_and_provider_cache() {
@@ -468,6 +749,49 @@ mod tests {
         );
     }
 
+    fn write_fdroid_package_fixture(data_dir: &std::path::Path, package_name: &str) {
+        let repo_root = data_dir.join("repo/official");
+        let package_dir = repo_root.join("android/f-droid/app/org.fdroid.fdroid");
+        fs::create_dir_all(repo_root.join("luaclass")).unwrap();
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            repo_root.join("luaclass/fdroid_android.lua"),
+            r#"
+local fdroid = {}
+
+function fdroid.package(spec)
+  return package_version {
+    source_priority = { "fdroid" },
+    updates = getter_dev.fdroid_update_candidates {
+      package_name = spec.package_name,
+    },
+  }
+end
+
+return fdroid
+"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "display_name": "F-Droid",
+  "type": "android:app",
+  "android": { "package_name": "org.fdroid.fdroid" }
+}"#,
+        )
+        .unwrap();
+        let version_script = r#"#!/bin/upa-lua v1
+local fdroid = require("luaclass.fdroid_android")
+return fdroid.package {
+  package_name = "__PACKAGE_NAME__",
+}
+"#
+        .replace("__PACKAGE_NAME__", package_name);
+        fs::write(package_dir.join("9999.lua"), version_script).unwrap();
+        register_official_repository(data_dir, &repo_root);
+    }
+
     fn write_github_package_fixture(data_dir: &std::path::Path, asset_include: &str) {
         let repo_root = data_dir.join("repo/official");
         let package_dir = repo_root.join("android/app/org.fdroid.fdroid");
@@ -513,6 +837,10 @@ return github_android.package {
 "#
         .replace("__ASSET_INCLUDE__", asset_include);
         fs::write(package_dir.join("9999.lua"), version_script).unwrap();
+        register_official_repository(data_dir, &repo_root);
+    }
+
+    fn register_official_repository(data_dir: &std::path::Path, repo_root: &std::path::Path) {
         let main_db = MainDb::open(data_dir.join("main.db")).unwrap();
         main_db
             .upsert_repository(
@@ -522,7 +850,7 @@ return github_android.package {
                     priority: RepositoryPriority::DEFAULT,
                     api_version: REPO_API_VERSION_V1.to_owned(),
                 },
-                Some(&repo_root),
+                Some(repo_root),
                 None,
             )
             .unwrap();
