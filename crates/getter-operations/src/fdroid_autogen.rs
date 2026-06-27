@@ -13,8 +13,9 @@ use crate::fdroid_catalog::{
 };
 use crate::provider_cache::ProviderCacheMode;
 use getter_core::autogen::{
-    content_hash, package_relative_path, record_file_key, render_autogen_record, AutogenRecord,
-    AutogenRecordInput, GeneratedPackageFile, AUTOGEN_RECORD_VERSION, FDROID_AUTOGEN_GENERATOR,
+    content_hash, package_relative_path, record_file_key, render_autogen_record,
+    validate_installed_inventory, AutogenRecord, AutogenRecordInput, GeneratedPackageFile,
+    InstalledInventory, InstalledInventoryItem, AUTOGEN_RECORD_VERSION, FDROID_AUTOGEN_GENERATOR,
 };
 use getter_core::{InstalledTarget, PackageId, PackageKind};
 use getter_providers::{FdroidApp, FdroidRelease};
@@ -36,7 +37,9 @@ pub fn preview_fdroid_packages_json(
             ))
         })?;
     let endpoint = request.endpoint_config();
-    let catalog = read_or_refresh_fdroid_catalog(cache_db, endpoint, request.cache_mode()?, || {
+    let mode = request.cache_mode()?;
+    let requested_package_names = requested_fdroid_package_names(&request)?;
+    let catalog = read_or_refresh_fdroid_catalog(cache_db, endpoint, mode, || {
         request
             .index_xml
             .ok_or_else(|| "fixture-backed F-Droid autogen refresh requires index_xml".to_owned())
@@ -62,7 +65,7 @@ pub fn preview_fdroid_packages_json(
         })
         .collect();
 
-    for package_name in unique_requested_packages(&request.package_names) {
+    for package_name in requested_package_names {
         let package_id = fdroid_package_id(&package_name)?;
         if let Some(repository_id) = covered.get(&package_id) {
             skipped.push(json!({
@@ -148,6 +151,8 @@ struct FdroidAutogenPreviewRequest {
     index_xml: Option<String>,
     #[serde(default)]
     package_names: Vec<String>,
+    #[serde(default)]
+    installed_inventory: Option<InstalledInventory>,
 }
 
 impl FdroidAutogenPreviewRequest {
@@ -175,16 +180,32 @@ impl FdroidAutogenPreviewRequest {
     }
 }
 
-fn unique_requested_packages(package_names: &[String]) -> Vec<String> {
-    let mut packages = package_names
+fn requested_fdroid_package_names(
+    request: &FdroidAutogenPreviewRequest,
+) -> AutogenOperationResult<Vec<String>> {
+    if let Some(inventory) = &request.installed_inventory {
+        validate_installed_inventory(inventory)
+            .map_err(|source| AutogenOperationError::Autogen(source.to_string()))?;
+    }
+    let mut packages = request
+        .package_names
         .iter()
         .map(|package| package.trim())
         .filter(|package| !package.is_empty())
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    if let Some(inventory) = &request.installed_inventory {
+        packages.extend(inventory.items.iter().filter_map(|item| match item {
+            InstalledInventoryItem::AndroidPackage { package_name, .. } => {
+                let package_name = package_name.trim();
+                (!package_name.is_empty()).then(|| package_name.to_owned())
+            }
+            InstalledInventoryItem::MagiskModule { .. } => None,
+        }));
+    }
     packages.sort();
     packages.dedup();
-    packages
+    Ok(packages)
 }
 
 fn fdroid_package_id(package_name: &str) -> AutogenOperationResult<PackageId> {
@@ -656,6 +677,59 @@ mod tests {
 
         assert!(
             matches!(error, AutogenOperationError::Autogen(detail) if detail.contains("missing .autogen.jsonc"))
+        );
+    }
+
+    #[test]
+    fn preview_matches_installed_android_inventory_against_fdroid_catalog() {
+        let temp = tempfile::tempdir().unwrap();
+        let main_db = MainDb::open(temp.path().join("main.db")).unwrap();
+        let cache_db = CacheDb::open(temp.path().join("cache.db")).unwrap();
+
+        let preview = preview_fdroid_packages_json(
+            temp.path(),
+            &main_db,
+            &cache_db,
+            &json!({
+                "index_xml": FDROID_FIXTURE,
+                "installed_inventory": {
+                    "format": "upgradeall-installed-inventory",
+                    "version": 1,
+                    "items": [
+                        {
+                            "kind": "android",
+                            "package_name": "org.fdroid.fdroid",
+                            "label": "F-Droid"
+                        },
+                        {
+                            "kind": "android",
+                            "package_name": "missing.package",
+                            "label": "Missing"
+                        },
+                        {
+                            "kind": "magisk",
+                            "module_id": "zygisk-next"
+                        }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(preview["operation"], "fdroid.autogen.preview");
+        assert_eq!(preview["candidates"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            preview["candidates"][0]["package_id"],
+            "android/f-droid/app/org.fdroid.fdroid"
+        );
+        assert_eq!(
+            preview["skipped"][0]["package_id"],
+            "android/f-droid/app/missing.package"
+        );
+        assert_eq!(
+            preview["skipped"][0]["reason"],
+            "provider_package_not_found"
         );
     }
 }

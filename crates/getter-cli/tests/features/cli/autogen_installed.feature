@@ -25,6 +25,16 @@ Feature: Installed app autogen
     Then the command succeeds
     And the package eval contains update version_code 1020000
 
+  Scenario: User previews F-Droid autogen from installed inventory
+    Given an initialized getter data directory
+    And a fixture F-Droid catalog index with package "org.fdroid.fdroid"
+    And an installed inventory with Android app "org.fdroid.fdroid" labeled "F-Droid"
+    When I run getter autogen fdroid preview for that inventory
+    Then the command succeeds
+    And the output is valid JSON
+    And the F-Droid autogen preview contains candidate "android/f-droid/app/org.fdroid.fdroid"
+    And the autogen repository has not been written
+
   Scenario: Higher-priority repositories suppress explicit F-Droid autogen candidates
     Given an initialized getter data directory
     And a package-directory repository "official" with package "android/f-droid/app/org.fdroid.fdroid"

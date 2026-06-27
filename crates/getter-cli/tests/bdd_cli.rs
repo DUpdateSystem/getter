@@ -873,6 +873,26 @@ fn run_getter_autogen_fdroid_preview(world: &mut CliWorld, package_name: String)
     world.json = None;
 }
 
+#[when("I run getter autogen fdroid preview for that inventory")]
+fn run_getter_autogen_fdroid_preview_for_inventory(world: &mut CliWorld) {
+    let index = world.fdroid_index.as_ref().expect("F-Droid index exists");
+    let inventory = world.inventory.as_ref().expect("inventory exists");
+    let output = run_getter(
+        world,
+        [
+            "autogen".to_owned(),
+            "fdroid".to_owned(),
+            "preview".to_owned(),
+            "--index".to_owned(),
+            index.to_string_lossy().to_string(),
+            "--inventory".to_owned(),
+            inventory.to_string_lossy().to_string(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
 #[when("I run getter autogen fdroid apply for that preview with accept-all")]
 fn run_getter_autogen_fdroid_apply_accept_all(world: &mut CliWorld) {
     let preview = world
