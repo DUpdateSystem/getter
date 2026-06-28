@@ -6,7 +6,7 @@ edition.workspace = true
 [features]
 default = []
 lua = ["getter-core/lua", "dep:mlua"]
-lua-provider-host-dev = ["lua", "getter-core/provider-luaclass-dev"]
+lua-provider-host-dev = ["lua"]
 
 [dependencies]
 json_comments = "0.2"

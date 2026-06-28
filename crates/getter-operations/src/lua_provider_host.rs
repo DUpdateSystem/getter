@@ -75,8 +75,8 @@ const PROVIDER_CACHE_PROVENANCE_MISSING: &str = "package.provider.cache_provenan
 ///
 /// This is a development/provider-host tracer, not the stable package-eval or
 /// product update-check API. Repository packages can exercise repository-local
-/// `luaclass/` modules that call `getter_dev.fdroid_update_candidates { ... }`,
-/// while catalog parsing/cache behavior stays in `getter-operations`.
+/// or built-in `luaclass/` modules while catalog parsing/cache behavior stays
+/// in `getter-operations`.
 pub fn fdroid_package_eval_json(
     data_dir: &Path,
     request_json: &str,
@@ -174,8 +174,8 @@ struct FdroidProviderHostConfig {
 ///
 /// This is a development/provider-host tracer, not the stable package-eval or
 /// product update-check API. Repository packages can exercise repository-local
-/// `luaclass/` modules that call `getter_dev.github_release_candidates { ... }`,
-/// while release parsing/cache behavior stays in `getter-operations`.
+/// or built-in `luaclass/` modules while release parsing/cache behavior stays
+/// in `getter-operations`.
 pub fn github_package_eval_json(
     data_dir: &Path,
     request_json: &str,
@@ -407,29 +407,42 @@ struct GithubProviderHostConfig {
 }
 
 fn install_fdroid_dev_host(lua: &Lua, config: FdroidDevHostConfig) -> mlua::Result<()> {
+    let provider_config = FdroidProviderHostConfig {
+        cache_db_path: config.cache_db_path.clone(),
+        endpoint: config.endpoint.clone(),
+        mode: config.mode,
+        index_xml: config.index_xml.clone(),
+        manifest: None,
+    };
+    let provider_calls = Rc::clone(&config.provider_calls);
+    let update_candidates = lua.create_function(move |lua, spec: Table| {
+        let result = fdroid_update_candidates_envelope(lua, spec, provider_config.clone())?;
+        provider_calls
+            .borrow_mut()
+            .push(provider_call_from_envelope(&result)?);
+        Ok(result)
+    })?;
+
+    let globals = lua.globals();
+    let getter = nested_table(lua, globals.clone(), "getter")?;
+    let provider = nested_table(lua, getter, "provider")?;
+    let fdroid_table = nested_table(lua, provider, "fdroid")?;
+    fdroid_table.set("update_candidates", update_candidates.clone())?;
+
+    let getter_builtin = nested_table(lua, globals.clone(), "getter_builtin")?;
+    let builtin_provider = nested_table(lua, getter_builtin, "provider")?;
+    let builtin_fdroid = nested_table(lua, builtin_provider, "fdroid")?;
+    builtin_fdroid.set("update_candidates", update_candidates.clone())?;
+
     let host = lua.create_table()?;
     host.set(
         "fdroid_update_candidates",
-        lua.create_function(move |lua, spec: Table| {
-            let result = fdroid_update_candidates_envelope(
-                lua,
-                spec,
-                FdroidProviderHostConfig {
-                    cache_db_path: config.cache_db_path.clone(),
-                    endpoint: config.endpoint.clone(),
-                    mode: config.mode,
-                    index_xml: config.index_xml.clone(),
-                    manifest: None,
-                },
-            )?;
-            config
-                .provider_calls
-                .borrow_mut()
-                .push(provider_call_from_envelope(&result)?);
+        lua.create_function(move |_, spec: Table| {
+            let result: Table = update_candidates.call(spec)?;
             envelope_candidates(result)
         })?,
     )?;
-    lua.globals().set("getter_dev", host)
+    globals.set("getter_dev", host)
 }
 
 struct FdroidUpdateHostRequest {
@@ -450,30 +463,43 @@ impl FdroidUpdateHostRequest {
 }
 
 fn install_github_dev_host(lua: &Lua, config: GithubDevHostConfig) -> mlua::Result<()> {
+    let provider_config = GithubProviderHostConfig {
+        cache_db_path: config.cache_db_path.clone(),
+        api_base_url: config.api_base_url.clone(),
+        mode: config.mode,
+        releases_json: config.releases_json.clone(),
+        default_include_prereleases: config.default_include_prereleases,
+        manifest: None,
+    };
+    let provider_calls = Rc::clone(&config.provider_calls);
+    let release_candidates = lua.create_function(move |lua, spec: Table| {
+        let result = github_release_candidates_envelope(lua, spec, provider_config.clone())?;
+        provider_calls
+            .borrow_mut()
+            .push(provider_call_from_envelope(&result)?);
+        Ok(result)
+    })?;
+
+    let globals = lua.globals();
+    let getter = nested_table(lua, globals.clone(), "getter")?;
+    let provider = nested_table(lua, getter, "provider")?;
+    let github_table = nested_table(lua, provider, "github")?;
+    github_table.set("release_candidates", release_candidates.clone())?;
+
+    let getter_builtin = nested_table(lua, globals.clone(), "getter_builtin")?;
+    let builtin_provider = nested_table(lua, getter_builtin, "provider")?;
+    let builtin_github = nested_table(lua, builtin_provider, "github")?;
+    builtin_github.set("release_candidates", release_candidates.clone())?;
+
     let host = lua.create_table()?;
     host.set(
         "github_release_candidates",
-        lua.create_function(move |lua, spec: Table| {
-            let result = github_release_candidates_envelope(
-                lua,
-                spec,
-                GithubProviderHostConfig {
-                    cache_db_path: config.cache_db_path.clone(),
-                    api_base_url: config.api_base_url.clone(),
-                    mode: config.mode,
-                    releases_json: config.releases_json.clone(),
-                    default_include_prereleases: config.default_include_prereleases,
-                    manifest: None,
-                },
-            )?;
-            config
-                .provider_calls
-                .borrow_mut()
-                .push(provider_call_from_envelope(&result)?);
+        lua.create_function(move |_, spec: Table| {
+            let result: Table = release_candidates.call(spec)?;
             envelope_candidates(result)
         })?,
     )?;
-    lua.globals().set("getter_dev", host)
+    globals.set("getter_dev", host)
 }
 
 fn install_stable_provider_host(
@@ -1104,7 +1130,7 @@ mod tests {
 ]"#;
 
     #[test]
-    fn fdroid_package_eval_uses_dev_builtin_luaclass_and_provider_cache() {
+    fn fdroid_package_eval_uses_builtin_luaclass_and_provider_cache() {
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path();
         write_fdroid_package_fixture(data_dir, "org.fdroid.fdroid");
@@ -1194,7 +1220,7 @@ mod tests {
     }
 
     #[test]
-    fn github_package_eval_uses_dev_builtin_luaclass_and_provider_cache() {
+    fn github_package_eval_uses_builtin_luaclass_and_provider_cache() {
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path();
         write_github_package_fixture(data_dir, "[.]apk$");
@@ -1440,6 +1466,85 @@ return package_version {
     }
 
     #[test]
+    fn stable_provider_builtin_fdroid_luaclass_calls_stable_host() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        write_stable_provider_package_fixture(
+            data_dir,
+            "android/f-droid/app/org.fdroid.fdroid",
+            r#"#!/bin/upa-lua v1
+local fdroid = require("luaclass.fdroid_android")
+return fdroid.package {
+  package_name = "org.fdroid.fdroid",
+}
+"#,
+            Some(FDROID_INDEX_FIXTURE),
+            false,
+        );
+
+        let result = stable_provider_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/f-droid/app/org.fdroid.fdroid",
+                "fdroid_index_xml": FDROID_INDEX_FIXTURE
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(result["provider_calls"][0]["provider"], FDROID_PROVIDER_ID);
+        assert_eq!(result["provider_calls"][0]["request"], "catalog");
+        assert_eq!(result["package"]["source_priority"], json!(["fdroid"]));
+        assert_eq!(result["package"]["updates"][0]["version"], "1.20.0");
+        assert_eq!(result["package"]["updates"][0]["source"], "fdroid");
+    }
+
+    #[test]
+    fn stable_provider_builtin_github_luaclass_calls_stable_host() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        write_stable_provider_package_fixture(
+            data_dir,
+            "android/app/org.fdroid.fdroid",
+            r#"#!/bin/upa-lua v1
+local github_android = require("luaclass.github_android_apk")
+return github_android.package {
+  name = "F-Droid",
+  android_package = "org.fdroid.fdroid",
+  owner = "f-droid",
+  repo = "fdroidclient",
+  asset = { include = "[.]apk$" },
+}
+"#,
+            Some(GITHUB_RELEASES_FIXTURE),
+            false,
+        );
+
+        let result = stable_provider_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/app/org.fdroid.fdroid",
+                "github_releases_json": GITHUB_RELEASES_FIXTURE
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(result["provider_calls"][0]["provider"], GITHUB_PROVIDER_ID);
+        assert_eq!(result["provider_calls"][0]["request"], "releases");
+        assert_eq!(result["package"]["name"], "F-Droid");
+        assert_eq!(
+            result["package"]["installed"][0]["package_name"],
+            "org.fdroid.fdroid"
+        );
+        assert_eq!(result["package"]["source_priority"], json!(["github"]));
+        assert_eq!(result["package"]["updates"][0]["version"], "v1.20.0");
+        assert_eq!(result["package"]["updates"][0]["source"], "github");
+    }
+
+    #[test]
     fn stable_provider_host_does_not_install_latest_commit_shape() {
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path();
@@ -1662,7 +1767,7 @@ end
     }
 
     #[test]
-    fn provider_package_eval_prefers_repository_luaclass_over_dev_builtin() {
+    fn provider_package_eval_prefers_repository_luaclass_over_builtin() {
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path();
         write_fdroid_package_fixture(data_dir, "org.fdroid.fdroid");

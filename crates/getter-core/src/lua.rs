@@ -16,12 +16,10 @@ use std::path::{Path, PathBuf};
 
 const BUILTIN_LUACLASS_MODULES: &[(&str, &str)] = &[
     ("android", include_str!("luaclass/android.lua")),
-    #[cfg(feature = "provider-luaclass-dev")]
     (
         "fdroid_android",
         include_str!("luaclass/fdroid_android.lua"),
     ),
-    #[cfg(feature = "provider-luaclass-dev")]
     (
         "github_android_apk",
         include_str!("luaclass/github_android_apk.lua"),
@@ -1250,9 +1248,8 @@ return android.package_version {
         assert_eq!(package.installed.len(), 1);
     }
 
-    #[cfg(not(feature = "provider-luaclass-dev"))]
     #[test]
-    fn provider_luaclass_dev_modules_are_not_default_builtins() {
+    fn provider_luaclass_builtin_requires_operation_installed_provider_host() {
         let temp = tempfile::tempdir().unwrap();
         let package_dir = temp.path().join("android/f-droid/app/org.fdroid.fdroid");
         fs::create_dir_all(&package_dir).unwrap();
@@ -1277,12 +1274,13 @@ return fdroid.package { package_name = "org.fdroid.fdroid" }
 
         let message = err.to_string();
         assert!(matches!(err, LuaPackageError::Runtime { .. }));
-        assert!(message.contains("no builtin luaclass module 'luaclass.fdroid_android'"));
+        assert!(message.contains(
+            "luaclass.fdroid_android requires operation-installed getter.provider.fdroid.update_candidates"
+        ));
     }
 
-    #[cfg(feature = "provider-luaclass-dev")]
     #[test]
-    fn provider_luaclass_dev_builtin_can_call_injected_host() {
+    fn provider_luaclass_builtin_can_call_stable_injected_host() {
         let temp = tempfile::tempdir().unwrap();
         let package_dir = temp.path().join("android/f-droid/app/org.fdroid.fdroid");
         fs::create_dir_all(&package_dir).unwrap();
@@ -1313,29 +1311,36 @@ return fdroid.package { package_name = "org.fdroid.fdroid" }
             &metadata,
             script,
             |lua| {
-                let getter_dev = lua.create_table()?;
-                getter_dev.set(
-                    "fdroid_update_candidates",
-                    lua.create_function(|lua, spec: Table| {
+                let candidate = lua.create_table()?;
+                candidate.set("version", "1.20.0")?;
+                candidate.set("source", "fdroid")?;
+                let artifact = lua.create_table()?;
+                artifact.set("name", "org.fdroid.fdroid.apk")?;
+                artifact.set("url", "https://f-droid.org/repo/org.fdroid.fdroid.apk")?;
+                let artifacts = lua.create_table()?;
+                artifacts.raw_set(1, artifact)?;
+                candidate.set("artifacts", artifacts)?;
+                let candidates = lua.create_table()?;
+                candidates.raw_set(1, candidate)?;
+
+                let fdroid = lua.create_table()?;
+                fdroid.set(
+                    "update_candidates",
+                    lua.create_function(move |lua, spec: Table| {
                         let package_name: String = spec.get("package_name")?;
                         if package_name != "org.fdroid.fdroid" {
                             return Err(mlua::Error::external("F-Droid package mismatch"));
                         }
-                        let artifact = lua.create_table()?;
-                        artifact.set("name", "org.fdroid.fdroid.apk")?;
-                        artifact.set("url", "https://f-droid.org/repo/org.fdroid.fdroid.apk")?;
-                        let artifacts = lua.create_table()?;
-                        artifacts.raw_set(1, artifact)?;
-                        let candidate = lua.create_table()?;
-                        candidate.set("version", "1.20.0")?;
-                        candidate.set("source", "fdroid")?;
-                        candidate.set("artifacts", artifacts)?;
-                        let candidates = lua.create_table()?;
-                        candidates.raw_set(1, candidate)?;
-                        Ok(candidates)
+                        let envelope = lua.create_table()?;
+                        envelope.set("candidates", candidates.clone())?;
+                        Ok(envelope)
                     })?,
                 )?;
-                lua.globals().set("getter_dev", getter_dev)
+                let provider = lua.create_table()?;
+                provider.set("fdroid", fdroid)?;
+                let getter = lua.create_table()?;
+                getter.set("provider", provider)?;
+                lua.globals().set("getter", getter)
             },
         )
         .unwrap();

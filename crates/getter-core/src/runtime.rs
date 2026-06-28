@@ -707,7 +707,7 @@ mod tests {
 
         assert_eq!(task.task_id, "task-1");
         assert_eq!(task.status, RuntimeTaskStatus::Queued);
-        assert_eq!(task.capabilities.cancel, true);
+        assert!(task.capabilities.cancel);
         let error = runtime.submit_action(&action.action_id).unwrap_err();
         assert_eq!(error.code(), "action.not_found");
         assert_eq!(notifications.lock().unwrap().len(), 1);
@@ -729,9 +729,9 @@ mod tests {
                 TaskPhaseReason::InstallHandoff
             )
         );
-        assert_eq!(waiting.capabilities.pause, false);
-        assert_eq!(waiting.capabilities.resume, false);
-        assert_eq!(waiting.capabilities.cancel, true);
+        assert!(!waiting.capabilities.pause);
+        assert!(!waiting.capabilities.resume);
+        assert!(waiting.capabilities.cancel);
 
         let completed = runtime
             .user_result(&task_id, UserResult::Accepted, None)
@@ -755,7 +755,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(failed.status, RuntimeTaskStatus::Failed);
-        assert_eq!(failed.capabilities.retry, true);
+        assert!(failed.capabilities.retry);
         assert_eq!(
             failed.current_diagnostic.as_ref().unwrap().code,
             "user.rejected"
@@ -798,8 +798,8 @@ mod tests {
 
         let paused = runtime.pause_task(&task_id).unwrap();
         assert_eq!(paused.status, RuntimeTaskStatus::Paused);
-        assert_eq!(paused.capabilities.resume, true);
-        assert_eq!(paused.capabilities.cancel, true);
+        assert!(paused.capabilities.resume);
+        assert!(paused.capabilities.cancel);
 
         let resumed = runtime.resume_task(&task_id).unwrap();
         assert_eq!(resumed.status, RuntimeTaskStatus::Running);

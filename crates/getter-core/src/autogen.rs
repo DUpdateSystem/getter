@@ -457,10 +457,10 @@ mod tests {
         assert!(candidate
             .files
             .iter()
-            .any(|file| file.relative_path == PathBuf::from("metadata.jsonc")
+            .any(|file| file.relative_path == Path::new("metadata.jsonc")
                 && file.content.contains("org.fdroid.fdroid")));
         assert!(candidate.files.iter().any(|file| {
-            file.relative_path == PathBuf::from("9999.lua")
+            file.relative_path == Path::new("9999.lua")
                 && file.content.starts_with("#!/bin/upa-lua v1\n")
                 && file.content.contains(GENERATED_MARKER)
         }));
