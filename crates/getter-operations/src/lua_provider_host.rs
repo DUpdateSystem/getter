@@ -1,10 +1,10 @@
 //! Operation-installed Lua provider host bindings.
 //!
 //! This module is an implementation bridge toward ADR-0012 provider-backed Lua
-//! modules. It exercises higher-level getter operations installing host
-//! functions for package evaluation without making `getter-core` depend on
-//! provider cache/storage crates. The stable `getter.provider.*` harness here
-//! is still fixture-backed, dev-feature-gated, and hidden from product APIs.
+//! modules. It lets higher-level getter operations install host functions for
+//! package evaluation without making `getter-core` depend on provider
+//! cache/storage crates. The stable `getter.provider.*` bindings are now shared
+//! by product runtime update checks and internal fixture-backed harness tests.
 
 use crate::fdroid_catalog::{
     read_or_refresh_fdroid_catalog, FdroidCatalogOperationError, FdroidEndpointConfig,
@@ -20,17 +20,24 @@ use crate::provider_cache::{
     PROVIDER_RESPONSE_PROVENANCE_SCHEMA_V1,
 };
 use getter_core::lua::{evaluate_package_directory_script_with_host_bindings, LuaPackageError};
+#[cfg(feature = "lua-provider-host-dev")]
+use getter_core::repository::RepositoryPackageDirectoryLayout;
 use getter_core::repository::{
     PackageDirectory, PackageDirectoryMetadata, PackageLuaPermission, PackageVersionScript,
-    RepositoryLoadError, RepositoryPackageDirectoryLayout, PACKAGE_MANIFEST_FILE,
+    RepositoryLoadError, PACKAGE_MANIFEST_FILE,
 };
-use getter_core::{PackageId, RepositoryId, ResolvedPackage};
+#[cfg(feature = "lua-provider-host-dev")]
+use getter_core::PackageId;
+use getter_core::{RepositoryId, ResolvedPackage};
 use getter_providers::{
     github_release_update_candidates, FdroidEndpoint, GithubAssetFilter, GithubProviderError,
     GithubRelease, GithubReleaseCandidateOptions,
 };
-use getter_storage::{CacheDb, MainDb, StorageError, StoredRepository};
+use getter_storage::{CacheDb, StorageError};
+#[cfg(feature = "lua-provider-host-dev")]
+use getter_storage::{MainDb, StoredRepository};
 use mlua::{Lua, Table, Value as LuaValue};
+#[cfg(feature = "lua-provider-host-dev")]
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha512};
@@ -78,6 +85,7 @@ const DEFAULT_GITHUB_ENDPOINT_ID: &str = "github";
 /// product update-check API. Repository packages can exercise repository-local
 /// or built-in `luaclass/` modules while catalog parsing/cache behavior stays
 /// in `getter-operations`.
+#[cfg(feature = "lua-provider-host-dev")]
 pub fn fdroid_package_eval_json(
     data_dir: &Path,
     request_json: &str,
@@ -140,6 +148,7 @@ pub fn fdroid_package_eval_json(
     }))
 }
 
+#[cfg(feature = "lua-provider-host-dev")]
 #[derive(Debug, Deserialize)]
 struct FdroidPackageEvalRequest {
     repository_id: RepositoryId,
@@ -154,6 +163,7 @@ struct FdroidPackageEvalRequest {
     index_xml: Option<String>,
 }
 
+#[cfg(feature = "lua-provider-host-dev")]
 struct FdroidDevHostConfig {
     cache_db_path: PathBuf,
     endpoint: FdroidEndpointConfig,
@@ -177,6 +187,7 @@ struct FdroidProviderHostConfig {
 /// product update-check API. Repository packages can exercise repository-local
 /// or built-in `luaclass/` modules while release parsing/cache behavior stays
 /// in `getter-operations`.
+#[cfg(feature = "lua-provider-host-dev")]
 pub fn github_package_eval_json(
     data_dir: &Path,
     request_json: &str,
@@ -245,6 +256,7 @@ pub fn github_package_eval_json(
 /// This is an internal Slice 1 harness for ADR-0012 provider host API v1. It
 /// installs the stable namespace and runtime hooks, but still uses fixture data
 /// and remains hidden from CLI/native/Flutter product APIs.
+#[cfg(feature = "lua-provider-host-dev")]
 pub fn stable_provider_package_eval_json(
     data_dir: &Path,
     request_json: &str,
@@ -252,24 +264,6 @@ pub fn stable_provider_package_eval_json(
     let request: StableProviderPackageEvalRequest = serde_json::from_str(request_json)
         .map_err(|source| LuaProviderHostOperationError::InvalidRequest(source.to_string()))?;
     let mode = provider_cache_mode(request.mode.as_deref())?;
-    let endpoint = FdroidEndpointConfig {
-        endpoint_id: request
-            .fdroid_endpoint_id
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_FDROID_ENDPOINT_ID.to_owned()),
-        endpoint_url: request
-            .fdroid_endpoint_url
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_FDROID_ENDPOINT_URL.to_owned()),
-    };
-    let github_endpoint_id = request
-        .github_endpoint_id
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_GITHUB_ENDPOINT_ID.to_owned());
-    let github_api_base_url = request
-        .github_api_base_url
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_GITHUB_API_BASE_URL.to_owned());
     let main_db = MainDb::open(data_dir.join("main.db"))?;
     let repository = find_repository(&main_db, &request.repository_id)?;
     let repository_path = repo_path(&repository)?;
@@ -282,58 +276,34 @@ pub fn stable_provider_package_eval_json(
     })?;
     let metadata = layout.package_metadata(package_directory)?;
     let script = layout.unambiguous_version_script(package_directory)?;
-    let provider_calls = Rc::new(RefCell::new(Vec::new()));
-    let runtime_hooks = Rc::new(RefCell::new(Vec::new()));
-    let fdroid_index_xml = request.fdroid_index_xml;
-    let github_releases_json = request.github_releases_json;
-    let default_include_prereleases = request.github_include_prereleases;
-    let manifest = if metadata
-        .permissions_for(&script.file_name)
-        .contains(&PackageLuaPermission::AllowFreeNetwork)
-    {
-        None
-    } else {
-        Some(PackageManifest::load(
-            package_directory.path.join(PACKAGE_MANIFEST_FILE),
-        )?)
-    };
-    let package = evaluate_with_stable_provider_host(
+    let result = evaluate_provider_backed_package(
         data_dir,
         &repository.id,
         package_directory,
         &metadata,
         script,
-        StableProviderHostEvalConfig {
-            fdroid: FdroidProviderHostConfig {
-                cache_db_path: data_dir.join("cache.db"),
-                endpoint,
-                mode,
-                index_xml: fdroid_index_xml,
-                manifest: manifest.clone(),
-            },
-            github: GithubProviderHostConfig {
-                cache_db_path: data_dir.join("cache.db"),
-                endpoint_id: github_endpoint_id,
-                api_base_url: github_api_base_url,
-                mode,
-                releases_json: github_releases_json,
-                default_include_prereleases,
-                manifest,
-            },
-            provider_calls: Rc::clone(&provider_calls),
-            runtime_hooks: Rc::clone(&runtime_hooks),
+        ProviderBackedPackageEvalConfig {
+            mode,
+            fdroid_endpoint_id: request.fdroid_endpoint_id,
+            fdroid_endpoint_url: request.fdroid_endpoint_url,
+            fdroid_index_xml: request.fdroid_index_xml,
+            github_endpoint_id: request.github_endpoint_id,
+            github_api_base_url: request.github_api_base_url,
+            github_releases_json: request.github_releases_json,
+            github_include_prereleases: request.github_include_prereleases,
         },
     )?;
-    let package = serde_json::to_value(package)?;
+    let package = serde_json::to_value(result.package)?;
 
     Ok(json!({
         "operation": "provider.package_eval.fixture",
         "package": package,
-        "provider_calls": provider_calls.borrow().clone(),
-        "runtime_hooks": runtime_hooks.borrow().clone(),
+        "provider_calls": result.provider_calls,
+        "runtime_hooks": result.runtime_hooks,
     }))
 }
 
+#[cfg(feature = "lua-provider-host-dev")]
 #[derive(Debug, Deserialize)]
 struct StableProviderPackageEvalRequest {
     repository_id: RepositoryId,
@@ -386,6 +356,7 @@ fn evaluate_with_stable_provider_host(
     .map_err(Into::into)
 }
 
+#[cfg(feature = "lua-provider-host-dev")]
 #[derive(Debug, Deserialize)]
 struct GithubPackageEvalRequest {
     repository_id: RepositoryId,
@@ -402,6 +373,7 @@ struct GithubPackageEvalRequest {
     include_prereleases: bool,
 }
 
+#[cfg(feature = "lua-provider-host-dev")]
 struct GithubDevHostConfig {
     cache_db_path: PathBuf,
     endpoint_id: String,
@@ -423,6 +395,100 @@ struct GithubProviderHostConfig {
     manifest: Option<PackageManifest>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderBackedPackageEvalConfig {
+    pub(crate) mode: ProviderCacheMode,
+    pub(crate) fdroid_endpoint_id: Option<String>,
+    pub(crate) fdroid_endpoint_url: Option<String>,
+    pub(crate) fdroid_index_xml: Option<String>,
+    pub(crate) github_endpoint_id: Option<String>,
+    pub(crate) github_api_base_url: Option<String>,
+    pub(crate) github_releases_json: Option<String>,
+    pub(crate) github_include_prereleases: bool,
+}
+
+pub(crate) struct ProviderBackedPackageEvalResult {
+    pub(crate) package: ResolvedPackage,
+    pub(crate) provider_calls: Vec<Value>,
+    pub(crate) runtime_hooks: Vec<PathBuf>,
+}
+
+pub(crate) fn evaluate_provider_backed_package(
+    data_dir: &Path,
+    repository_id: &RepositoryId,
+    package_directory: &PackageDirectory,
+    metadata: &PackageDirectoryMetadata,
+    script: &PackageVersionScript,
+    config: ProviderBackedPackageEvalConfig,
+) -> Result<ProviderBackedPackageEvalResult, LuaProviderHostOperationError> {
+    let fdroid_endpoint = FdroidEndpointConfig {
+        endpoint_id: config
+            .fdroid_endpoint_id
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_FDROID_ENDPOINT_ID.to_owned()),
+        endpoint_url: config
+            .fdroid_endpoint_url
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_FDROID_ENDPOINT_URL.to_owned()),
+    };
+    let github_endpoint_id = config
+        .github_endpoint_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_GITHUB_ENDPOINT_ID.to_owned());
+    let github_api_base_url = config
+        .github_api_base_url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_GITHUB_API_BASE_URL.to_owned());
+    let manifest = if metadata
+        .permissions_for(&script.file_name)
+        .contains(&PackageLuaPermission::AllowFreeNetwork)
+    {
+        None
+    } else {
+        Some(PackageManifest::load(
+            package_directory.path.join(PACKAGE_MANIFEST_FILE),
+        )?)
+    };
+    let provider_calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime_hooks = Rc::new(RefCell::new(Vec::new()));
+    let package = evaluate_with_stable_provider_host(
+        data_dir,
+        repository_id,
+        package_directory,
+        metadata,
+        script,
+        StableProviderHostEvalConfig {
+            fdroid: FdroidProviderHostConfig {
+                cache_db_path: data_dir.join("cache.db"),
+                endpoint: fdroid_endpoint,
+                mode: config.mode,
+                index_xml: config.fdroid_index_xml,
+                manifest: manifest.clone(),
+            },
+            github: GithubProviderHostConfig {
+                cache_db_path: data_dir.join("cache.db"),
+                endpoint_id: github_endpoint_id,
+                api_base_url: github_api_base_url,
+                mode: config.mode,
+                releases_json: config.github_releases_json,
+                default_include_prereleases: config.github_include_prereleases,
+                manifest,
+            },
+            provider_calls: Rc::clone(&provider_calls),
+            runtime_hooks: Rc::clone(&runtime_hooks),
+        },
+    )?;
+
+    let provider_calls = provider_calls.borrow().clone();
+    let runtime_hooks = runtime_hooks.borrow().clone();
+    Ok(ProviderBackedPackageEvalResult {
+        package,
+        provider_calls,
+        runtime_hooks,
+    })
+}
+
+#[cfg(feature = "lua-provider-host-dev")]
 fn install_fdroid_dev_host(lua: &Lua, config: FdroidDevHostConfig) -> mlua::Result<()> {
     let provider_config = FdroidProviderHostConfig {
         cache_db_path: config.cache_db_path.clone(),
@@ -481,6 +547,7 @@ impl FdroidUpdateHostRequest {
     }
 }
 
+#[cfg(feature = "lua-provider-host-dev")]
 fn install_github_dev_host(lua: &Lua, config: GithubDevHostConfig) -> mlua::Result<()> {
     let provider_config = GithubProviderHostConfig {
         cache_db_path: config.cache_db_path.clone(),
@@ -641,8 +708,9 @@ fn fdroid_update_candidates_envelope(
     let refresh_fixture = config.index_xml;
     let manifest = config.manifest.clone();
     let result = read_or_refresh_fdroid_catalog(&db, endpoint, config.mode, || {
-        let xml = refresh_fixture
-            .ok_or_else(|| "fixture-backed F-Droid catalog host requires index_xml".to_owned())?;
+        let xml = refresh_fixture.ok_or_else(|| {
+            "F-Droid provider host has no cached catalog and no refresh source installed".to_owned()
+        })?;
         require_manifest_body(&manifest, FDROID_PROVIDER_ID, &xml)
             .map_err(|source| source.to_string())?;
         Ok(xml)
@@ -722,7 +790,8 @@ fn github_release_candidates_envelope(
     let manifest = config.manifest.clone();
     let result = read_or_refresh_github_releases(&db, provider_config, config.mode, || {
         let releases = refresh_fixture.ok_or_else(|| {
-            "fixture-backed GitHub release host requires releases_json".to_owned()
+            "GitHub release provider host has no cached releases and no refresh source installed"
+                .to_owned()
         })?;
         require_manifest_body(&manifest, GITHUB_PROVIDER_ID, &releases)
             .map_err(|source| source.to_string())?;
@@ -811,6 +880,7 @@ fn provider_call_from_envelope(envelope: &Table) -> mlua::Result<Value> {
     Ok(Value::Object(object))
 }
 
+#[cfg(feature = "lua-provider-host-dev")]
 fn envelope_candidates(envelope: Table) -> mlua::Result<LuaValue> {
     envelope.get("candidates")
 }
@@ -824,16 +894,28 @@ fn json_object_to_lua(lua: &Lua, value: Value) -> mlua::Result<Table> {
     }
 }
 
+fn lua_integer(value: i64, original: &serde_json::Number) -> mlua::Result<LuaValue> {
+    mlua::Integer::try_from(value)
+        .map(LuaValue::Integer)
+        .map_err(|_| {
+            mlua::Error::external(format!(
+                "provider host integer {original} cannot be represented"
+            ))
+        })
+}
+
 fn json_value_to_lua(lua: &Lua, value: Value) -> mlua::Result<LuaValue> {
     match value {
         Value::Null => Ok(LuaValue::Nil),
         Value::Bool(value) => Ok(LuaValue::Boolean(value)),
         Value::Number(number) => {
             if let Some(value) = number.as_i64() {
-                return Ok(LuaValue::Integer(value));
+                return lua_integer(value, &number);
             }
-            if let Some(value) = number.as_u64().and_then(|value| i64::try_from(value).ok()) {
-                return Ok(LuaValue::Integer(value));
+            if let Some(value) = number.as_u64() {
+                if let Ok(value) = i64::try_from(value) {
+                    return lua_integer(value, &number);
+                }
             }
             Ok(LuaValue::Number(number.as_f64().ok_or_else(|| {
                 mlua::Error::external(format!(
@@ -1020,7 +1102,8 @@ fn reject_unproven_manifest_cache(
     )))
 }
 
-fn provider_cache_mode(
+#[cfg(feature = "lua-provider-host-dev")]
+pub(crate) fn provider_cache_mode(
     mode: Option<&str>,
 ) -> Result<ProviderCacheMode, LuaProviderHostOperationError> {
     match mode {
@@ -1032,6 +1115,7 @@ fn provider_cache_mode(
     }
 }
 
+#[cfg(feature = "lua-provider-host-dev")]
 fn find_repository(
     db: &MainDb,
     repository_id: &RepositoryId,
@@ -1046,6 +1130,7 @@ fn find_repository(
         })
 }
 
+#[cfg(feature = "lua-provider-host-dev")]
 fn repo_path(repository: &StoredRepository) -> Result<PathBuf, LuaProviderHostOperationError> {
     repository.path.as_ref().map(PathBuf::from).ok_or_else(|| {
         LuaProviderHostOperationError::InvalidRequest(format!(
@@ -1144,7 +1229,7 @@ fn provider_diagnostic_json(diagnostic: &ProviderCacheDiagnostic) -> Value {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lua-provider-host-dev"))]
 mod tests {
     use super::*;
     use getter_core::repository::{RepositoryMetadata, REPO_API_VERSION_V1};

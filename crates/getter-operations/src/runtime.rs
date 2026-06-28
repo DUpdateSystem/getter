@@ -7,11 +7,15 @@
 //! Android glue.
 
 #[cfg(feature = "lua")]
-use getter_core::{
-    lua::evaluate_package_directory_script,
-    repository::{
-        package_directory_cache_key, RepositoryLoadError, RepositoryPackageDirectoryLayout,
-    },
+use crate::lua_provider_host::{
+    evaluate_provider_backed_package, LuaProviderHostOperationError,
+    ProviderBackedPackageEvalConfig,
+};
+#[cfg(feature = "lua")]
+use crate::provider_cache::ProviderCacheMode;
+#[cfg(feature = "lua")]
+use getter_core::repository::{
+    package_directory_cache_key, RepositoryLoadError, RepositoryPackageDirectoryLayout,
 };
 use getter_core::{
     runtime::{
@@ -49,6 +53,9 @@ pub enum RuntimeOperationError {
     #[cfg(feature = "lua")]
     #[error("package evaluation failed: {0}")]
     PackageEval(String),
+    #[cfg(feature = "lua")]
+    #[error("provider-backed package evaluation failed: {0}")]
+    ProviderPackageEval(#[from] LuaProviderHostOperationError),
     #[error("runtime response serialization failed: {0}")]
     Serialize(String),
 }
@@ -65,6 +72,19 @@ impl RuntimeOperationError {
             Self::Repository(_) => "repository.error",
             #[cfg(feature = "lua")]
             Self::PackageEval(_) => "package.eval_error",
+            #[cfg(feature = "lua")]
+            Self::ProviderPackageEval(error) => match error {
+                LuaProviderHostOperationError::InvalidRequest(_) => "runtime.invalid_request",
+                LuaProviderHostOperationError::Storage(_) => "storage.error",
+                LuaProviderHostOperationError::Repository(_) => "repository.error",
+                LuaProviderHostOperationError::PackageEval(_) => "package.eval_error",
+                LuaProviderHostOperationError::Fdroid(_) => "provider.fdroid.error",
+                LuaProviderHostOperationError::Github(_)
+                | LuaProviderHostOperationError::GithubProvider(_) => "provider.github.error",
+                LuaProviderHostOperationError::Serialization(_) => "runtime.serialize_error",
+                LuaProviderHostOperationError::ReadManifest { .. }
+                | LuaProviderHostOperationError::InvalidManifest { .. } => "package.manifest_error",
+            },
             Self::Serialize(_) => "runtime.serialize_error",
         }
     }
@@ -79,7 +99,9 @@ impl RuntimeOperationError {
             #[cfg(feature = "lua")]
             Self::Repository(_) => "Getter repository operation failed",
             #[cfg(feature = "lua")]
-            Self::PackageEval(_) => "Getter package evaluation failed",
+            Self::PackageEval(_) | Self::ProviderPackageEval(_) => {
+                "Getter package evaluation failed"
+            }
             Self::Serialize(_) => "Getter runtime response serialization failed",
         }
     }
@@ -95,6 +117,8 @@ impl RuntimeOperationError {
             Self::Repository(error) => Some(error.to_string()),
             #[cfg(feature = "lua")]
             Self::PackageEval(detail) => Some(detail.clone()),
+            #[cfg(feature = "lua")]
+            Self::ProviderPackageEval(error) => Some(error.to_string()),
         }
     }
 }
@@ -134,14 +158,15 @@ pub fn issue_action_from_offline_update_check_json(
 #[cfg(feature = "lua")]
 pub fn issue_action_from_registered_package_json(
     runtime: &mut GetterRuntime,
+    data_dir: &std::path::Path,
     db: &MainDb,
     request_json: &str,
 ) -> Result<Value, RuntimeOperationError> {
     let request: RegisteredPackageUpdateActionRequest = parse_request(request_json)?;
-    let (package, dependency_digest) = evaluate_registered_package(db, &request)?;
-    let candidates = StaticPackageUpdatesProvider.check_updates(&package);
+    let evaluated = evaluate_registered_package(data_dir, db, &request)?;
+    let candidates = StaticPackageUpdatesProvider.check_updates(&evaluated.package);
     let update = check_updates_offline(
-        package.id.clone(),
+        evaluated.package.id.clone(),
         request.installed_version,
         candidates,
         UpdateSelectionPolicy {
@@ -156,14 +181,16 @@ pub fn issue_action_from_registered_package_json(
             actions: update.actions.clone(),
             lua_object: PackageVersionLuaObject {
                 object_id: format!("package-update:{}", update.package_id),
-                dependency_digest,
+                dependency_digest: evaluated.dependency_digest,
             },
         }))
     };
     Ok(json!({
-        "package": package,
+        "package": evaluated.package,
         "update": update,
         "action": action.map(issued_action_json),
+        "provider_calls": evaluated.provider_calls,
+        "runtime_hooks": evaluated.runtime_hooks,
     }))
 }
 
@@ -366,10 +393,19 @@ struct CleanTasksRequest {
 }
 
 #[cfg(feature = "lua")]
+struct RegisteredPackageEvaluation {
+    package: getter_core::ResolvedPackage,
+    dependency_digest: String,
+    provider_calls: Vec<Value>,
+    runtime_hooks: Vec<PathBuf>,
+}
+
+#[cfg(feature = "lua")]
 fn evaluate_registered_package(
+    data_dir: &std::path::Path,
     db: &MainDb,
     request: &RegisteredPackageUpdateActionRequest,
-) -> Result<(getter_core::ResolvedPackage, String), RuntimeOperationError> {
+) -> Result<RegisteredPackageEvaluation, RuntimeOperationError> {
     let repositories = db.repositories()?;
     let mut missing_path = None;
     for repository in repositories {
@@ -391,15 +427,34 @@ fn evaluate_registered_package(
         };
         let metadata = layout.package_metadata(package_directory)?;
         let script = layout.unambiguous_version_script(package_directory)?;
-        let package =
-            evaluate_package_directory_script(&repository.id, package_directory, &metadata, script)
-                .map_err(|source| RuntimeOperationError::PackageEval(source.to_string()))?;
+        let provider_eval = evaluate_provider_backed_package(
+            data_dir,
+            &repository.id,
+            package_directory,
+            &metadata,
+            script,
+            ProviderBackedPackageEvalConfig {
+                mode: ProviderCacheMode::UseCached,
+                fdroid_endpoint_id: None,
+                fdroid_endpoint_url: None,
+                fdroid_index_xml: None,
+                github_endpoint_id: None,
+                github_api_base_url: None,
+                github_releases_json: None,
+                github_include_prereleases: false,
+            },
+        )?;
         let cache_key = package_directory_cache_key(&repository.id, package_directory, script)?;
         let dependency_digest = format!(
             "repo:{}:package:{}:hash:{}",
             cache_key.repository_id, cache_key.package_id, cache_key.package_file_hash
         );
-        return Ok((package, dependency_digest));
+        return Ok(RegisteredPackageEvaluation {
+            package: provider_eval.package,
+            dependency_digest,
+            provider_calls: provider_eval.provider_calls,
+            runtime_hooks: provider_eval.runtime_hooks,
+        });
     }
     let detail = if let Some(repository_id) = request.repository_id.as_ref() {
         format!(
@@ -439,6 +494,14 @@ impl CleanTasksRequest {
 mod tests {
     use super::*;
     #[cfg(feature = "lua")]
+    use crate::fdroid_catalog::{FdroidEndpointConfig, FDROID_PROVIDER_ID};
+    #[cfg(feature = "lua")]
+    use crate::github_releases::{
+        GithubReleaseConfig, DEFAULT_GITHUB_API_BASE_URL, GITHUB_PROVIDER_ID,
+    };
+    #[cfg(feature = "lua")]
+    use crate::provider_cache::PROVIDER_RESPONSE_PROVENANCE_SCHEMA_V1;
+    #[cfg(feature = "lua")]
     use getter_core::repository::{RepositoryMetadata, REPO_API_VERSION_V1};
     #[cfg(feature = "lua")]
     use getter_core::RepositoryPriority;
@@ -447,7 +510,51 @@ mod tests {
         update::OFFLINE_UPDATE_CHECK_VERSION, UpdateAction, UpdateArtifact, UpdateCandidate,
     };
     #[cfg(feature = "lua")]
+    use getter_providers::{parse_fdroid_index_xml, parse_github_releases_json};
+    #[cfg(feature = "lua")]
+    use getter_storage::{CacheDb, ProviderResponseUpsert};
+    #[cfg(feature = "lua")]
+    use sha2::{Digest, Sha512};
+    #[cfg(feature = "lua")]
     use std::fs;
+
+    #[cfg(feature = "lua")]
+    const FDROID_INDEX_FIXTURE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<fdroid>
+  <repo name="F-Droid" timestamp="1700000000" url="https://f-droid.org/repo" />
+  <application id="org.fdroid.fdroid">
+    <name>F-Droid</name>
+    <summary>App repository client</summary>
+    <package>
+      <version>1.20.0</version>
+      <versioncode>1020000</versioncode>
+      <apkname>org.fdroid.fdroid_1020000.apk</apkname>
+      <hash type="sha256">aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</hash>
+      <size>1234567</size>
+    </package>
+  </application>
+</fdroid>
+"#;
+
+    #[cfg(feature = "lua")]
+    const GITHUB_RELEASES_FIXTURE: &str = r#"[
+  {
+    "tag_name": "v1.20.0",
+    "name": "F-Droid 1.20.0",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-06-01T00:00:00Z",
+    "assets": [
+      {
+        "name": "F-Droid.apk",
+        "browser_download_url": "https://github.com/f-droid/fdroidclient/releases/download/v1.20.0/F-Droid.apk",
+        "content_type": "application/vnd.android.package-archive",
+        "size": 12345,
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  }
+]"#;
 
     #[cfg(feature = "lua")]
     #[test]
@@ -471,6 +578,7 @@ mod tests {
 
         let issued = issue_action_from_registered_package_json(
             &mut runtime,
+            temp.path(),
             &db,
             &json!({
                 "package_id": "android/app/com.example.autogen",
@@ -483,6 +591,8 @@ mod tests {
         assert_eq!(issued["package"]["repository"], "autogen");
         assert_eq!(issued["package"]["name"], "Example Autogen");
         assert_eq!(issued["update"]["status"], "update_available");
+        assert_eq!(issued["provider_calls"], json!([]));
+        assert_eq!(issued["runtime_hooks"], json!([]));
         let action_id = issued["action"]["action_id"].as_str().unwrap();
         let submitted =
             submit_action_json(&mut runtime, &json!({ "action_id": action_id }).to_string())
@@ -512,6 +622,7 @@ mod tests {
 
         let issued = issue_action_from_registered_package_json(
             &mut runtime,
+            temp.path(),
             &db,
             &json!({
                 "package_id": "android/app/com.example.autogen",
@@ -523,6 +634,181 @@ mod tests {
 
         assert_eq!(issued["update"]["status"], "up_to_date");
         assert!(issued["action"].is_null());
+    }
+
+    #[cfg(feature = "lua")]
+    #[test]
+    fn registered_package_update_check_issues_action_from_fdroid_provider_luaclass() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let repo_root = data_dir.join("repo/official");
+        write_fdroid_provider_package_repo(&repo_root, Some(FDROID_INDEX_FIXTURE), false);
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        register_repository(&db, "official", "Official", 0, &repo_root);
+        seed_fdroid_provider_cache(data_dir, FDROID_INDEX_FIXTURE);
+        let mut runtime = GetterRuntime::new();
+
+        let issued = issue_action_from_registered_package_json(
+            &mut runtime,
+            data_dir,
+            &db,
+            &json!({
+                "package_id": "android/f-droid/app/org.fdroid.fdroid",
+                "installed_version": "1.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(issued["package"]["source_priority"], json!(["fdroid"]));
+        assert_eq!(issued["provider_calls"][0]["provider"], "fdroid");
+        assert_eq!(issued["provider_calls"][0]["source"], "cache");
+        assert_eq!(issued["update"]["status"], "update_available");
+        assert_eq!(
+            issued["update"]["selected"]["candidate"]["version"],
+            "1.20.0"
+        );
+        assert_eq!(
+            issued["update"]["actions"][0]["url"],
+            "https://f-droid.org/repo/org.fdroid.fdroid_1020000.apk"
+        );
+        let action_id = issued["action"]["action_id"].as_str().unwrap();
+        let submitted =
+            submit_action_json(&mut runtime, &json!({ "action_id": action_id }).to_string())
+                .unwrap();
+        assert_eq!(
+            submitted["package_id"],
+            "android/f-droid/app/org.fdroid.fdroid"
+        );
+    }
+
+    #[cfg(feature = "lua")]
+    #[test]
+    fn registered_package_update_check_issues_action_from_github_provider_luaclass() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let repo_root = data_dir.join("repo/official");
+        write_github_provider_package_repo(&repo_root, GITHUB_RELEASES_FIXTURE);
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        register_repository(&db, "official", "Official", 0, &repo_root);
+        seed_github_provider_cache(data_dir, GITHUB_RELEASES_FIXTURE);
+        let mut runtime = GetterRuntime::new();
+
+        let issued = issue_action_from_registered_package_json(
+            &mut runtime,
+            data_dir,
+            &db,
+            &json!({
+                "package_id": "android/app/org.fdroid.fdroid",
+                "installed_version": "v1.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(issued["package"]["source_priority"], json!(["github"]));
+        assert_eq!(issued["provider_calls"][0]["provider"], "github");
+        assert_eq!(issued["provider_calls"][0]["source"], "cache");
+        assert_eq!(issued["update"]["status"], "update_available");
+        assert_eq!(
+            issued["update"]["selected"]["candidate"]["version"],
+            "v1.20.0"
+        );
+        assert_eq!(issued["update"]["actions"][0]["file_name"], "F-Droid.apk");
+    }
+
+    #[cfg(feature = "lua")]
+    #[test]
+    fn registered_package_update_check_does_not_accept_provider_fixture_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let repo_root = data_dir.join("repo/official");
+        write_fdroid_provider_package_repo(&repo_root, Some(FDROID_INDEX_FIXTURE), false);
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        register_repository(&db, "official", "Official", 0, &repo_root);
+        let mut runtime = GetterRuntime::new();
+
+        let err = issue_action_from_registered_package_json(
+            &mut runtime,
+            data_dir,
+            &db,
+            &json!({
+                "package_id": "android/f-droid/app/org.fdroid.fdroid",
+                "installed_version": "1.0.0",
+                "fdroid_index_xml": FDROID_INDEX_FIXTURE
+            })
+            .to_string(),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code(), "package.eval_error");
+        assert!(err
+            .to_string()
+            .contains("F-Droid provider host has no cached catalog"));
+        assert_eq!(runtime.tasks().len(), 0);
+    }
+
+    #[cfg(feature = "lua")]
+    #[test]
+    fn registered_package_update_check_rejects_unmanifested_provider_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let repo_root = data_dir.join("repo/official");
+        write_fdroid_provider_package_repo(&repo_root, None, false);
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        register_repository(&db, "official", "Official", 0, &repo_root);
+        seed_fdroid_provider_cache(data_dir, FDROID_INDEX_FIXTURE);
+        let mut runtime = GetterRuntime::new();
+
+        let err = issue_action_from_registered_package_json(
+            &mut runtime,
+            data_dir,
+            &db,
+            &json!({
+                "package_id": "android/f-droid/app/org.fdroid.fdroid",
+                "installed_version": "1.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code(), "package.eval_error");
+        assert!(err
+            .to_string()
+            .contains("package.provider.response_not_in_manifest"));
+        assert_eq!(runtime.tasks().len(), 0);
+    }
+
+    #[cfg(feature = "lua")]
+    #[test]
+    fn registered_package_update_check_accepts_manifest_compatible_provider_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let repo_root = data_dir.join("repo/official");
+        write_fdroid_provider_package_repo(&repo_root, Some(FDROID_INDEX_FIXTURE), false);
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        register_repository(&db, "official", "Official", 0, &repo_root);
+        seed_fdroid_provider_cache(data_dir, FDROID_INDEX_FIXTURE);
+        let mut runtime = GetterRuntime::new();
+
+        let issued = issue_action_from_registered_package_json(
+            &mut runtime,
+            data_dir,
+            &db,
+            &json!({
+                "package_id": "android/f-droid/app/org.fdroid.fdroid",
+                "installed_version": "1.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(issued["provider_calls"][0]["source"], "cache");
+        assert_eq!(issued["update"]["status"], "update_available");
+        assert_eq!(
+            issued["update"]["selected"]["candidate"]["version"],
+            "1.20.0"
+        );
     }
 
     #[test]
@@ -648,6 +934,144 @@ mod tests {
     fn submit_plan(runtime: &mut GetterRuntime, plan: SealedActionPlan) -> String {
         let action = runtime.issue_action(plan);
         runtime.submit_action(&action.action_id).unwrap().task_id
+    }
+
+    #[cfg(feature = "lua")]
+    fn seed_fdroid_provider_cache(data_dir: &std::path::Path, fixture_body: &str) {
+        let endpoint = FdroidEndpointConfig::default();
+        let catalog = parse_fdroid_index_xml(fixture_body).unwrap();
+        let db = CacheDb::open(data_dir.join("cache.db")).unwrap();
+        db.upsert_provider_response(&ProviderResponseUpsert {
+            cache_key: endpoint.cache_key(),
+            provider: FDROID_PROVIDER_ID.to_owned(),
+            response_json: serde_json::to_value(catalog).unwrap(),
+            source_response_sha512: vec![sha512_hex(fixture_body.as_bytes())],
+            provenance_schema_version: Some(PROVIDER_RESPONSE_PROVENANCE_SCHEMA_V1.to_owned()),
+            freshness_json: json!({}),
+        })
+        .unwrap();
+    }
+
+    #[cfg(feature = "lua")]
+    fn seed_github_provider_cache(data_dir: &std::path::Path, fixture_body: &str) {
+        let config = GithubReleaseConfig {
+            api_base_url: DEFAULT_GITHUB_API_BASE_URL.to_owned(),
+            owner: "f-droid".to_owned(),
+            repo: "fdroidclient".to_owned(),
+        };
+        let releases = parse_github_releases_json(fixture_body).unwrap();
+        let db = CacheDb::open(data_dir.join("cache.db")).unwrap();
+        db.upsert_provider_response(&ProviderResponseUpsert {
+            cache_key: config.cache_key(),
+            provider: GITHUB_PROVIDER_ID.to_owned(),
+            response_json: serde_json::to_value(releases).unwrap(),
+            source_response_sha512: vec![sha512_hex(fixture_body.as_bytes())],
+            provenance_schema_version: Some(PROVIDER_RESPONSE_PROVENANCE_SCHEMA_V1.to_owned()),
+            freshness_json: json!({}),
+        })
+        .unwrap();
+    }
+
+    #[cfg(feature = "lua")]
+    fn write_fdroid_provider_package_repo(
+        root: &std::path::Path,
+        manifest_body: Option<&str>,
+        allow_free_network: bool,
+    ) {
+        let package_dir = root.join("android/f-droid/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
+        let mut metadata = json!({
+            "type": "android:app",
+            "android": { "package_name": "org.fdroid.fdroid" }
+        });
+        if allow_free_network {
+            metadata["lua"] = json!({
+                "9999.lua": { "permission": ["allow_free_network"] }
+            });
+        }
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            serde_json::to_string_pretty(&metadata).unwrap(),
+        )
+        .unwrap();
+        if let Some(body) = manifest_body {
+            fs::write(
+                package_dir.join("Manifest"),
+                format!("{} fixture-body\n", sha512_hex(body.as_bytes())),
+            )
+            .unwrap();
+        }
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+local fdroid = require("luaclass.fdroid_android")
+return fdroid.package {
+  package_name = "org.fdroid.fdroid",
+}
+"#,
+        )
+        .unwrap();
+    }
+
+    #[cfg(feature = "lua")]
+    fn write_github_provider_package_repo(root: &std::path::Path, manifest_body: &str) {
+        let package_dir = root.join("android/app/org.fdroid.fdroid");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("metadata.jsonc"),
+            r#"{
+  "type": "android:app",
+  "android": { "package_name": "org.fdroid.fdroid" }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("Manifest"),
+            format!("{} fixture-body\n", sha512_hex(manifest_body.as_bytes())),
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("9999.lua"),
+            r#"#!/bin/upa-lua v1
+local github_android = require("luaclass.github_android_apk")
+return github_android.package {
+  name = "F-Droid",
+  android_package = "org.fdroid.fdroid",
+  owner = "f-droid",
+  repo = "fdroidclient",
+  asset = { include = "[.]apk$" },
+}
+"#,
+        )
+        .unwrap();
+    }
+
+    #[cfg(feature = "lua")]
+    fn register_repository(
+        db: &MainDb,
+        id: &str,
+        name: &str,
+        priority: i32,
+        root: &std::path::Path,
+    ) {
+        db.upsert_repository(
+            &RepositoryMetadata {
+                id: id.parse().unwrap(),
+                name: name.to_owned(),
+                priority: RepositoryPriority::new(priority),
+                api_version: REPO_API_VERSION_V1.to_owned(),
+            },
+            Some(root),
+            None,
+        )
+        .unwrap();
+    }
+
+    #[cfg(feature = "lua")]
+    fn sha512_hex(body: &[u8]) -> String {
+        let mut hasher = Sha512::new();
+        hasher.update(body);
+        format!("{:x}", hasher.finalize())
     }
 
     #[cfg(feature = "lua")]

@@ -14,9 +14,9 @@ pub mod legacy_room;
 #[cfg(feature = "lua")]
 #[doc(hidden)]
 pub mod lua_http_policy;
-#[cfg(feature = "lua-provider-host-dev")]
+#[cfg(feature = "lua")]
 #[doc(hidden)]
-pub mod lua_provider_host;
+mod lua_provider_host;
 #[cfg(feature = "lua")]
 #[doc(hidden)]
 pub mod lua_runtime_hooks;
