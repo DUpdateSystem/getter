@@ -86,6 +86,7 @@ const DEFAULT_GITHUB_ENDPOINT_ID: &str = "github";
 /// or built-in `luaclass/` modules while catalog parsing/cache behavior stays
 /// in `getter-operations`.
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 pub fn fdroid_package_eval_json(
     data_dir: &Path,
     request_json: &str,
@@ -149,6 +150,7 @@ pub fn fdroid_package_eval_json(
 }
 
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct FdroidPackageEvalRequest {
     repository_id: RepositoryId,
@@ -164,6 +166,7 @@ struct FdroidPackageEvalRequest {
 }
 
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 struct FdroidDevHostConfig {
     cache_db_path: PathBuf,
     endpoint: FdroidEndpointConfig,
@@ -188,6 +191,7 @@ struct FdroidProviderHostConfig {
 /// or built-in `luaclass/` modules while release parsing/cache behavior stays
 /// in `getter-operations`.
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 pub fn github_package_eval_json(
     data_dir: &Path,
     request_json: &str,
@@ -257,6 +261,7 @@ pub fn github_package_eval_json(
 /// installs the stable namespace and runtime hooks, but still uses fixture data
 /// and remains hidden from CLI/native/Flutter product APIs.
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 pub fn stable_provider_package_eval_json(
     data_dir: &Path,
     request_json: &str,
@@ -304,6 +309,7 @@ pub fn stable_provider_package_eval_json(
 }
 
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct StableProviderPackageEvalRequest {
     repository_id: RepositoryId,
@@ -357,6 +363,7 @@ fn evaluate_with_stable_provider_host(
 }
 
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct GithubPackageEvalRequest {
     repository_id: RepositoryId,
@@ -374,6 +381,7 @@ struct GithubPackageEvalRequest {
 }
 
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 struct GithubDevHostConfig {
     cache_db_path: PathBuf,
     endpoint_id: String,
@@ -489,6 +497,7 @@ pub(crate) fn evaluate_provider_backed_package(
 }
 
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 fn install_fdroid_dev_host(lua: &Lua, config: FdroidDevHostConfig) -> mlua::Result<()> {
     let provider_config = FdroidProviderHostConfig {
         cache_db_path: config.cache_db_path.clone(),
@@ -548,6 +557,7 @@ impl FdroidUpdateHostRequest {
 }
 
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 fn install_github_dev_host(lua: &Lua, config: GithubDevHostConfig) -> mlua::Result<()> {
     let provider_config = GithubProviderHostConfig {
         cache_db_path: config.cache_db_path.clone(),
@@ -881,6 +891,7 @@ fn provider_call_from_envelope(envelope: &Table) -> mlua::Result<Value> {
 }
 
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 fn envelope_candidates(envelope: Table) -> mlua::Result<LuaValue> {
     envelope.get("candidates")
 }
@@ -1103,6 +1114,7 @@ fn reject_unproven_manifest_cache(
 }
 
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 pub(crate) fn provider_cache_mode(
     mode: Option<&str>,
 ) -> Result<ProviderCacheMode, LuaProviderHostOperationError> {
@@ -1116,6 +1128,7 @@ pub(crate) fn provider_cache_mode(
 }
 
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 fn find_repository(
     db: &MainDb,
     repository_id: &RepositoryId,
@@ -1131,6 +1144,7 @@ fn find_repository(
 }
 
 #[cfg(feature = "lua-provider-host-dev")]
+#[allow(dead_code)]
 fn repo_path(repository: &StoredRepository) -> Result<PathBuf, LuaProviderHostOperationError> {
     repository.path.as_ref().map(PathBuf::from).ok_or_else(|| {
         LuaProviderHostOperationError::InvalidRequest(format!(

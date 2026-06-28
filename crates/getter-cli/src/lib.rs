@@ -798,7 +798,7 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
             )?)
             .map_err(|source| CliError::Download(format!("failed to serialize handoff: {source}")))
         }
-        CliCommand::RuntimeScript { script } => run_runtime_script(&script),
+        CliCommand::RuntimeScript { script } => run_runtime_script(&invocation.data_dir, &script),
         CliCommand::AutogenInstalledPreview { inventory } => {
             let db = open_main_db(&invocation.data_dir)?;
             let inventory = read_installed_inventory(&inventory)?;
@@ -1547,7 +1547,7 @@ struct RuntimeScriptStep {
     plan: Option<SealedActionPlan>,
 }
 
-fn run_runtime_script(path: &Path) -> Result<Value, CliError> {
+fn run_runtime_script(data_dir: &Path, path: &Path) -> Result<Value, CliError> {
     let bytes = fs::read(path)
         .map_err(|source| CliError::Runtime(format!("failed to read runtime script: {source}")))?;
     let script: RuntimeScript = serde_json::from_slice(&bytes).map_err(|source| {
@@ -1557,7 +1557,7 @@ fn run_runtime_script(path: &Path) -> Result<Value, CliError> {
     let mut context = RuntimeScriptContext::default();
     let mut outputs = Vec::new();
     for step in script.steps {
-        let data = execute_runtime_script_step(&mut runtime, &mut context, step)?;
+        let data = execute_runtime_script_step(data_dir, &mut runtime, &mut context, step)?;
         outputs.push(data);
     }
     Ok(json!({ "steps": outputs }))
@@ -1570,6 +1570,7 @@ struct RuntimeScriptContext {
 }
 
 fn execute_runtime_script_step(
+    data_dir: &Path,
     runtime: &mut GetterRuntime,
     context: &mut RuntimeScriptContext,
     step: RuntimeScriptStep,
@@ -1584,6 +1585,18 @@ fn execute_runtime_script_step(
                 })?,
             };
             runtime_operations::issue_action(runtime, plan)
+        }
+        "update_check_package_issue_action" => {
+            let db = open_main_db(data_dir)?;
+            let payload =
+                replace_runtime_script_tokens(context, empty_object_payload(step.payload))?;
+            let payload = serde_json::to_string(&payload).map_err(|source| {
+                CliError::Runtime(format!("failed to serialize runtime request: {source}"))
+            })?;
+            runtime_operations::issue_action_from_registered_package_json(
+                runtime, data_dir, &db, &payload,
+            )
+            .map_err(|source| CliError::Runtime(source.to_string()))?
         }
         "submit_action" => runtime_json_operation(
             runtime,

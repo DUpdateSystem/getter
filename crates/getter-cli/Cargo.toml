@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 getter-core = { path = "../getter-core" }
 getter-downloader = { path = "../getter-downloader" }
-getter-operations = { path = "../getter-operations" }
+getter-operations = { path = "../getter-operations", features = ["lua"] }
 getter-storage = { path = "../getter-storage" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -466,6 +466,33 @@ fn runtime_script_submits_completes_removes_and_cleans_task(world: &mut CliWorld
     world.runtime_script = Some(script);
 }
 
+#[given(expr = "a runtime script checking generated package {string} at {string}")]
+fn runtime_script_checks_generated_fdroid_package(
+    world: &mut CliWorld,
+    package_id: String,
+    installed_version: String,
+) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let script = temp.path().join("runtime-script.json");
+    fs::write(
+        &script,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "steps": [
+                {
+                    "operation": "update_check_package_issue_action",
+                    "payload": {
+                        "package_id": package_id,
+                        "installed_version": installed_version,
+                    }
+                }
+            ]
+        }))
+        .expect("runtime script serializes"),
+    )
+    .expect("write runtime script");
+    world.runtime_script = Some(script);
+}
+
 #[given(expr = "a fixture Lua repository {string} with package {string}")]
 fn fixture_lua_repository(world: &mut CliWorld, repo_id: String, package_id: String) {
     create_fixture_lua_repository(world, repo_id, package_id, "F-Droid".to_owned());
@@ -1302,6 +1329,26 @@ fn runtime_script_output_removes_completed_task(world: &mut CliWorld) {
     assert_eq!(steps[5]["data"]["tasks"].as_array().unwrap().len(), 0);
 }
 
+#[then(expr = "the provider-backed F-Droid update check selects version_code {int}")]
+fn provider_backed_fdroid_update_check_selects_version_code(
+    world: &mut CliWorld,
+    version_code: i64,
+) {
+    let json = current_json(world);
+    assert_eq!(json["command"], "runtime script");
+    let steps = json["data"]["steps"].as_array().expect("runtime steps");
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0]["operation"], "update_check_package_issue_action");
+    let data = &steps[0]["data"];
+    assert_eq!(data["provider_calls"][0]["provider"], "fdroid");
+    assert_eq!(data["provider_calls"][0]["source"], "cache");
+    assert_eq!(data["update"]["status"], "update_available");
+    assert_eq!(
+        data["update"]["selected"]["candidate"]["version_code"].as_i64(),
+        Some(version_code)
+    );
+}
+
 #[then(expr = "the task list contains the remembered task with status {string}")]
 fn task_list_contains_remembered_task_with_status(world: &mut CliWorld, status: String) {
     let task_id = world
@@ -1684,8 +1731,16 @@ fn autogen_repository_contains_generated_fdroid_package(world: &mut CliWorld, pa
     autogen_repository_contains_generated_package(world, package_id.clone());
     let path = autogen_repo_path(world).join(package_relative_path(&package_id));
     let content = fs::read_to_string(path.join("9999.lua")).expect("generated package readable");
+    assert!(content.contains("local fdroid = require(\"luaclass.fdroid_android\")"));
     assert!(content.contains("return fdroid.package"));
-    assert!(content.contains("version_code = 1020000"));
+    assert!(content.contains("package_name = \"org.fdroid.fdroid\""));
+    assert!(!content.contains("version_code = 1020000"));
+    assert!(!content.contains("local catalog_package ="));
+    let manifest = fs::read_to_string(path.join("Manifest")).expect("generated Manifest readable");
+    assert!(
+        manifest.contains("fdroid-index.xml"),
+        "generated F-Droid Manifest should name provider source provenance: {manifest}"
+    );
 }
 
 #[then(expr = "the autogen repository contains generated package {string}")]

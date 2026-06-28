@@ -19,11 +19,11 @@ Feature: Installed app autogen
     Then the command succeeds
     And the autogen repository contains generated F-Droid package "android/f-droid/app/org.fdroid.fdroid"
     And the app list contains autogen tracked package "android/f-droid/app/org.fdroid.fdroid"
-    When I run getter repo validate for autogen
-    Then the output reports a valid repository without network
-    When I run getter package eval for package "android/f-droid/app/org.fdroid.fdroid"
+    Given a runtime script checking generated package "android/f-droid/app/org.fdroid.fdroid" at "1.0.0"
+    When I run getter runtime script for that script
     Then the command succeeds
-    And the package eval contains update version_code 1020000
+    And the output is valid JSON
+    And the provider-backed F-Droid update check selects version_code 1020000
 
   Scenario: User previews F-Droid autogen from installed inventory
     Given an initialized getter data directory
