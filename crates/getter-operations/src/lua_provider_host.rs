@@ -70,6 +70,7 @@ pub enum LuaProviderHostOperationError {
 const FDROID_PACKAGE_NOT_FOUND: &str = "provider.fdroid.package_not_found";
 const PROVIDER_RESPONSE_NOT_IN_MANIFEST: &str = "package.provider.response_not_in_manifest";
 const PROVIDER_CACHE_PROVENANCE_MISSING: &str = "package.provider.cache_provenance_missing";
+const DEFAULT_GITHUB_ENDPOINT_ID: &str = "github";
 
 /// Evaluates a package with a fixture-backed F-Droid catalog host binding.
 ///
@@ -183,6 +184,10 @@ pub fn github_package_eval_json(
     let request: GithubPackageEvalRequest = serde_json::from_str(request_json)
         .map_err(|source| LuaProviderHostOperationError::InvalidRequest(source.to_string()))?;
     let mode = provider_cache_mode(request.mode.as_deref())?;
+    let endpoint_id = request
+        .endpoint_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_GITHUB_ENDPOINT_ID.to_owned());
     let api_base_url = request
         .api_base_url
         .filter(|value| !value.trim().is_empty())
@@ -215,6 +220,7 @@ pub fn github_package_eval_json(
                     lua,
                     GithubDevHostConfig {
                         cache_db_path,
+                        endpoint_id,
                         api_base_url,
                         mode,
                         releases_json,
@@ -256,6 +262,10 @@ pub fn stable_provider_package_eval_json(
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_FDROID_ENDPOINT_URL.to_owned()),
     };
+    let github_endpoint_id = request
+        .github_endpoint_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_GITHUB_ENDPOINT_ID.to_owned());
     let github_api_base_url = request
         .github_api_base_url
         .filter(|value| !value.trim().is_empty())
@@ -303,6 +313,7 @@ pub fn stable_provider_package_eval_json(
             },
             github: GithubProviderHostConfig {
                 cache_db_path: data_dir.join("cache.db"),
+                endpoint_id: github_endpoint_id,
                 api_base_url: github_api_base_url,
                 mode,
                 releases_json: github_releases_json,
@@ -335,6 +346,8 @@ struct StableProviderPackageEvalRequest {
     fdroid_endpoint_url: Option<String>,
     #[serde(default)]
     fdroid_index_xml: Option<String>,
+    #[serde(default)]
+    github_endpoint_id: Option<String>,
     #[serde(default)]
     github_api_base_url: Option<String>,
     #[serde(default)]
@@ -378,6 +391,8 @@ struct GithubPackageEvalRequest {
     repository_id: RepositoryId,
     package_id: PackageId,
     #[serde(default)]
+    endpoint_id: Option<String>,
+    #[serde(default)]
     api_base_url: Option<String>,
     #[serde(default)]
     mode: Option<String>,
@@ -389,6 +404,7 @@ struct GithubPackageEvalRequest {
 
 struct GithubDevHostConfig {
     cache_db_path: PathBuf,
+    endpoint_id: String,
     api_base_url: String,
     mode: ProviderCacheMode,
     releases_json: Option<String>,
@@ -399,6 +415,7 @@ struct GithubDevHostConfig {
 #[derive(Clone)]
 struct GithubProviderHostConfig {
     cache_db_path: PathBuf,
+    endpoint_id: String,
     api_base_url: String,
     mode: ProviderCacheMode,
     releases_json: Option<String>,
@@ -447,6 +464,7 @@ fn install_fdroid_dev_host(lua: &Lua, config: FdroidDevHostConfig) -> mlua::Resu
 
 struct FdroidUpdateHostRequest {
     package_name: String,
+    endpoint_id: Option<String>,
 }
 
 impl FdroidUpdateHostRequest {
@@ -458,6 +476,7 @@ impl FdroidUpdateHostRequest {
                 .ok_or_else(|| {
                     mlua::Error::external("F-Droid provider host missing package_name")
                 })?,
+            endpoint_id: optional_lua_string_field(table, "endpoint_id", "F-Droid provider host")?,
         })
     }
 }
@@ -465,6 +484,7 @@ impl FdroidUpdateHostRequest {
 fn install_github_dev_host(lua: &Lua, config: GithubDevHostConfig) -> mlua::Result<()> {
     let provider_config = GithubProviderHostConfig {
         cache_db_path: config.cache_db_path.clone(),
+        endpoint_id: config.endpoint_id.clone(),
         api_base_url: config.api_base_url.clone(),
         mode: config.mode,
         releases_json: config.releases_json.clone(),
@@ -584,6 +604,7 @@ struct GithubReleaseHostRequest {
     repo: String,
     asset_filter: GithubAssetFilter,
     include_prereleases: Option<bool>,
+    endpoint_id: Option<String>,
 }
 
 impl GithubReleaseHostRequest {
@@ -593,6 +614,11 @@ impl GithubReleaseHostRequest {
             repo: required_lua_string(table, "repo")?,
             asset_filter: asset_filter_from_lua(table.get("asset")?)?,
             include_prereleases: optional_lua_bool(table, "include_prereleases")?,
+            endpoint_id: optional_lua_string_field(
+                table,
+                "endpoint_id",
+                "GitHub release provider host",
+            )?,
         })
     }
 }
@@ -603,6 +629,13 @@ fn fdroid_update_candidates_envelope(
     config: FdroidProviderHostConfig,
 ) -> mlua::Result<Table> {
     let request = FdroidUpdateHostRequest::from_lua_table(&spec)?;
+    if let Some(endpoint_id) = &request.endpoint_id {
+        if endpoint_id != &config.endpoint.endpoint_id {
+            return Err(mlua::Error::external(format!(
+                "F-Droid provider host endpoint_id '{endpoint_id}' is not installed"
+            )));
+        }
+    }
     let db = CacheDb::open(&config.cache_db_path).map_err(mlua::Error::external)?;
     let endpoint = config.endpoint;
     let refresh_fixture = config.index_xml;
@@ -671,6 +704,14 @@ fn github_release_candidates_envelope(
     config: GithubProviderHostConfig,
 ) -> mlua::Result<Table> {
     let request = GithubReleaseHostRequest::from_lua_table(&spec)?;
+    if let Some(endpoint_id) = &request.endpoint_id {
+        if endpoint_id != &config.endpoint_id {
+            return Err(mlua::Error::external(format!(
+                "GitHub release provider host endpoint_id '{endpoint_id}' is not installed"
+            )));
+        }
+    }
+    let endpoint_id = config.endpoint_id.clone();
     let db = CacheDb::open(&config.cache_db_path).map_err(mlua::Error::external)?;
     let provider_config = GithubReleaseConfig {
         api_base_url: config.api_base_url,
@@ -723,6 +764,7 @@ fn github_release_candidates_envelope(
         json!({
             "provider": GITHUB_PROVIDER_ID,
             "request": "releases",
+            "endpoint_id": endpoint_id,
             "owner": result.config.owner,
             "repo": result.config.repo,
             "cache_key": result.cache_key,
@@ -1032,6 +1074,24 @@ fn optional_lua_bool(table: &Table, field: &'static str) -> mlua::Result<Option<
     }
 }
 
+fn optional_lua_string_field(
+    table: &Table,
+    field: &'static str,
+    context: &'static str,
+) -> mlua::Result<Option<String>> {
+    match table.get::<LuaValue>(field)? {
+        LuaValue::Nil => Ok(None),
+        LuaValue::String(value) => {
+            let value = value.to_str()?;
+            let value = value.trim();
+            Ok((!value.is_empty()).then(|| value.to_owned()))
+        }
+        _ => Err(mlua::Error::external(format!(
+            "{context} {field} must be a string"
+        ))),
+    }
+}
+
 fn asset_filter_from_lua(value: LuaValue) -> mlua::Result<GithubAssetFilter> {
     match value {
         LuaValue::Nil => Ok(GithubAssetFilter::default()),
@@ -1238,6 +1298,7 @@ mod tests {
 
         assert_eq!(first["operation"], "github.package_eval.fixture");
         assert_eq!(first["provider_calls"][0]["source"], "refreshed");
+        assert_eq!(first["provider_calls"][0]["endpoint_id"], "github");
         assert_eq!(first["package"]["name"], "F-Droid");
         assert_eq!(first["package"]["source_priority"], json!(["github"]));
         assert_eq!(first["package"]["updates"][0]["version"], "v1.20.0");
@@ -1265,6 +1326,28 @@ mod tests {
 
         assert_eq!(second["provider_calls"][0]["source"], "cache");
         assert_eq!(second["package"]["updates"][0]["version"], "v1.20.0");
+    }
+
+    #[test]
+    fn github_package_eval_uses_configured_endpoint_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        write_github_package_fixture_with_endpoint_id(data_dir, "[.]apk$", Some("mirror"));
+
+        let result = github_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/app/org.fdroid.fdroid",
+                "endpoint_id": "mirror",
+                "releases_json": GITHUB_RELEASES_FIXTURE
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(result["provider_calls"][0]["endpoint_id"], "mirror");
+        assert_eq!(result["package"]["updates"][0]["source"], "github");
     }
 
     #[test]
@@ -1495,9 +1578,44 @@ return fdroid.package {
 
         assert_eq!(result["provider_calls"][0]["provider"], FDROID_PROVIDER_ID);
         assert_eq!(result["provider_calls"][0]["request"], "catalog");
+        assert_eq!(result["provider_calls"][0]["endpoint_id"], "official");
         assert_eq!(result["package"]["source_priority"], json!(["fdroid"]));
         assert_eq!(result["package"]["updates"][0]["version"], "1.20.0");
         assert_eq!(result["package"]["updates"][0]["source"], "fdroid");
+    }
+
+    #[test]
+    fn stable_provider_builtin_fdroid_rejects_uninstalled_endpoint_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        write_stable_provider_package_fixture(
+            data_dir,
+            "android/f-droid/app/org.fdroid.fdroid",
+            r#"#!/bin/upa-lua v1
+local fdroid = require("luaclass.fdroid_android")
+return fdroid.package {
+  package_name = "org.fdroid.fdroid",
+  endpoint_id = "mirror",
+}
+"#,
+            Some(FDROID_INDEX_FIXTURE),
+            false,
+        );
+
+        let err = stable_provider_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/f-droid/app/org.fdroid.fdroid",
+                "fdroid_index_xml": FDROID_INDEX_FIXTURE
+            })
+            .to_string(),
+        )
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("F-Droid provider host endpoint_id 'mirror' is not installed"));
     }
 
     #[test]
@@ -1534,6 +1652,7 @@ return github_android.package {
 
         assert_eq!(result["provider_calls"][0]["provider"], GITHUB_PROVIDER_ID);
         assert_eq!(result["provider_calls"][0]["request"], "releases");
+        assert_eq!(result["provider_calls"][0]["endpoint_id"], "github");
         assert_eq!(result["package"]["name"], "F-Droid");
         assert_eq!(
             result["package"]["installed"][0]["package_name"],
@@ -1542,6 +1661,44 @@ return github_android.package {
         assert_eq!(result["package"]["source_priority"], json!(["github"]));
         assert_eq!(result["package"]["updates"][0]["version"], "v1.20.0");
         assert_eq!(result["package"]["updates"][0]["source"], "github");
+    }
+
+    #[test]
+    fn stable_provider_builtin_github_rejects_uninstalled_endpoint_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        write_stable_provider_package_fixture(
+            data_dir,
+            "android/app/org.fdroid.fdroid",
+            r#"#!/bin/upa-lua v1
+local github_android = require("luaclass.github_android_apk")
+return github_android.package {
+  name = "F-Droid",
+  android_package = "org.fdroid.fdroid",
+  owner = "f-droid",
+  repo = "fdroidclient",
+  asset = { include = "[.]apk$" },
+  endpoint_id = "github-mirror",
+}
+"#,
+            Some(GITHUB_RELEASES_FIXTURE),
+            false,
+        );
+
+        let err = stable_provider_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/app/org.fdroid.fdroid",
+                "github_releases_json": GITHUB_RELEASES_FIXTURE
+            })
+            .to_string(),
+        )
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("GitHub release provider host endpoint_id 'github-mirror' is not installed"));
     }
 
     #[test]
@@ -1850,6 +2007,14 @@ return fdroid.package {
     }
 
     fn write_github_package_fixture(data_dir: &std::path::Path, asset_include: &str) {
+        write_github_package_fixture_with_endpoint_id(data_dir, asset_include, None);
+    }
+
+    fn write_github_package_fixture_with_endpoint_id(
+        data_dir: &std::path::Path,
+        asset_include: &str,
+        endpoint_id: Option<&str>,
+    ) {
         let repo_root = data_dir.join("repo/official");
         let package_dir = repo_root.join("android/app/org.fdroid.fdroid");
         fs::create_dir_all(&package_dir).unwrap();
@@ -1861,6 +2026,9 @@ return fdroid.package {
 }"#,
         )
         .unwrap();
+        let endpoint_line = endpoint_id
+            .map(|endpoint_id| format!("  endpoint_id = \"{endpoint_id}\",\n"))
+            .unwrap_or_default();
         let version_script = r#"#!/bin/upa-lua v1
 local github_android = require("luaclass.github_android_apk")
 return github_android.package {
@@ -1868,9 +2036,10 @@ return github_android.package {
   owner = "f-droid",
   repo = "fdroidclient",
   asset = { include = "__ASSET_INCLUDE__" },
-}
+__ENDPOINT_LINE__}
 "#
-        .replace("__ASSET_INCLUDE__", asset_include);
+        .replace("__ASSET_INCLUDE__", asset_include)
+        .replace("__ENDPOINT_LINE__", &endpoint_line);
         fs::write(package_dir.join("9999.lua"), version_script).unwrap();
         register_official_repository(data_dir, &repo_root);
     }
