@@ -6,8 +6,9 @@
 //! task state.
 
 use crate::provider_cache::{
-    read_or_refresh_provider_response, ProviderCacheDiagnostic, ProviderCacheMode,
-    ProviderCacheOperationError, ProviderCacheRequest, ProviderCacheSource,
+    read_or_refresh_provider_response_with_provenance, source_response_sha512,
+    ProviderCacheDiagnostic, ProviderCacheMode, ProviderCacheOperationError, ProviderCacheRequest,
+    ProviderCacheSource, ProviderResponseRefresh,
 };
 use getter_providers::{parse_fdroid_index_xml, FdroidApp, FdroidCatalog, FdroidCatalogError};
 use getter_storage::{CacheDb, StorageError};
@@ -51,6 +52,8 @@ pub struct FdroidCatalogResult {
     pub cache_key: String,
     pub catalog: FdroidCatalog,
     pub source: ProviderCacheSource,
+    pub source_response_sha512: Vec<String>,
+    pub provenance_schema_version: Option<String>,
     pub diagnostics: Vec<ProviderCacheDiagnostic>,
 }
 
@@ -84,7 +87,7 @@ where
     F: FnOnce() -> Result<String, String>,
 {
     let cache_key = endpoint.cache_key();
-    let cache_result = read_or_refresh_provider_response(
+    let cache_result = read_or_refresh_provider_response_with_provenance(
         db,
         ProviderCacheRequest {
             cache_key: &cache_key,
@@ -93,17 +96,27 @@ where
         },
         || {
             let xml = refresh_xml()?;
+            let source_digest = source_response_sha512(xml.as_bytes());
             let catalog = parse_fdroid_index_xml(&xml).map_err(|source| source.to_string())?;
-            serde_json::to_value(catalog).map_err(|source| source.to_string())
+            let response_json =
+                serde_json::to_value(catalog).map_err(|source| source.to_string())?;
+            Ok(ProviderResponseRefresh {
+                response_json,
+                source_response_sha512: vec![source_digest],
+                freshness_json: json!({}),
+            })
         },
     )?;
-    let catalog = serde_json::from_value(cache_result.response.response_json)?;
+    let response = cache_result.response;
+    let catalog = serde_json::from_value(response.response_json)?;
 
     Ok(FdroidCatalogResult {
         endpoint,
         cache_key,
         catalog,
         source: cache_result.source,
+        source_response_sha512: response.source_response_sha512,
+        provenance_schema_version: response.provenance_schema_version,
         diagnostics: cache_result.diagnostics,
     })
 }

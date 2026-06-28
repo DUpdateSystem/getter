@@ -6,8 +6,9 @@
 //! live HTTP, Flutter/Kotlin provider parsing, downloader, or installer logic.
 
 use crate::provider_cache::{
-    read_or_refresh_provider_response, ProviderCacheDiagnostic, ProviderCacheMode,
-    ProviderCacheOperationError, ProviderCacheRequest, ProviderCacheSource,
+    read_or_refresh_provider_response_with_provenance, source_response_sha512,
+    ProviderCacheDiagnostic, ProviderCacheMode, ProviderCacheOperationError, ProviderCacheRequest,
+    ProviderCacheSource, ProviderResponseRefresh,
 };
 use getter_providers::{
     github_release_update_candidates, parse_github_releases_json, GithubAssetFilter,
@@ -47,6 +48,8 @@ pub struct GithubReleaseResult {
     pub cache_key: String,
     pub releases: Vec<GithubRelease>,
     pub source: ProviderCacheSource,
+    pub source_response_sha512: Vec<String>,
+    pub provenance_schema_version: Option<String>,
     pub diagnostics: Vec<ProviderCacheDiagnostic>,
 }
 
@@ -74,7 +77,7 @@ where
     F: FnOnce() -> Result<String, String>,
 {
     let cache_key = config.cache_key();
-    let cache_result = read_or_refresh_provider_response(
+    let cache_result = read_or_refresh_provider_response_with_provenance(
         db,
         ProviderCacheRequest {
             cache_key: &cache_key,
@@ -83,18 +86,28 @@ where
         },
         || {
             let json = refresh_json()?;
+            let source_digest = source_response_sha512(json.as_bytes());
             let releases =
                 parse_github_releases_json(&json).map_err(|source| source.to_string())?;
-            serde_json::to_value(releases).map_err(|source| source.to_string())
+            let response_json =
+                serde_json::to_value(releases).map_err(|source| source.to_string())?;
+            Ok(ProviderResponseRefresh {
+                response_json,
+                source_response_sha512: vec![source_digest],
+                freshness_json: serde_json::json!({}),
+            })
         },
     )?;
-    let releases = serde_json::from_value(cache_result.response.response_json)?;
+    let response = cache_result.response;
+    let releases = serde_json::from_value(response.response_json)?;
 
     Ok(GithubReleaseResult {
         config,
         cache_key,
         releases,
         source: cache_result.source,
+        source_response_sha512: response.source_response_sha512,
+        provenance_schema_version: response.provenance_schema_version,
         diagnostics: cache_result.diagnostics,
     })
 }
@@ -361,6 +374,9 @@ mod tests {
             cache_key,
             provider: GITHUB_PROVIDER_ID.to_owned(),
             response_json: serde_json::from_str(GITHUB_RELEASES_FIXTURE).unwrap(),
+            source_response_sha512: Vec::new(),
+            provenance_schema_version: None,
+            freshness_json: serde_json::json!({}),
         })
         .unwrap();
 

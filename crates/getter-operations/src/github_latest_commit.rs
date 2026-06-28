@@ -6,8 +6,9 @@
 //! actions, downloads, installer handoffs, or Flutter/Kotlin provider parsing.
 
 use crate::provider_cache::{
-    read_or_refresh_provider_response, ProviderCacheDiagnostic, ProviderCacheMode,
-    ProviderCacheOperationError, ProviderCacheRequest, ProviderCacheSource,
+    read_or_refresh_provider_response_with_provenance, source_response_sha512,
+    ProviderCacheDiagnostic, ProviderCacheMode, ProviderCacheOperationError, ProviderCacheRequest,
+    ProviderCacheSource, ProviderResponseRefresh,
 };
 use getter_providers::{
     github_latest_commit_live_revision, parse_github_commit_json, GithubCommit, GithubLiveRevision,
@@ -50,6 +51,8 @@ pub struct GithubLatestCommitResult {
     pub commit: GithubCommit,
     pub live_revision: GithubLiveRevision,
     pub source: ProviderCacheSource,
+    pub source_response_sha512: Vec<String>,
+    pub provenance_schema_version: Option<String>,
     pub diagnostics: Vec<ProviderCacheDiagnostic>,
 }
 
@@ -77,7 +80,7 @@ where
     F: FnOnce() -> Result<String, String>,
 {
     let cache_key = config.cache_key();
-    let cache_result = read_or_refresh_provider_response(
+    let cache_result = read_or_refresh_provider_response_with_provenance(
         db,
         ProviderCacheRequest {
             cache_key: &cache_key,
@@ -86,12 +89,20 @@ where
         },
         || {
             let json = refresh_json()?;
+            let source_digest = source_response_sha512(json.as_bytes());
             let commit = parse_github_commit_json(&json).map_err(|source| source.to_string())?;
             github_latest_commit_live_revision(&commit).map_err(|source| source.to_string())?;
-            serde_json::to_value(commit).map_err(|source| source.to_string())
+            let response_json =
+                serde_json::to_value(commit).map_err(|source| source.to_string())?;
+            Ok(ProviderResponseRefresh {
+                response_json,
+                source_response_sha512: vec![source_digest],
+                freshness_json: serde_json::json!({}),
+            })
         },
     )?;
-    let commit = serde_json::from_value(cache_result.response.response_json)?;
+    let response = cache_result.response;
+    let commit = serde_json::from_value(response.response_json)?;
     let live_revision = github_latest_commit_live_revision(&commit)?;
 
     Ok(GithubLatestCommitResult {
@@ -100,6 +111,8 @@ where
         commit,
         live_revision,
         source: cache_result.source,
+        source_response_sha512: response.source_response_sha512,
+        provenance_schema_version: response.provenance_schema_version,
         diagnostics: cache_result.diagnostics,
     })
 }

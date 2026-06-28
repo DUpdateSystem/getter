@@ -875,15 +875,58 @@ CREATE TABLE IF NOT EXISTS provider_responses (
     cache_key TEXT PRIMARY KEY,
     provider TEXT NOT NULL,
     response_json TEXT NOT NULL,
+    source_response_sha512_json TEXT NOT NULL DEFAULT '[]',
+    provenance_schema_version TEXT,
+    freshness_json TEXT NOT NULL DEFAULT '{}',
     fetched_at_unix INTEGER NOT NULL DEFAULT (unixepoch())
 );
 "#,
+        )?;
+        self.ensure_column(
+            "provider_responses",
+            "source_response_sha512_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        self.ensure_column("provider_responses", "provenance_schema_version", "TEXT")?;
+        self.ensure_column(
+            "provider_responses",
+            "freshness_json",
+            "TEXT NOT NULL DEFAULT '{}'",
         )?;
         self.conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(id) VALUES ('cache-v1')",
             [],
         )?;
+        self.conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(id) VALUES ('cache-provider-provenance-v1')",
+            [],
+        )?;
         Ok(())
+    }
+
+    fn ensure_column(
+        &self,
+        table: &'static str,
+        column: &'static str,
+        definition: &'static str,
+    ) -> Result<(), StorageError> {
+        let columns = self.table_columns(table)?;
+        if !columns.iter().any(|existing| existing == column) {
+            self.conn.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+            ))?;
+        }
+        Ok(())
+    }
+
+    fn table_columns(&self, table: &'static str) -> Result<Vec<String>, StorageError> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut columns = Vec::new();
+        for row in rows {
+            columns.push(row?);
+        }
+        Ok(columns)
     }
 
     pub fn upsert_provider_response(
@@ -891,16 +934,35 @@ CREATE TABLE IF NOT EXISTS provider_responses (
         response: &ProviderResponseUpsert,
     ) -> Result<StoredProviderResponse, StorageError> {
         let response_json = serde_json::to_string(&response.response_json)?;
+        let source_response_sha512_json = serde_json::to_string(&response.source_response_sha512)?;
+        let freshness_json = serde_json::to_string(&response.freshness_json)?;
         self.conn.execute(
             r#"
-INSERT INTO provider_responses(cache_key, provider, response_json)
-VALUES (?1, ?2, ?3)
+INSERT INTO provider_responses(
+    cache_key,
+    provider,
+    response_json,
+    source_response_sha512_json,
+    provenance_schema_version,
+    freshness_json
+)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 ON CONFLICT(cache_key) DO UPDATE SET
     provider = excluded.provider,
     response_json = excluded.response_json,
+    source_response_sha512_json = excluded.source_response_sha512_json,
+    provenance_schema_version = excluded.provenance_schema_version,
+    freshness_json = excluded.freshness_json,
     fetched_at_unix = unixepoch()
 "#,
-            params![response.cache_key, response.provider, response_json],
+            params![
+                response.cache_key,
+                response.provider,
+                response_json,
+                source_response_sha512_json,
+                response.provenance_schema_version,
+                freshness_json,
+            ],
         )?;
         self.provider_response(&response.cache_key)?.ok_or_else(|| {
             StorageError::Invariant(format!(
@@ -916,7 +978,14 @@ ON CONFLICT(cache_key) DO UPDATE SET
     ) -> Result<Option<StoredProviderResponse>, StorageError> {
         let mut stmt = self.conn.prepare(
             r#"
-SELECT cache_key, provider, response_json, fetched_at_unix
+SELECT
+    cache_key,
+    provider,
+    response_json,
+    source_response_sha512_json,
+    provenance_schema_version,
+    freshness_json,
+    fetched_at_unix
 FROM provider_responses
 WHERE cache_key = ?1
 "#,
@@ -927,16 +996,31 @@ WHERE cache_key = ?1
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
                 ))
             })
             .optional()?;
         row.map(
-            |(cache_key, provider, response_json, fetched_at_unix)| -> Result<_, StorageError> {
+            |(
+                cache_key,
+                provider,
+                response_json,
+                source_response_sha512_json,
+                provenance_schema_version,
+                freshness_json,
+                fetched_at_unix,
+            )|
+             -> Result<_, StorageError> {
                 Ok(StoredProviderResponse {
                     cache_key,
                     provider,
                     response_json: serde_json::from_str(&response_json)?,
+                    source_response_sha512: serde_json::from_str(&source_response_sha512_json)?,
+                    provenance_schema_version,
+                    freshness_json: serde_json::from_str(&freshness_json)?,
                     fetched_at_unix,
                 })
             },
@@ -1057,6 +1141,9 @@ pub struct ProviderResponseUpsert {
     pub cache_key: String,
     pub provider: String,
     pub response_json: Value,
+    pub source_response_sha512: Vec<String>,
+    pub provenance_schema_version: Option<String>,
+    pub freshness_json: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1064,6 +1151,9 @@ pub struct StoredProviderResponse {
     pub cache_key: String,
     pub provider: String,
     pub response_json: Value,
+    pub source_response_sha512: Vec<String>,
+    pub provenance_schema_version: Option<String>,
+    pub freshness_json: Value,
     pub fetched_at_unix: i64,
 }
 
@@ -1692,6 +1782,39 @@ VALUES ('android/org.fdroid.fdroid', '1.2.3');
     }
 
     #[test]
+    fn cache_db_migrates_legacy_provider_response_rows_without_provenance() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("cache.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                r#"
+CREATE TABLE provider_responses (
+    cache_key TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    fetched_at_unix INTEGER NOT NULL DEFAULT (unixepoch())
+);
+INSERT INTO provider_responses(cache_key, provider, response_json)
+VALUES ('fdroid:legacy:index', 'fdroid', '{"revision":"legacy"}');
+"#,
+            )
+            .unwrap();
+        }
+
+        let db = CacheDb::open(&db_path).unwrap();
+        let stored = db
+            .provider_response("fdroid:legacy:index")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(stored.response_json["revision"], "legacy");
+        assert_eq!(stored.source_response_sha512, Vec::<String>::new());
+        assert_eq!(stored.provenance_schema_version, None);
+        assert_eq!(stored.freshness_json, serde_json::json!({}));
+    }
+
+    #[test]
     fn cache_db_round_trips_provider_response_cache_entries() {
         let db = CacheDb::open_in_memory().unwrap();
 
@@ -1703,12 +1826,21 @@ VALUES ('android/org.fdroid.fdroid', '1.2.3');
                     "endpoint": "official",
                     "packages": ["org.fdroid.fdroid"]
                 }),
+                source_response_sha512: vec!["a".repeat(128)],
+                provenance_schema_version: Some("provider-response-provenance-v1".to_owned()),
+                freshness_json: serde_json::json!({ "etag": "fixture-etag" }),
             })
             .unwrap();
 
         assert_eq!(stored.cache_key, "fdroid:official:index:v1");
         assert_eq!(stored.provider, "fdroid");
         assert_eq!(stored.response_json["endpoint"], "official");
+        assert_eq!(stored.source_response_sha512, vec!["a".repeat(128)]);
+        assert_eq!(
+            stored.provenance_schema_version.as_deref(),
+            Some("provider-response-provenance-v1")
+        );
+        assert_eq!(stored.freshness_json["etag"], "fixture-etag");
         assert_eq!(
             db.provider_response("fdroid:official:index:v1")
                 .unwrap()
@@ -1724,6 +1856,9 @@ VALUES ('android/org.fdroid.fdroid', '1.2.3');
             cache_key: "github:f-droid/fdroidclient:releases".to_owned(),
             provider: "github".to_owned(),
             response_json: serde_json::json!({ "etag": "old" }),
+            source_response_sha512: Vec::new(),
+            provenance_schema_version: None,
+            freshness_json: serde_json::json!({}),
         })
         .unwrap();
 
@@ -1732,10 +1867,19 @@ VALUES ('android/org.fdroid.fdroid', '1.2.3');
                 cache_key: "github:f-droid/fdroidclient:releases".to_owned(),
                 provider: "github".to_owned(),
                 response_json: serde_json::json!({ "etag": "new" }),
+                source_response_sha512: vec!["b".repeat(128)],
+                provenance_schema_version: Some("provider-response-provenance-v1".to_owned()),
+                freshness_json: serde_json::json!({ "etag": "new" }),
             })
             .unwrap();
 
         assert_eq!(stored.response_json["etag"], "new");
+        assert_eq!(stored.source_response_sha512, vec!["b".repeat(128)]);
+        assert_eq!(
+            stored.provenance_schema_version.as_deref(),
+            Some("provider-response-provenance-v1")
+        );
+        assert_eq!(stored.freshness_json["etag"], "new");
         assert_eq!(
             db.provider_response("github:f-droid/fdroidclient:releases")
                 .unwrap()

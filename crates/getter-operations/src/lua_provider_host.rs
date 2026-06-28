@@ -15,7 +15,10 @@ use crate::github_releases::{
     DEFAULT_GITHUB_API_BASE_URL, GITHUB_ASSET_NOT_FOUND, GITHUB_PROVIDER_ID,
 };
 use crate::lua_runtime_hooks::load_runtime_hooks;
-use crate::provider_cache::{ProviderCacheDiagnostic, ProviderCacheMode, ProviderCacheSource};
+use crate::provider_cache::{
+    ProviderCacheDiagnostic, ProviderCacheMode, ProviderCacheSource,
+    PROVIDER_RESPONSE_PROVENANCE_SCHEMA_V1,
+};
 use getter_core::lua::{evaluate_package_directory_script_with_host_bindings, LuaPackageError};
 use getter_core::repository::{
     PackageDirectory, PackageDirectoryMetadata, PackageLuaPermission, PackageVersionScript,
@@ -284,14 +287,6 @@ pub fn stable_provider_package_eval_json(
             package_directory.path.join(PACKAGE_MANIFEST_FILE),
         )?)
     };
-    // Parsed provider cache currently has no source-body digest provenance.
-    // Non-free scripts therefore refetch/revalidate fixture bodies instead of
-    // accepting cache hits that cannot prove Manifest compatibility.
-    let provider_mode = if manifest.is_some() {
-        ProviderCacheMode::ForceRefresh
-    } else {
-        mode
-    };
     let package = evaluate_with_stable_provider_host(
         data_dir,
         &repository.id,
@@ -302,14 +297,14 @@ pub fn stable_provider_package_eval_json(
             fdroid: FdroidProviderHostConfig {
                 cache_db_path: data_dir.join("cache.db"),
                 endpoint,
-                mode: provider_mode,
+                mode,
                 index_xml: fdroid_index_xml,
                 manifest: manifest.clone(),
             },
             github: GithubProviderHostConfig {
                 cache_db_path: data_dir.join("cache.db"),
                 api_base_url: github_api_base_url,
-                mode: provider_mode,
+                mode,
                 releases_json: github_releases_json,
                 default_include_prereleases,
                 manifest,
@@ -594,7 +589,13 @@ fn fdroid_update_candidates_envelope(
         Ok(xml)
     })
     .map_err(mlua::Error::external)?;
-    reject_unproven_manifest_cache(&manifest, FDROID_PROVIDER_ID, result.source)?;
+    reject_unproven_manifest_cache(
+        &manifest,
+        FDROID_PROVIDER_ID,
+        result.source,
+        &result.source_response_sha512,
+        result.provenance_schema_version.as_deref(),
+    )?;
     let mut diagnostics = result
         .diagnostics
         .iter()
@@ -661,7 +662,13 @@ fn github_release_candidates_envelope(
         Ok(releases)
     })
     .map_err(mlua::Error::external)?;
-    reject_unproven_manifest_cache(&manifest, GITHUB_PROVIDER_ID, result.source)?;
+    reject_unproven_manifest_cache(
+        &manifest,
+        GITHUB_PROVIDER_ID,
+        result.source,
+        &result.source_response_sha512,
+        result.provenance_schema_version.as_deref(),
+    )?;
     let options = GithubReleaseCandidateOptions {
         include_prereleases: request
             .include_prereleases
@@ -880,7 +887,11 @@ impl PackageManifest {
     }
 
     fn allows_body(&self, body: &str) -> bool {
-        self.sha512.contains(&sha512_hex(body.as_bytes()))
+        self.allows_sha512(&sha512_hex(body.as_bytes()))
+    }
+
+    fn allows_sha512(&self, digest: &str) -> bool {
+        is_sha512_hex(digest) && self.sha512.contains(&digest.to_ascii_lowercase())
     }
 }
 
@@ -914,12 +925,30 @@ fn reject_unproven_manifest_cache(
     manifest: &Option<PackageManifest>,
     provider: &str,
     source: ProviderCacheSource,
+    source_response_sha512: &[String],
+    provenance_schema_version: Option<&str>,
 ) -> mlua::Result<()> {
-    if manifest.is_none() || source == ProviderCacheSource::Refreshed {
+    let Some(manifest) = manifest else {
+        return Ok(());
+    };
+    if source == ProviderCacheSource::Refreshed {
+        return Ok(());
+    }
+    if provenance_schema_version != Some(PROVIDER_RESPONSE_PROVENANCE_SCHEMA_V1)
+        || source_response_sha512.is_empty()
+    {
+        return Err(mlua::Error::external(format!(
+            "{PROVIDER_CACHE_PROVENANCE_MISSING}: {provider} provider cache lacks Manifest-compatible source response provenance"
+        )));
+    }
+    if source_response_sha512
+        .iter()
+        .all(|digest| manifest.allows_sha512(digest))
+    {
         return Ok(());
     }
     Err(mlua::Error::external(format!(
-        "{PROVIDER_CACHE_PROVENANCE_MISSING}: {provider} provider cache lacks Manifest-compatible source response provenance"
+        "{PROVIDER_RESPONSE_NOT_IN_MANIFEST}: {provider} provider cache source response digest is not listed in package Manifest"
     )))
 }
 
@@ -1034,7 +1063,7 @@ mod tests {
     use super::*;
     use getter_core::repository::{RepositoryMetadata, REPO_API_VERSION_V1};
     use getter_core::{RepositoryId, RepositoryPriority};
-    use getter_storage::CacheDb;
+    use getter_storage::{CacheDb, ProviderResponseUpsert};
     use serde_json::json;
     use std::fs;
 
@@ -1515,7 +1544,7 @@ end
     }
 
     #[test]
-    fn stable_provider_host_rejects_non_free_cache_hit_without_provenance() {
+    fn stable_provider_host_uses_manifest_compatible_cache_provenance() {
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path();
         write_stable_provider_package_fixture(
@@ -1536,6 +1565,33 @@ end
         )
         .unwrap();
 
+        let result = stable_provider_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/f-droid/app/org.fdroid.fdroid"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(result["provider_calls"][0]["source"], "cache");
+        assert_eq!(result["package"]["updates"][0]["version"], "1.20.0");
+    }
+
+    #[test]
+    fn stable_provider_host_rejects_non_free_cache_hit_without_provenance() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        write_stable_provider_package_fixture(
+            data_dir,
+            "android/f-droid/app/org.fdroid.fdroid",
+            stable_fdroid_script("org.fdroid.fdroid"),
+            Some(FDROID_INDEX_FIXTURE),
+            false,
+        );
+        write_fdroid_cache_response(data_dir, Vec::new(), None);
+
         let err = stable_provider_package_eval_json(
             data_dir,
             &json!({
@@ -1547,6 +1603,36 @@ end
         .unwrap_err();
 
         assert!(err.to_string().contains(PROVIDER_CACHE_PROVENANCE_MISSING));
+    }
+
+    #[test]
+    fn stable_provider_host_rejects_cache_provenance_digest_not_in_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        write_stable_provider_package_fixture(
+            data_dir,
+            "android/f-droid/app/org.fdroid.fdroid",
+            stable_fdroid_script("org.fdroid.fdroid"),
+            Some(FDROID_INDEX_FIXTURE),
+            false,
+        );
+        write_fdroid_cache_response(
+            data_dir,
+            vec![sha512_hex(b"different provider body")],
+            Some(PROVIDER_RESPONSE_PROVENANCE_SCHEMA_V1.to_owned()),
+        );
+
+        let err = stable_provider_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/f-droid/app/org.fdroid.fdroid"
+            })
+            .to_string(),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains(PROVIDER_RESPONSE_NOT_IN_MANIFEST));
     }
 
     #[test]
@@ -1748,6 +1834,26 @@ return package_version {{
 }}
 "#
         )
+    }
+
+    fn write_fdroid_cache_response(
+        data_dir: &std::path::Path,
+        source_response_sha512: Vec<String>,
+        provenance_schema_version: Option<String>,
+    ) {
+        let endpoint = FdroidEndpointConfig::default();
+        let catalog = getter_providers::parse_fdroid_index_xml(FDROID_INDEX_FIXTURE).unwrap();
+        CacheDb::open(data_dir.join("cache.db"))
+            .unwrap()
+            .upsert_provider_response(&ProviderResponseUpsert {
+                cache_key: endpoint.cache_key(),
+                provider: FDROID_PROVIDER_ID.to_owned(),
+                response_json: serde_json::to_value(catalog).unwrap(),
+                source_response_sha512,
+                provenance_schema_version,
+                freshness_json: json!({}),
+            })
+            .unwrap();
     }
 
     fn write_hook(data_dir: &std::path::Path, file_name: &str, source: &str) {

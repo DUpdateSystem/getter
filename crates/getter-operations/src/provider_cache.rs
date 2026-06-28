@@ -6,10 +6,12 @@
 //! diagnostics.
 
 use getter_storage::{CacheDb, ProviderResponseUpsert, StorageError, StoredProviderResponse};
-use serde_json::Value;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha512};
 
 pub const CACHE_REFRESH_FAILED: &str = "cache.refresh_failed";
 pub const USED_STALE_CACHE: &str = "used_stale_cache";
+pub const PROVIDER_RESPONSE_PROVENANCE_SCHEMA_V1: &str = "provider-response-provenance-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCacheMode {
@@ -29,6 +31,13 @@ pub struct ProviderCacheRequest<'a> {
     pub cache_key: &'a str,
     pub provider: &'a str,
     pub mode: ProviderCacheMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderResponseRefresh {
+    pub response_json: Value,
+    pub source_response_sha512: Vec<String>,
+    pub freshness_json: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +72,23 @@ pub fn read_or_refresh_provider_response<F>(
 where
     F: FnOnce() -> Result<Value, String>,
 {
+    read_or_refresh_provider_response_with_provenance(db, request, || {
+        refresh().map(|response_json| ProviderResponseRefresh {
+            response_json,
+            source_response_sha512: Vec::new(),
+            freshness_json: json!({}),
+        })
+    })
+}
+
+pub fn read_or_refresh_provider_response_with_provenance<F>(
+    db: &CacheDb,
+    request: ProviderCacheRequest<'_>,
+    refresh: F,
+) -> Result<ProviderCacheResult, ProviderCacheOperationError>
+where
+    F: FnOnce() -> Result<ProviderResponseRefresh, String>,
+{
     let cached = db.provider_response(request.cache_key)?;
     if request.mode == ProviderCacheMode::UseCached {
         if let Some(response) = cached {
@@ -75,11 +101,14 @@ where
     }
 
     match refresh() {
-        Ok(response_json) => {
+        Ok(refresh) => {
             let response = db.upsert_provider_response(&ProviderResponseUpsert {
                 cache_key: request.cache_key.to_owned(),
                 provider: request.provider.to_owned(),
-                response_json,
+                response_json: refresh.response_json,
+                source_response_sha512: refresh.source_response_sha512,
+                provenance_schema_version: Some(PROVIDER_RESPONSE_PROVENANCE_SCHEMA_V1.to_owned()),
+                freshness_json: refresh.freshness_json,
             })?;
             Ok(ProviderCacheResult {
                 response,
@@ -116,9 +145,16 @@ where
     }
 }
 
+pub fn source_response_sha512(body: impl AsRef<[u8]>) -> String {
+    let mut hasher = Sha512::new();
+    hasher.update(body.as_ref());
+    format!("{:x}", hasher.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use getter_storage::ProviderResponseUpsert;
     use serde_json::json;
     use std::cell::Cell;
 
@@ -129,6 +165,9 @@ mod tests {
             cache_key: "fdroid:official:index".to_owned(),
             provider: "fdroid".to_owned(),
             response_json: json!({ "revision": "cached" }),
+            source_response_sha512: Vec::new(),
+            provenance_schema_version: None,
+            freshness_json: json!({}),
         })
         .unwrap();
         let refreshed = Cell::new(false);
@@ -157,25 +196,42 @@ mod tests {
     fn cache_miss_refreshes_and_stores_provider_response() {
         let db = CacheDb::open_in_memory().unwrap();
 
-        let result = read_or_refresh_provider_response(
+        let result = read_or_refresh_provider_response_with_provenance(
             &db,
             ProviderCacheRequest {
                 cache_key: "github:f-droid/fdroidclient:releases",
                 provider: "github",
                 mode: ProviderCacheMode::UseCached,
             },
-            || Ok(json!({ "etag": "fresh" })),
+            || {
+                Ok(ProviderResponseRefresh {
+                    response_json: json!({ "etag": "fresh" }),
+                    source_response_sha512: vec![source_response_sha512("fresh body")],
+                    freshness_json: json!({ "etag": "fresh" }),
+                })
+            },
         )
         .unwrap();
 
         assert_eq!(result.source, ProviderCacheSource::Refreshed);
         assert_eq!(result.response.response_json["etag"], "fresh");
         assert_eq!(
-            db.provider_response("github:f-droid/fdroidclient:releases")
-                .unwrap()
-                .unwrap()
-                .response_json["etag"],
-            "fresh"
+            result.response.provenance_schema_version.as_deref(),
+            Some(PROVIDER_RESPONSE_PROVENANCE_SCHEMA_V1)
+        );
+        assert_eq!(
+            result.response.source_response_sha512,
+            vec![source_response_sha512("fresh body")]
+        );
+        assert_eq!(result.response.freshness_json["etag"], "fresh");
+        let cached = db
+            .provider_response("github:f-droid/fdroidclient:releases")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.response_json["etag"], "fresh");
+        assert_eq!(
+            cached.source_response_sha512,
+            result.response.source_response_sha512
         );
     }
 
@@ -186,6 +242,9 @@ mod tests {
             cache_key: "fdroid:official:index".to_owned(),
             provider: "fdroid".to_owned(),
             response_json: json!({ "revision": "old" }),
+            source_response_sha512: Vec::new(),
+            provenance_schema_version: None,
+            freshness_json: json!({}),
         })
         .unwrap();
 
@@ -218,6 +277,9 @@ mod tests {
             cache_key: "github:f-droid/fdroidclient:releases".to_owned(),
             provider: "github".to_owned(),
             response_json: json!({ "etag": "old" }),
+            source_response_sha512: Vec::new(),
+            provenance_schema_version: None,
+            freshness_json: json!({}),
         })
         .unwrap();
 
