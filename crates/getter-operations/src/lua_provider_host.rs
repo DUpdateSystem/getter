@@ -1585,6 +1585,40 @@ return fdroid.package {
     }
 
     #[test]
+    fn stable_provider_builtin_fdroid_accepts_configured_endpoint_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        write_stable_provider_package_fixture(
+            data_dir,
+            "android/f-droid/app/org.fdroid.fdroid",
+            r#"#!/bin/upa-lua v1
+local fdroid = require("luaclass.fdroid_android")
+return fdroid.package {
+  package_name = "org.fdroid.fdroid",
+  endpoint_id = "mirror",
+}
+"#,
+            Some(FDROID_INDEX_FIXTURE),
+            false,
+        );
+
+        let result = stable_provider_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/f-droid/app/org.fdroid.fdroid",
+                "fdroid_endpoint_id": "mirror",
+                "fdroid_index_xml": FDROID_INDEX_FIXTURE
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(result["provider_calls"][0]["endpoint_id"], "mirror");
+        assert_eq!(result["package"]["updates"][0]["source"], "fdroid");
+    }
+
+    #[test]
     fn stable_provider_builtin_fdroid_rejects_uninstalled_endpoint_id() {
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path();
@@ -1660,6 +1694,44 @@ return github_android.package {
         );
         assert_eq!(result["package"]["source_priority"], json!(["github"]));
         assert_eq!(result["package"]["updates"][0]["version"], "v1.20.0");
+        assert_eq!(result["package"]["updates"][0]["source"], "github");
+    }
+
+    #[test]
+    fn stable_provider_builtin_github_accepts_configured_endpoint_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        write_stable_provider_package_fixture(
+            data_dir,
+            "android/app/org.fdroid.fdroid",
+            r#"#!/bin/upa-lua v1
+local github_android = require("luaclass.github_android_apk")
+return github_android.package {
+  name = "F-Droid",
+  android_package = "org.fdroid.fdroid",
+  owner = "f-droid",
+  repo = "fdroidclient",
+  asset = { include = "[.]apk$" },
+  endpoint_id = "github-mirror",
+}
+"#,
+            Some(GITHUB_RELEASES_FIXTURE),
+            false,
+        );
+
+        let result = stable_provider_package_eval_json(
+            data_dir,
+            &json!({
+                "repository_id": "official",
+                "package_id": "android/app/org.fdroid.fdroid",
+                "github_endpoint_id": "github-mirror",
+                "github_releases_json": GITHUB_RELEASES_FIXTURE
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(result["provider_calls"][0]["endpoint_id"], "github-mirror");
         assert_eq!(result["package"]["updates"][0]["source"], "github");
     }
 
