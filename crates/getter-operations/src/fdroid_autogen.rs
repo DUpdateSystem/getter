@@ -454,26 +454,19 @@ mod tests {
         assert_eq!(record["input"]["endpoint_url"], "https://f-droid.org/repo");
         assert_eq!(record["input"]["package_name"], "org.fdroid.fdroid");
         let files = candidate["files"].as_array().unwrap();
-        assert!(files.iter().any(|file| file["relative_path"] == "9999.lua"
-            && file["content"]
-                .as_str()
-                .unwrap()
-                .contains("version_code = 1020000")));
-        assert!(files.iter().any(|file| file["relative_path"] == "9999.lua"
-            && file["content"]
-                .as_str()
-                .unwrap()
-                .contains("return fdroid.package")));
-        assert!(files.iter().any(|file| file["relative_path"] == "9999.lua"
-            && file["content"]
-                .as_str()
-                .unwrap()
-                .contains("package_name = \"org.fdroid.fdroid\"")));
-        assert!(files.iter().any(|file| file["relative_path"] == "9999.lua"
-            && file["content"]
-                .as_str()
-                .unwrap()
-                .contains("https://f-droid.org/repo/org.fdroid.fdroid_1020000.apk")));
+        let version_lua = files
+            .iter()
+            .find(|file| file["relative_path"] == "9999.lua")
+            .and_then(|file| file["content"].as_str())
+            .unwrap();
+        assert!(version_lua.contains("local catalog_package ="));
+        assert!(version_lua.contains("local fdroid = {}"));
+        assert!(version_lua.contains("version_code = 1020000"));
+        assert!(version_lua.contains("return fdroid.package"));
+        assert!(version_lua.contains("package_name = \"org.fdroid.fdroid\""));
+        assert!(version_lua.contains("https://f-droid.org/repo/org.fdroid.fdroid_1020000.apk"));
+        assert!(!version_lua.contains("require(\"luaclass.fdroid_android\")"));
+        assert!(!version_lua.contains("getter.provider"));
         assert!(files.iter().any(|file| file["relative_path"] == "Manifest"
             && file["content"].as_str().unwrap().is_empty()));
         assert_eq!(
