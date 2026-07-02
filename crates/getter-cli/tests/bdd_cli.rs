@@ -241,6 +241,18 @@ fn fixture_github_releases_response(world: &mut CliWorld, project: String) {
     world.github_releases = Some(releases);
 }
 
+#[given(expr = "the committed GitHub releases snapshot for {string}")]
+fn committed_github_releases_snapshot(world: &mut CliWorld, _project: String) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let releases = temp.path().join("github-releases-snapshot.json");
+    fs::write(
+        &releases,
+        include_str!("../../../tests/files/web/github_api_release.json"),
+    )
+    .expect("write committed GitHub releases snapshot");
+    world.github_releases = Some(releases);
+}
+
 #[given(expr = "a fixture GitHub commit response for {string}")]
 fn fixture_github_commit_response(world: &mut CliWorld, project: String) {
     let temp = world.temp.as_ref().expect("tempdir exists");
@@ -1010,6 +1022,49 @@ fn run_getter_autogen_fdroid_preview_for_inventory(world: &mut CliWorld) {
     world.json = None;
 }
 
+#[when(
+    expr = "I run getter autogen github preview for owner {string} repo {string} android package {string}"
+)]
+fn run_getter_autogen_github_preview(
+    world: &mut CliWorld,
+    owner: String,
+    repo: String,
+    android_package: String,
+) {
+    let releases = world
+        .github_releases
+        .as_ref()
+        .expect("GitHub releases fixture exists");
+    let output = run_getter(
+        world,
+        [
+            "autogen".to_owned(),
+            "github".to_owned(),
+            "preview".to_owned(),
+            "--owner".to_owned(),
+            owner,
+            "--repo".to_owned(),
+            repo.clone(),
+            "--android-package".to_owned(),
+            android_package,
+            "--display-name".to_owned(),
+            "UpgradeAll".to_owned(),
+            "--releases".to_owned(),
+            releases.to_string_lossy().to_string(),
+            "--asset-include".to_owned(),
+            if repo == "UpgradeAll" {
+                "UpgradeAll_.*[.]apk$".to_owned()
+            } else {
+                r"\.apk$".to_owned()
+            },
+            "--asset-exclude".to_owned(),
+            "debug".to_owned(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
 #[when(expr = "I run getter provider github releases for owner {string} repo {string}")]
 fn run_getter_provider_github_releases(world: &mut CliWorld, owner: String, repo: String) {
     let releases = world
@@ -1056,6 +1111,27 @@ fn run_getter_provider_github_latest_commit(world: &mut CliWorld, owner: String,
             repo,
             "--commit".to_owned(),
             commit.to_string_lossy().to_string(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter autogen github apply for that preview with accept-all")]
+fn run_getter_autogen_github_apply_accept_all(world: &mut CliWorld) {
+    let preview = world
+        .autogen_preview
+        .as_ref()
+        .expect("autogen preview exists");
+    let output = run_getter(
+        world,
+        [
+            "autogen".to_owned(),
+            "github".to_owned(),
+            "apply".to_owned(),
+            "--preview".to_owned(),
+            preview.to_string_lossy().to_string(),
+            "--accept-all".to_owned(),
         ],
     );
     world.output = Some(output);
@@ -1327,6 +1403,30 @@ fn runtime_script_output_removes_completed_task(world: &mut CliWorld) {
     assert_eq!(steps[4]["data"]["task_id"], "task-1");
     assert_eq!(steps[5]["operation"], "task_clean");
     assert_eq!(steps[5]["data"]["tasks"].as_array().unwrap().len(), 0);
+}
+
+#[then(
+    expr = "the provider-backed GitHub update check selects version {string} with artifact {string}"
+)]
+fn provider_backed_github_update_check_selects_version_with_artifact(
+    world: &mut CliWorld,
+    version: String,
+    artifact_name: String,
+) {
+    let json = current_json(world);
+    assert_eq!(json["command"], "runtime script");
+    let steps = json["data"]["steps"].as_array().expect("runtime steps");
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0]["operation"], "update_check_package_issue_action");
+    let data = &steps[0]["data"];
+    assert_eq!(data["provider_calls"][0]["provider"], "github");
+    assert_eq!(data["provider_calls"][0]["source"], "cache");
+    assert_eq!(data["update"]["status"], "update_available");
+    assert_eq!(data["update"]["selected"]["candidate"]["version"], version);
+    assert_eq!(
+        data["update"]["selected"]["candidate"]["artifacts"][0]["name"],
+        artifact_name
+    );
 }
 
 #[then(expr = "the provider-backed F-Droid update check selects version_code {int}")]
@@ -1617,6 +1717,23 @@ fn update_check_has_no_selected_update(world: &mut CliWorld) {
     assert_eq!(json["data"]["actions"], Value::Array(Vec::new()));
 }
 
+#[then(expr = "the GitHub autogen preview contains candidate {string}")]
+fn github_autogen_preview_contains_candidate(world: &mut CliWorld, package_id: String) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "autogen github preview");
+    assert_eq!(json["data"]["operation"], "github.autogen.preview");
+    let candidates = json["data"]["candidates"]
+        .as_array()
+        .expect("candidates array");
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate["package_id"].as_str() == Some(package_id.as_str())),
+        "preview should contain {package_id}: {candidates:?}"
+    );
+}
+
 #[then(expr = "the F-Droid autogen preview contains candidate {string}")]
 fn fdroid_autogen_preview_contains_candidate(world: &mut CliWorld, package_id: String) {
     let json = current_json(world);
@@ -1724,6 +1841,25 @@ fn github_latest_commit_provider_returns_live_revision(world: &mut CliWorld, rev
     assert!(json["data"].get("actions").is_none());
     assert!(json["data"].get("action_id").is_none());
     assert!(json["data"]["diagnostics"].as_array().unwrap().is_empty());
+}
+
+#[then(expr = "the autogen repository contains generated GitHub package {string}")]
+fn autogen_repository_contains_generated_github_package(world: &mut CliWorld, package_id: String) {
+    autogen_repository_contains_generated_package(world, package_id.clone());
+    let path = autogen_repo_path(world).join(package_relative_path(&package_id));
+    let content = fs::read_to_string(path.join("9999.lua")).expect("generated package readable");
+    assert!(content.contains("local github_android = require(\"luaclass.github_android_apk\")"));
+    assert!(content.contains("return github_android.package"));
+    assert!(content.contains("android_package = \"net.xzos.upgradeall\""));
+    assert!(content.contains("owner = \"DUpdateSystem\""));
+    assert!(content.contains("repo = \"UpgradeAll\""));
+    assert!(!content.contains("releases_json"));
+    assert!(!content.contains("getter.provider"));
+    let manifest = fs::read_to_string(path.join("Manifest")).expect("generated Manifest readable");
+    assert!(
+        manifest.contains("github-releases.json"),
+        "generated GitHub Manifest should name provider source provenance: {manifest}"
+    );
 }
 
 #[then(expr = "the autogen repository contains generated F-Droid package {string}")]

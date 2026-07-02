@@ -23,6 +23,7 @@ use getter_downloader::{
 };
 use getter_operations::autogen::{self, AutogenAcceptance, AutogenOperationError};
 use getter_operations::fdroid_autogen;
+use getter_operations::github_autogen;
 use getter_operations::github_latest_commit::{self, GithubLatestCommitOperationError};
 use getter_operations::github_releases::{self, GithubReleaseOperationError};
 use getter_operations::legacy_room::{self, LegacyRoomOperationError};
@@ -135,6 +136,20 @@ pub enum CliCommand {
         package_names: Vec<String>,
     },
     AutogenFdroidApply {
+        preview: PathBuf,
+        acceptance: AutogenAcceptance,
+    },
+    AutogenGithubPreview {
+        owner: String,
+        repo: String,
+        android_package: String,
+        display_name: Option<String>,
+        releases: PathBuf,
+        asset_include: Option<String>,
+        asset_exclude: Option<String>,
+        include_prereleases: bool,
+    },
+    AutogenGithubApply {
         preview: PathBuf,
         acceptance: AutogenAcceptance,
     },
@@ -603,6 +618,32 @@ where
                 acceptance: parse_autogen_acceptance(rest)?,
             }
         }
+        [domain, subject, action, rest @ ..]
+            if domain == "autogen" && subject == "github" && action == "preview" =>
+        {
+            let args = parse_autogen_github_preview_args(rest)?;
+            CliCommand::AutogenGithubPreview {
+                owner: args.owner,
+                repo: args.repo,
+                android_package: args.android_package,
+                display_name: args.display_name,
+                releases: args.releases,
+                asset_include: args.asset_include,
+                asset_exclude: args.asset_exclude,
+                include_prereleases: args.include_prereleases,
+            }
+        }
+        [domain, subject, action, flag, preview, rest @ ..]
+            if domain == "autogen"
+                && subject == "github"
+                && action == "apply"
+                && flag == "--preview" =>
+        {
+            CliCommand::AutogenGithubApply {
+                preview: PathBuf::from(preview),
+                acceptance: parse_autogen_acceptance(rest)?,
+            }
+        }
         [domain, provider, action, rest @ ..]
             if domain == "provider" && provider == "github" && action == "releases" =>
         {
@@ -862,6 +903,53 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
             let db = open_main_db(&invocation.data_dir)?;
             let preview = read_autogen_preview(&preview, "fdroid.autogen.preview")?;
             fdroid_autogen::apply_fdroid_preview_json(
+                &invocation.data_dir,
+                &db,
+                &preview,
+                &acceptance,
+            )
+            .map_err(CliError::from)
+        }
+        CliCommand::AutogenGithubPreview {
+            owner,
+            repo,
+            android_package,
+            display_name,
+            releases,
+            asset_include,
+            asset_exclude,
+            include_prereleases,
+        } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            let cache_db = open_cache_db(&invocation.data_dir)?;
+            let releases_json = read_github_releases_fixture(&releases)?;
+            let request = json!({
+                "owner": owner,
+                "repo": repo,
+                "android_package": android_package,
+                "display_name": display_name,
+                "releases_json": releases_json,
+                "include_prereleases": include_prereleases,
+                "asset": {
+                    "include": asset_include,
+                    "exclude": asset_exclude,
+                },
+            });
+            github_autogen::preview_github_android_package_json(
+                &invocation.data_dir,
+                &db,
+                &cache_db,
+                &request.to_string(),
+            )
+            .map_err(CliError::from)
+        }
+        CliCommand::AutogenGithubApply {
+            preview,
+            acceptance,
+        } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            let preview = read_autogen_preview(&preview, "github.autogen.preview")?;
+            github_autogen::apply_github_preview_json(
                 &invocation.data_dir,
                 &db,
                 &preview,
@@ -1138,6 +1226,18 @@ fn parse_fdroid_autogen_preview_args(
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
+struct AutogenGithubPreviewArgs {
+    owner: String,
+    repo: String,
+    android_package: String,
+    display_name: Option<String>,
+    releases: PathBuf,
+    asset_include: Option<String>,
+    asset_exclude: Option<String>,
+    include_prereleases: bool,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
 struct ProviderGithubReleasesArgs {
     owner: String,
     repo: String,
@@ -1155,6 +1255,128 @@ struct ProviderGithubLatestCommitArgs {
     reference: Option<String>,
     commit: PathBuf,
     refresh: bool,
+}
+
+fn parse_autogen_github_preview_args(
+    args: &[String],
+) -> Result<AutogenGithubPreviewArgs, CliError> {
+    let mut parsed = AutogenGithubPreviewArgs::default();
+    let mut position = 0;
+    while position < args.len() {
+        match args[position].as_str() {
+            "--owner" => {
+                parsed.owner = args
+                    .get(position + 1)
+                    .ok_or_else(|| {
+                        CliError::Usage(
+                            "autogen github preview --owner requires an owner".to_owned(),
+                        )
+                    })?
+                    .clone();
+                position += 2;
+            }
+            "--repo" => {
+                parsed.repo = args
+                    .get(position + 1)
+                    .ok_or_else(|| {
+                        CliError::Usage("autogen github preview --repo requires a repo".to_owned())
+                    })?
+                    .clone();
+                position += 2;
+            }
+            "--android-package" => {
+                parsed.android_package = args
+                    .get(position + 1)
+                    .ok_or_else(|| {
+                        CliError::Usage(
+                            "autogen github preview --android-package requires a package name"
+                                .to_owned(),
+                        )
+                    })?
+                    .clone();
+                position += 2;
+            }
+            "--display-name" => {
+                parsed.display_name = Some(
+                    args.get(position + 1)
+                        .ok_or_else(|| {
+                            CliError::Usage(
+                                "autogen github preview --display-name requires a name".to_owned(),
+                            )
+                        })?
+                        .clone(),
+                );
+                position += 2;
+            }
+            "--releases" => {
+                let path = args.get(position + 1).ok_or_else(|| {
+                    CliError::Usage(
+                        "autogen github preview --releases requires a fixture path".to_owned(),
+                    )
+                })?;
+                parsed.releases = PathBuf::from(path);
+                position += 2;
+            }
+            "--asset-include" => {
+                parsed.asset_include = Some(
+                    args.get(position + 1)
+                        .ok_or_else(|| {
+                            CliError::Usage(
+                                "autogen github preview --asset-include requires a regex"
+                                    .to_owned(),
+                            )
+                        })?
+                        .clone(),
+                );
+                position += 2;
+            }
+            "--asset-exclude" => {
+                parsed.asset_exclude = Some(
+                    args.get(position + 1)
+                        .ok_or_else(|| {
+                            CliError::Usage(
+                                "autogen github preview --asset-exclude requires a regex"
+                                    .to_owned(),
+                            )
+                        })?
+                        .clone(),
+                );
+                position += 2;
+            }
+            "--include-prereleases" => {
+                parsed.include_prereleases = true;
+                position += 1;
+            }
+            other => {
+                return Err(CliError::Usage(format!(
+                    "unsupported autogen github preview argument '{other}'"
+                )))
+            }
+        }
+    }
+
+    if parsed.owner.trim().is_empty() {
+        return Err(CliError::Usage(
+            "autogen github preview requires --owner <owner>".to_owned(),
+        ));
+    }
+    if parsed.repo.trim().is_empty() {
+        return Err(CliError::Usage(
+            "autogen github preview requires --repo <repo>".to_owned(),
+        ));
+    }
+    if parsed.android_package.trim().is_empty() {
+        return Err(CliError::Usage(
+            "autogen github preview requires --android-package <package-name>".to_owned(),
+        ));
+    }
+    if parsed.releases.as_os_str().is_empty() {
+        return Err(CliError::Usage(
+            "autogen github preview requires --releases <fixture.json>".to_owned(),
+        ));
+    }
+
+    Ok(parsed)
 }
 
 fn parse_provider_github_releases_args(
@@ -2027,7 +2249,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> [--package <package-name>...] [--inventory <installed.json>]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|provider github releases --owner <owner> --repo <repo> --releases <fixture.json> [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases] [--refresh]|provider github latest-commit --owner <owner> --repo <repo> --commit <fixture.json> [--ref <ref>] [--refresh]|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
+    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> [--package <package-name>...] [--inventory <installed.json>]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen github preview --owner <owner> --repo <repo> --android-package <package-name> --releases <fixture.json> [--display-name <name>] [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases]|autogen github apply --preview <preview.json> (--accept-all|--accept <package-id>...)|provider github releases --owner <owner> --repo <repo> --releases <fixture.json> [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases] [--refresh]|provider github latest-commit --owner <owner> --repo <repo> --commit <fixture.json> [--ref <ref>] [--refresh]|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -2096,6 +2318,8 @@ impl CliCommand {
             Self::AutogenCleanupApply { .. } => "autogen cleanup apply",
             Self::AutogenFdroidPreview { .. } => "autogen fdroid preview",
             Self::AutogenFdroidApply { .. } => "autogen fdroid apply",
+            Self::AutogenGithubPreview { .. } => "autogen github preview",
+            Self::AutogenGithubApply { .. } => "autogen github apply",
             Self::ProviderGithubReleases { .. } => "provider github releases",
             Self::ProviderGithubLatestCommit { .. } => "provider github latest-commit",
             Self::LegacyImportRoomBundle { .. } => "legacy import-room-bundle",
@@ -2184,6 +2408,72 @@ mod tests {
                 reference: Some("main".to_owned()),
                 commit: PathBuf::from("/tmp/commit.json"),
                 refresh: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_autogen_github_preview_and_apply_commands() {
+        let preview = parse_args([
+            "getter",
+            "--data-dir",
+            "/tmp/ua-getter",
+            "autogen",
+            "github",
+            "preview",
+            "--owner",
+            "DUpdateSystem",
+            "--repo",
+            "UpgradeAll",
+            "--android-package",
+            "net.xzos.upgradeall",
+            "--display-name",
+            "UpgradeAll",
+            "--releases",
+            "/tmp/releases.json",
+            "--asset-include",
+            "UpgradeAll_.*[.]apk$",
+            "--asset-exclude",
+            "debug",
+            "--include-prereleases",
+        ])
+        .unwrap();
+        assert_eq!(
+            preview.command,
+            CliCommand::AutogenGithubPreview {
+                owner: "DUpdateSystem".to_owned(),
+                repo: "UpgradeAll".to_owned(),
+                android_package: "net.xzos.upgradeall".to_owned(),
+                display_name: Some("UpgradeAll".to_owned()),
+                releases: PathBuf::from("/tmp/releases.json"),
+                asset_include: Some("UpgradeAll_.*[.]apk$".to_owned()),
+                asset_exclude: Some("debug".to_owned()),
+                include_prereleases: true,
+            }
+        );
+
+        let apply = parse_args([
+            "getter",
+            "--data-dir",
+            "/tmp/ua-getter",
+            "autogen",
+            "github",
+            "apply",
+            "--preview",
+            "/tmp/preview.json",
+            "--accept",
+            "android/github/DUpdateSystem/UpgradeAll/net.xzos.upgradeall",
+        ])
+        .unwrap();
+        assert_eq!(
+            apply.command,
+            CliCommand::AutogenGithubApply {
+                preview: PathBuf::from("/tmp/preview.json"),
+                acceptance: AutogenAcceptance::Accept(vec![
+                    "android/github/DUpdateSystem/UpgradeAll/net.xzos.upgradeall"
+                        .parse()
+                        .unwrap(),
+                ]),
             }
         );
     }

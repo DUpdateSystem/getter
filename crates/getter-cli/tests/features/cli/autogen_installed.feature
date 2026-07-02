@@ -25,6 +25,25 @@ Feature: Installed app autogen
     And the output is valid JSON
     And the provider-backed F-Droid update check selects version_code 1020000
 
+  Scenario: User applies GitHub Android APK autogen and validates the generated package directory
+    Given an initialized getter data directory
+    And the committed GitHub releases snapshot for "DUpdateSystem/UpgradeAll"
+    When I run getter autogen github preview for owner "DUpdateSystem" repo "UpgradeAll" android package "net.xzos.upgradeall"
+    Then the command succeeds
+    And the output is valid JSON
+    And the GitHub autogen preview contains candidate "android/github/DUpdateSystem/UpgradeAll/net.xzos.upgradeall"
+    And the autogen repository has not been written
+    And I save the autogen preview to a file
+    When I run getter autogen github apply for that preview with accept-all
+    Then the command succeeds
+    And the autogen repository contains generated GitHub package "android/github/DUpdateSystem/UpgradeAll/net.xzos.upgradeall"
+    And the app list contains autogen tracked package "android/github/DUpdateSystem/UpgradeAll/net.xzos.upgradeall"
+    Given a runtime script checking generated package "android/github/DUpdateSystem/UpgradeAll/net.xzos.upgradeall" at "0.12.0"
+    When I run getter runtime script for that script
+    Then the command succeeds
+    And the output is valid JSON
+    And the provider-backed GitHub update check selects version "0.13-beta.4" with artifact "UpgradeAll_0.13-beta.4.apk"
+
   Scenario: User previews F-Droid autogen from installed inventory
     Given an initialized getter data directory
     And a fixture F-Droid catalog index with package "org.fdroid.fdroid"
