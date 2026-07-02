@@ -30,6 +30,30 @@ impl SealedActionPlan {
             .iter()
             .any(|action| matches!(action, UpdateAction::Install { .. }))
     }
+
+    fn download_action(&self) -> Option<RuntimeDownloadPlan> {
+        self.actions.iter().find_map(|action| match action {
+            UpdateAction::Download { url, file_name } => Some(RuntimeDownloadPlan {
+                url: url.clone(),
+                file_name: file_name.clone(),
+            }),
+            _ => None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeDownloadPlan {
+    pub url: String,
+    pub file_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadedFile {
+    pub file_name: String,
+    pub local_path: String,
+    pub size_bytes: u64,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +73,8 @@ pub struct TaskSnapshot {
     pub capabilities: TaskCapabilities,
     #[serde(default)]
     pub current_diagnostic: Option<TaskDiagnostic>,
+    #[serde(default)]
+    pub downloaded_file: Option<DownloadedFile>,
     pub updated_at: u64,
 }
 
@@ -293,6 +319,13 @@ impl GetterRuntime {
             .collect()
     }
 
+    pub fn download_plan(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<RuntimeDownloadPlan>, RuntimeError> {
+        Ok(self.task_ref(task_id)?.plan.download_action())
+    }
+
     pub fn start_task(&mut self, task_id: &str) -> Result<TaskSnapshot, RuntimeError> {
         {
             let clock = self.tick();
@@ -329,27 +362,34 @@ impl GetterRuntime {
     }
 
     pub fn complete_download(&mut self, task_id: &str) -> Result<TaskSnapshot, RuntimeError> {
-        let needs_install = {
-            let task = self.task_ref(task_id)?;
-            task.plan.has_install_action()
-        };
+        self.complete_download_internal(task_id, None)
+    }
 
-        if needs_install {
-            self.enter_install_handoff(task_id)
-        } else {
-            {
-                let clock = self.tick();
-                let task = self.task_mut(task_id)?;
-                if !matches!(
-                    task.status,
-                    RuntimeTaskStatus::Queued | RuntimeTaskStatus::Running
-                ) {
-                    return Err(RuntimeError::RetryNotSupported(task_id.to_owned()));
-                }
-                task.complete(clock);
-            }
-            self.snapshot_and_notify(task_id)
+    pub fn complete_downloaded_file(
+        &mut self,
+        task_id: &str,
+        downloaded_file: DownloadedFile,
+    ) -> Result<TaskSnapshot, RuntimeError> {
+        self.complete_download_internal(task_id, Some(downloaded_file))
+    }
+
+    pub fn fail_download(
+        &mut self,
+        task_id: &str,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Result<TaskSnapshot, RuntimeError> {
+        {
+            let clock = self.tick();
+            let task = self.task_mut(task_id)?;
+            task.fail(
+                clock,
+                TaskPhase::with_reason(TaskPhaseCategory::Failed, TaskPhaseReason::DownloadFailed),
+                TaskDiagnostic::error(code, message),
+                RetryResume::Download,
+            );
         }
+        self.snapshot_and_notify(task_id)
     }
 
     pub fn pause_task(&mut self, task_id: &str) -> Result<TaskSnapshot, RuntimeError> {
@@ -492,6 +532,43 @@ impl GetterRuntime {
             .collect()
     }
 
+    fn complete_download_internal(
+        &mut self,
+        task_id: &str,
+        downloaded_file: Option<DownloadedFile>,
+    ) -> Result<TaskSnapshot, RuntimeError> {
+        let needs_install = {
+            let task = self.task_ref(task_id)?;
+            task.plan.has_install_action()
+        };
+
+        {
+            let clock = self.tick();
+            let task = self.task_mut(task_id)?;
+            if !matches!(
+                task.status,
+                RuntimeTaskStatus::Queued | RuntimeTaskStatus::Running
+            ) {
+                return Err(RuntimeError::RetryNotSupported(task_id.to_owned()));
+            }
+            if let Some(downloaded_file) = downloaded_file {
+                task.downloaded_file = Some(downloaded_file);
+            }
+            task.updated_at = clock;
+        }
+
+        if needs_install {
+            self.enter_install_handoff(task_id)
+        } else {
+            {
+                let clock = self.tick();
+                let task = self.task_mut(task_id)?;
+                task.complete(clock);
+            }
+            self.snapshot_and_notify(task_id)
+        }
+    }
+
     fn enter_install_handoff(&mut self, task_id: &str) -> Result<TaskSnapshot, RuntimeError> {
         let package_id = self.task_ref(task_id)?.plan.package_id.clone();
         if self.package_locks.contains_key(&package_id) {
@@ -575,6 +652,7 @@ struct RuntimeTask {
     phase: TaskPhase,
     progress: Option<TaskProgress>,
     current_diagnostic: Option<TaskDiagnostic>,
+    downloaded_file: Option<DownloadedFile>,
     retry_resume: RetryResume,
     updated_at: u64,
 }
@@ -588,6 +666,7 @@ impl RuntimeTask {
             phase: TaskPhase::new(TaskPhaseCategory::Queued),
             progress: None,
             current_diagnostic: None,
+            downloaded_file: None,
             retry_resume: RetryResume::Download,
             updated_at,
         }
@@ -602,6 +681,7 @@ impl RuntimeTask {
             progress: self.progress.clone(),
             capabilities: self.capabilities(),
             current_diagnostic: self.current_diagnostic.clone(),
+            downloaded_file: self.downloaded_file.clone(),
             updated_at: self.updated_at,
         }
     }
@@ -641,6 +721,7 @@ impl RuntimeTask {
             total: None,
         });
         self.current_diagnostic = None;
+        self.downloaded_file = None;
         self.updated_at = updated_at;
     }
 
@@ -711,6 +792,36 @@ mod tests {
         let error = runtime.submit_action(&action.action_id).unwrap_err();
         assert_eq!(error.code(), "action.not_found");
         assert_eq!(notifications.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn runtime_exposes_download_plan_and_downloaded_file_snapshot() {
+        let mut runtime = GetterRuntime::new();
+        let task_id = submit_plan(&mut runtime, plan_without_install("generic/example"));
+
+        let download = runtime.download_plan(&task_id).unwrap().unwrap();
+        assert_eq!(download.url, "https://example.invalid/file.bin");
+        assert_eq!(download.file_name, "file.bin");
+
+        runtime.start_task(&task_id).unwrap();
+        let completed = runtime
+            .complete_downloaded_file(
+                &task_id,
+                DownloadedFile {
+                    file_name: "file.bin".to_owned(),
+                    local_path: "/tmp/getter/downloads/task-1/file.bin".to_owned(),
+                    size_bytes: 11,
+                    sha256: "sha256-test".to_owned(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(completed.status, RuntimeTaskStatus::Completed);
+        assert_eq!(completed.downloaded_file.as_ref().unwrap().size_bytes, 11);
+        assert_eq!(
+            completed.downloaded_file.as_ref().unwrap().local_path,
+            "/tmp/getter/downloads/task-1/file.bin"
+        );
     }
 
     #[test]

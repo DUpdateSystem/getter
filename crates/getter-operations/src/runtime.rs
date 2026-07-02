@@ -6,6 +6,10 @@
 //! persisted task state or duplicating task/control semantics in Flutter or
 //! Android glue.
 
+use crate::download::{
+    retry_download_task, submit_action_and_download, RuntimeDownloadOperationError,
+    RuntimeDownloadTransport, UreqRuntimeDownloadTransport,
+};
 #[cfg(feature = "lua")]
 use crate::github_releases::{GithubReleaseTransport, UreqGithubReleaseTransport};
 #[cfg(feature = "lua")]
@@ -62,6 +66,14 @@ pub enum RuntimeOperationError {
     ProviderPackageEval(#[from] LuaProviderHostOperationError),
     #[error("runtime response serialization failed: {0}")]
     Serialize(String),
+}
+
+impl From<RuntimeDownloadOperationError> for RuntimeOperationError {
+    fn from(error: RuntimeDownloadOperationError) -> Self {
+        match error {
+            RuntimeDownloadOperationError::Runtime(error) => Self::Runtime(error),
+        }
+    }
 }
 
 impl RuntimeOperationError {
@@ -223,6 +235,37 @@ pub fn submit_action_json(
     task_json(runtime.submit_action(&request.action_id)?)
 }
 
+pub fn submit_action_and_download_json(
+    runtime: &mut GetterRuntime,
+    data_dir: &std::path::Path,
+    request_json: &str,
+) -> Result<Value, RuntimeOperationError> {
+    submit_action_and_download_json_with_transport(
+        runtime,
+        data_dir,
+        request_json,
+        &UreqRuntimeDownloadTransport::new(),
+    )
+}
+
+pub fn submit_action_and_download_json_with_transport<T>(
+    runtime: &mut GetterRuntime,
+    data_dir: &std::path::Path,
+    request_json: &str,
+    transport: &T,
+) -> Result<Value, RuntimeOperationError>
+where
+    T: RuntimeDownloadTransport + ?Sized,
+{
+    let request: SubmitActionRequest = parse_request(request_json)?;
+    task_json(submit_action_and_download(
+        runtime,
+        data_dir,
+        &request.action_id,
+        transport,
+    )?)
+}
+
 pub fn task_get_json(
     runtime: &GetterRuntime,
     request_json: &str,
@@ -314,6 +357,37 @@ pub fn task_retry_json(
     task_json(runtime.retry_task(&request.task_id)?)
 }
 
+pub fn task_retry_download_json(
+    runtime: &mut GetterRuntime,
+    data_dir: &std::path::Path,
+    request_json: &str,
+) -> Result<Value, RuntimeOperationError> {
+    task_retry_download_json_with_transport(
+        runtime,
+        data_dir,
+        request_json,
+        &UreqRuntimeDownloadTransport::new(),
+    )
+}
+
+pub fn task_retry_download_json_with_transport<T>(
+    runtime: &mut GetterRuntime,
+    data_dir: &std::path::Path,
+    request_json: &str,
+    transport: &T,
+) -> Result<Value, RuntimeOperationError>
+where
+    T: RuntimeDownloadTransport + ?Sized,
+{
+    let request: TaskIdRequest = parse_request(request_json)?;
+    task_json(retry_download_task(
+        runtime,
+        data_dir,
+        &request.task_id,
+        transport,
+    )?)
+}
+
 pub fn task_remove_json(
     runtime: &mut GetterRuntime,
     request_json: &str,
@@ -375,6 +449,7 @@ struct RegisteredPackageUpdateActionRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SubmitActionRequest {
     action_id: String,
 }
@@ -541,9 +616,7 @@ mod tests {
     use getter_storage::{CacheDb, ProviderResponseUpsert};
     #[cfg(feature = "lua")]
     use sha2::{Digest, Sha512};
-    #[cfg(feature = "lua")]
     use std::cell::RefCell;
-    #[cfg(feature = "lua")]
     use std::fs;
     #[cfg(feature = "lua")]
     use std::rc::Rc;
@@ -1082,6 +1155,57 @@ mod tests {
     }
 
     #[test]
+    fn json_submit_and_download_writes_file_through_injected_transport() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut runtime = GetterRuntime::new();
+        let issued = issue_action(&mut runtime, plan_without_install("generic/example"));
+        let action_id = issued["action_id"].as_str().unwrap();
+        let transport = RecordingDownloadTransport {
+            requests: RefCell::new(Vec::new()),
+        };
+
+        let completed = submit_action_and_download_json_with_transport(
+            &mut runtime,
+            temp.path(),
+            &json!({ "action_id": action_id }).to_string(),
+            &transport,
+        )
+        .unwrap();
+
+        assert_eq!(
+            transport.requests.borrow().as_slice(),
+            &["https://example.invalid/archive.zip"]
+        );
+        assert_eq!(completed["status"], "completed");
+        assert_eq!(completed["downloaded_file"]["file_name"], "archive.zip");
+        assert_eq!(completed["downloaded_file"]["size_bytes"], 4);
+        let local_path = completed["downloaded_file"]["local_path"].as_str().unwrap();
+        assert_eq!(fs::read(local_path).unwrap(), b"data");
+        assert!(runtime.submit_action(action_id).is_err());
+    }
+
+    #[test]
+    fn json_submit_rejects_product_supplied_download_fields() {
+        let mut runtime = GetterRuntime::new();
+        let issued = issue_action(&mut runtime, plan_without_install("generic/example"));
+        let action_id = issued["action_id"].as_str().unwrap();
+
+        let error = submit_action_json(
+            &mut runtime,
+            &json!({
+                "action_id": action_id,
+                "url": "https://example.invalid/other.bin"
+            })
+            .to_string(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), "runtime.invalid_request");
+        assert!(error.detail().unwrap().contains("unknown field `url`"));
+        assert_eq!(runtime.tasks().len(), 0);
+    }
+
+    #[test]
     fn offline_update_check_without_update_does_not_issue_action() {
         let mut runtime = GetterRuntime::new();
 
@@ -1176,6 +1300,25 @@ mod tests {
             runtime.task(&task_id).unwrap().status,
             RuntimeTaskStatus::Completed
         );
+    }
+
+    struct RecordingDownloadTransport {
+        requests: RefCell<Vec<String>>,
+    }
+
+    impl crate::download::RuntimeDownloadTransport for RecordingDownloadTransport {
+        fn fetch(
+            &self,
+            request: &crate::download::RuntimeDownloadTransportRequest<'_>,
+            sink: &mut dyn crate::download::RuntimeDownloadSink,
+        ) -> Result<(), crate::download::RuntimeDownloadTransportError> {
+            self.requests.borrow_mut().push(request.url.to_owned());
+            sink.set_total_bytes(Some(4))
+                .map_err(crate::download::RuntimeDownloadTransportError::Sink)?;
+            sink.write_chunk(b"data")
+                .map_err(crate::download::RuntimeDownloadTransportError::Sink)?;
+            Ok(())
+        }
     }
 
     fn submit_plan(runtime: &mut GetterRuntime, plan: SealedActionPlan) -> String {

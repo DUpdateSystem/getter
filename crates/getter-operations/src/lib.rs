@@ -6,6 +6,7 @@
 //! generated package files, manifests, and tracked state live here.
 
 pub mod autogen;
+pub mod download;
 pub mod fdroid_autogen;
 pub mod fdroid_catalog;
 pub mod github_autogen;
