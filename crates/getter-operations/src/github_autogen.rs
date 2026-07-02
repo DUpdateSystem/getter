@@ -1,14 +1,16 @@
-//! Fixture-backed GitHub Android APK autogen preview/apply operations.
+//! GitHub Android APK autogen preview/apply operations.
 //!
 //! This module generates ordinary package directories that use the standard
-//! `luaclass.github_android_apk` provider module. It consumes cached or
-//! fixture-backed GitHub release facts owned by getter and deliberately avoids
-//! live GitHub transport or Flutter/Kotlin provider parsing.
+//! `luaclass.github_android_apk` provider module. It consumes cached,
+//! fixture-backed, or getter-live GitHub release facts owned by getter and
+//! deliberately avoids Flutter/Kotlin provider parsing, cache policy, or live
+//! transport controls.
 
 use crate::autogen::{self, AutogenAcceptance, AutogenOperationError, AutogenOperationResult};
 use crate::github_releases::{
-    read_or_refresh_github_releases, GithubReleaseConfig, DEFAULT_GITHUB_API_BASE_URL,
-    GITHUB_ASSET_NOT_FOUND, GITHUB_PROVIDER_ID,
+    read_or_refresh_github_releases, read_or_refresh_github_releases_from_transport,
+    GithubReleaseConfig, GithubReleaseTransport, UreqGithubReleaseTransport,
+    DEFAULT_GITHUB_API_BASE_URL, GITHUB_ASSET_NOT_FOUND, GITHUB_PROVIDER_ID,
 };
 use crate::provider_cache::{ProviderCacheDiagnostic, ProviderCacheMode, ProviderCacheSource};
 use getter_core::autogen::{
@@ -31,6 +33,25 @@ pub fn preview_github_android_package_json(
     cache_db: &CacheDb,
     request_json: &str,
 ) -> AutogenOperationResult<Value> {
+    preview_github_android_package_json_with_transport(
+        data_dir,
+        main_db,
+        cache_db,
+        request_json,
+        &UreqGithubReleaseTransport::new(),
+    )
+}
+
+pub fn preview_github_android_package_json_with_transport<T>(
+    data_dir: &Path,
+    main_db: &MainDb,
+    cache_db: &CacheDb,
+    request_json: &str,
+    transport: &T,
+) -> AutogenOperationResult<Value>
+where
+    T: GithubReleaseTransport + ?Sized,
+{
     let request: GithubAutogenPreviewRequest =
         serde_json::from_str(request_json).map_err(|source| {
             AutogenOperationError::Autogen(format!(
@@ -71,20 +92,16 @@ pub fn preview_github_android_package_json(
         asset_filter: asset_filter.clone(),
     };
     let package_id = github_android_package_id(&owner, &repo, &android_package)?;
-    let result = read_or_refresh_github_releases(
-        cache_db,
-        GithubReleaseConfig {
-            api_base_url,
-            owner: owner.clone(),
-            repo: repo.clone(),
-        },
-        mode,
-        || {
-            request.releases_json.ok_or_else(|| {
-                "fixture-backed GitHub autogen refresh requires releases_json".to_owned()
-            })
-        },
-    )
+    let config = GithubReleaseConfig {
+        api_base_url,
+        owner: owner.clone(),
+        repo: repo.clone(),
+    };
+    let result = if let Some(releases_json) = request.releases_json {
+        read_or_refresh_github_releases(cache_db, config, mode, || Ok(releases_json))
+    } else {
+        read_or_refresh_github_releases_from_transport(cache_db, config, mode, transport)
+    }
     .map_err(|source| AutogenOperationError::Autogen(source.to_string()))?;
     let (target_alias, target_path, target_priority) =
         autogen::generated_repository_config(data_dir)?;
@@ -468,6 +485,11 @@ mod tests {
     use getter_core::RepositoryPriority;
     use serde_json::{json, Value};
     use sha2::{Digest, Sha512};
+    use std::cell::RefCell;
+
+    use crate::github_releases::{
+        GithubReleaseTransport, GithubReleaseTransportRequest, GithubReleaseTransportResponse,
+    };
 
     const UPGRADEALL_GITHUB_RELEASES: &str =
         include_str!("../../../tests/files/web/github_api_release.json");
@@ -539,6 +561,49 @@ mod tests {
             )
         );
         assert!(!temp.path().join("repo/autogen").exists());
+    }
+
+    #[test]
+    fn preview_without_fixture_refreshes_github_releases_through_getter_transport() {
+        let temp = tempfile::tempdir().unwrap();
+        let main_db = MainDb::open(temp.path().join("main.db")).unwrap();
+        let cache_db = CacheDb::open(temp.path().join("cache.db")).unwrap();
+        let transport = MockGithubReleaseTransport {
+            response: RefCell::new(Ok(GithubReleaseTransportResponse {
+                body: UPGRADEALL_GITHUB_RELEASES.to_owned(),
+                etag: Some("W/\"autogen-live\"".to_owned()),
+                last_modified: None,
+            })),
+            requests: RefCell::new(Vec::new()),
+        };
+        let request = json!({
+            "owner": "DUpdateSystem",
+            "repo": "UpgradeAll",
+            "android_package": "net.xzos.upgradeall",
+            "display_name": "UpgradeAll",
+            "asset": { "include": "UpgradeAll_.*[.]apk$" },
+        });
+
+        let preview = preview_github_android_package_json_with_transport(
+            temp.path(),
+            &main_db,
+            &cache_db,
+            &request.to_string(),
+            &transport,
+        )
+        .unwrap();
+
+        assert_eq!(transport.requests.borrow().len(), 1);
+        assert_eq!(preview["source"], "refreshed");
+        assert_eq!(
+            preview["candidates"][0]["package_id"],
+            UPGRADEALL_PACKAGE_ID
+        );
+        let cached = cache_db
+            .provider_response(preview["cache_key"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.freshness_json["etag"], "W/\"autogen-live\"");
     }
 
     #[cfg(feature = "lua")]
@@ -723,6 +788,31 @@ mod tests {
             .find(|file| file["relative_path"] == relative_path)
             .and_then(|file| file["content"].as_str())
             .unwrap_or_else(|| panic!("generated file {relative_path} not found: {files:?}"))
+    }
+
+    struct MockGithubReleaseTransport {
+        response: RefCell<Result<GithubReleaseTransportResponse, String>>,
+        requests: RefCell<Vec<(String, String, String)>>,
+    }
+
+    impl GithubReleaseTransport for MockGithubReleaseTransport {
+        fn fetch_releases(
+            &self,
+            request: &GithubReleaseTransportRequest<'_>,
+        ) -> Result<
+            GithubReleaseTransportResponse,
+            crate::github_releases::GithubReleaseTransportError,
+        > {
+            self.requests.borrow_mut().push((
+                request.api_base_url.to_owned(),
+                request.owner.to_owned(),
+                request.repo.to_owned(),
+            ));
+            self.response
+                .borrow()
+                .clone()
+                .map_err(crate::github_releases::GithubReleaseTransportError::Transport)
+        }
     }
 
     fn sha512_hex(body: &[u8]) -> String {
