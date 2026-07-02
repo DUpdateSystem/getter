@@ -77,6 +77,7 @@ impl FdroidRelease {
         UpdateCandidate {
             version: self.version.clone(),
             version_code: self.version_code,
+            changelog: None,
             channel: None,
             source: Some("fdroid".to_owned()),
             artifacts: vec![UpdateArtifact {
@@ -86,6 +87,7 @@ impl FdroidRelease {
                     .as_deref()
                     .map(|base| fdroid_artifact_url(base, &self.apk_name))
                     .unwrap_or_else(|| self.apk_name.clone()),
+                content_type: None,
                 file_name: Some(self.apk_name.clone()),
                 sha256: self.sha256.clone(),
                 size: self.size,
@@ -399,6 +401,7 @@ fn github_release_update_candidate(
     Some(UpdateCandidate {
         version: release.tag_name.clone(),
         version_code: None,
+        changelog: release.body.clone(),
         channel: release.prerelease.then(|| "prerelease".to_owned()),
         source: Some("github".to_owned()),
         artifacts,
@@ -409,6 +412,7 @@ fn github_asset_update_artifact(asset: &GithubReleaseAsset) -> UpdateArtifact {
     UpdateArtifact {
         name: asset.name.clone(),
         url: asset.browser_download_url.clone(),
+        content_type: asset.content_type.clone(),
         file_name: Some(asset.name.clone()),
         sha256: github_asset_sha256(asset.digest.as_deref()),
         size: asset.size,
@@ -505,6 +509,7 @@ mod tests {
             updates: vec![UpdateCandidate {
                 version: "1.2.0".to_owned(),
                 version_code: None,
+                changelog: None,
                 channel: Some("stable".to_owned()),
                 source: Some("fixture".to_owned()),
                 artifacts: Vec::new(),
@@ -623,6 +628,7 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].version, "v1.2.0");
+        assert_eq!(candidates[0].changelog.as_deref(), Some("Release notes"));
         assert_eq!(candidates[0].source.as_deref(), Some("github"));
         assert_eq!(candidates[0].artifacts.len(), 1);
         let artifact = &candidates[0].artifacts[0];
@@ -630,6 +636,10 @@ mod tests {
         assert_eq!(
             artifact.url,
             "https://github.com/example/app/releases/download/v1.2.0/app-release.apk"
+        );
+        assert_eq!(
+            artifact.content_type.as_deref(),
+            Some("application/vnd.android.package-archive")
         );
         assert_eq!(artifact.file_name.as_deref(), Some("app-release.apk"));
         assert_eq!(

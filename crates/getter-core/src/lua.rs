@@ -789,6 +789,7 @@ fn parse_update_candidates(
             Ok(UpdateCandidate {
                 version: required_string(path, object, "version")?.to_owned(),
                 version_code: optional_i64(path, object, "version_code")?,
+                changelog: optional_string(object, "changelog"),
                 channel: optional_string(object, "channel"),
                 source: optional_string(object, "source"),
                 artifacts,
@@ -818,6 +819,7 @@ fn parse_update_artifacts(
             Ok(UpdateArtifact {
                 name: required_string(path, object, "name")?.to_owned(),
                 url: required_string(path, object, "url")?.to_owned(),
+                content_type: optional_string(object, "content_type"),
                 file_name: optional_string(object, "file_name"),
                 sha256: optional_string(object, "sha256"),
                 size: optional_u64(path, object, "size")?,
@@ -974,12 +976,14 @@ return package_version {
     {
       version = "1.2.0",
       version_code = 120,
+      changelog = "Release notes from provider snapshot",
       channel = "stable",
       source = "fixture",
       artifacts = {
         {
           name = "app.apk",
           url = "https://example.invalid/app.apk",
+          content_type = "application/vnd.android.package-archive",
           file_name = "fdroid.apk",
           sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           size = 12345,
@@ -1007,8 +1011,16 @@ return package_version {
         assert_eq!(package.updates.len(), 1);
         assert_eq!(package.updates[0].version, "1.2.0");
         assert_eq!(package.updates[0].version_code, Some(120));
+        assert_eq!(
+            package.updates[0].changelog.as_deref(),
+            Some("Release notes from provider snapshot")
+        );
         assert_eq!(package.updates[0].channel.as_deref(), Some("stable"));
         assert_eq!(package.updates[0].source.as_deref(), Some("fixture"));
+        assert_eq!(
+            package.updates[0].artifacts[0].content_type.as_deref(),
+            Some("application/vnd.android.package-archive")
+        );
         assert_eq!(
             package.updates[0].artifacts[0].file_name.as_deref(),
             Some("fdroid.apk")

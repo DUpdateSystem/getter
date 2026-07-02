@@ -557,6 +557,14 @@ mod tests {
 ]"#;
 
     #[cfg(feature = "lua")]
+    const UPGRADEALL_GITHUB_RELEASES_SNAPSHOT: &str =
+        include_str!("../../../tests/files/web/github_api_release.json");
+
+    #[cfg(feature = "lua")]
+    const UPGRADEALL_OLD_GITHUB_RELEASES_NORMALIZED: &str =
+        include_str!("../../../tests/files/data/provider_github_release.json");
+
+    #[cfg(feature = "lua")]
     #[test]
     fn registered_package_update_check_issues_action_from_package_directory_static_updates() {
         let temp = tempfile::tempdir().unwrap();
@@ -715,6 +723,83 @@ mod tests {
             "v1.20.0"
         );
         assert_eq!(issued["update"]["actions"][0]["file_name"], "F-Droid.apk");
+    }
+
+    #[cfg(feature = "lua")]
+    #[test]
+    fn registered_package_update_check_matches_old_upgradeall_github_release_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let repo_root = data_dir.join("repo/official");
+        write_upgradeall_github_provider_package_repo(
+            &repo_root,
+            UPGRADEALL_GITHUB_RELEASES_SNAPSHOT,
+        );
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        register_repository(&db, "official", "Official", 0, &repo_root);
+        seed_github_provider_cache_for(
+            data_dir,
+            "DUpdateSystem",
+            "UpgradeAll",
+            UPGRADEALL_GITHUB_RELEASES_SNAPSHOT,
+        );
+        let old_releases: Value =
+            serde_json::from_str(UPGRADEALL_OLD_GITHUB_RELEASES_NORMALIZED).unwrap();
+        let expected_release = &old_releases[0];
+        let expected_asset = &expected_release["assets"][0];
+        let mut runtime = GetterRuntime::new();
+
+        let issued = issue_action_from_registered_package_json(
+            &mut runtime,
+            data_dir,
+            &db,
+            &json!({
+                "package_id": "android/app/net.xzos.upgradeall",
+                "installed_version": "0.13-beta.3"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(issued["package"]["source_priority"], json!(["github"]));
+        assert_eq!(
+            issued["package"]["installed"][0],
+            json!({ "kind": "android_package", "package_name": "net.xzos.upgradeall" })
+        );
+        assert_eq!(issued["provider_calls"][0]["provider"], "github");
+        assert_eq!(issued["provider_calls"][0]["owner"], "DUpdateSystem");
+        assert_eq!(issued["provider_calls"][0]["repo"], "UpgradeAll");
+        assert_eq!(issued["provider_calls"][0]["source"], "cache");
+        assert_eq!(issued["update"]["status"], "update_available");
+        assert_eq!(
+            issued["update"]["selected"]["candidate"]["version"],
+            expected_release["version_number"]
+        );
+        assert_eq!(
+            issued["update"]["selected"]["candidate"]["changelog"],
+            expected_release["changelog"]
+        );
+        assert_eq!(
+            issued["update"]["selected"]["artifact"]["name"],
+            expected_asset["file_name"]
+        );
+        assert_eq!(
+            issued["update"]["selected"]["artifact"]["content_type"],
+            expected_asset["file_type"]
+        );
+        assert_eq!(
+            issued["update"]["actions"][0]["url"],
+            expected_asset["download_url"]
+        );
+        assert_eq!(
+            issued["update"]["actions"][0]["file_name"],
+            expected_asset["file_name"]
+        );
+        let action_id = issued["action"]["action_id"].as_str().unwrap();
+        let submitted =
+            submit_action_json(&mut runtime, &json!({ "action_id": action_id }).to_string())
+                .unwrap();
+        assert_eq!(submitted["package_id"], "android/app/net.xzos.upgradeall");
     }
 
     #[cfg(feature = "lua")]
@@ -954,10 +1039,20 @@ mod tests {
 
     #[cfg(feature = "lua")]
     fn seed_github_provider_cache(data_dir: &std::path::Path, fixture_body: &str) {
+        seed_github_provider_cache_for(data_dir, "f-droid", "fdroidclient", fixture_body);
+    }
+
+    #[cfg(feature = "lua")]
+    fn seed_github_provider_cache_for(
+        data_dir: &std::path::Path,
+        owner: &str,
+        repo: &str,
+        fixture_body: &str,
+    ) {
         let config = GithubReleaseConfig {
             api_base_url: DEFAULT_GITHUB_API_BASE_URL.to_owned(),
-            owner: "f-droid".to_owned(),
-            repo: "fdroidclient".to_owned(),
+            owner: owner.to_owned(),
+            repo: repo.to_owned(),
         };
         let releases = parse_github_releases_json(fixture_body).unwrap();
         let db = CacheDb::open(data_dir.join("cache.db")).unwrap();
@@ -1016,13 +1111,47 @@ return fdroid.package {
     #[cfg(feature = "lua")]
     fn write_github_provider_package_repo(root: &std::path::Path, manifest_body: &str) {
         let package_dir = root.join("android/app/org.fdroid.fdroid");
-        fs::create_dir_all(&package_dir).unwrap();
+        write_github_provider_package(
+            &package_dir,
+            manifest_body,
+            "F-Droid",
+            "org.fdroid.fdroid",
+            "f-droid",
+            "fdroidclient",
+        );
+    }
+
+    #[cfg(feature = "lua")]
+    fn write_upgradeall_github_provider_package_repo(root: &std::path::Path, manifest_body: &str) {
+        let package_dir = root.join("android/app/net.xzos.upgradeall");
+        write_github_provider_package(
+            &package_dir,
+            manifest_body,
+            "UpgradeAll",
+            "net.xzos.upgradeall",
+            "DUpdateSystem",
+            "UpgradeAll",
+        );
+    }
+
+    #[cfg(feature = "lua")]
+    fn write_github_provider_package(
+        package_dir: &std::path::Path,
+        manifest_body: &str,
+        name: &str,
+        android_package: &str,
+        owner: &str,
+        repo: &str,
+    ) {
+        fs::create_dir_all(package_dir).unwrap();
         fs::write(
             package_dir.join("metadata.jsonc"),
-            r#"{
+            format!(
+                r#"{{
   "type": "android:app",
-  "android": { "package_name": "org.fdroid.fdroid" }
-}"#,
+  "android": {{ "package_name": "{android_package}" }}
+}}"#
+            ),
         )
         .unwrap();
         fs::write(
@@ -1032,16 +1161,18 @@ return fdroid.package {
         .unwrap();
         fs::write(
             package_dir.join("9999.lua"),
-            r#"#!/bin/upa-lua v1
+            format!(
+                r#"#!/bin/upa-lua v1
 local github_android = require("luaclass.github_android_apk")
-return github_android.package {
-  name = "F-Droid",
-  android_package = "org.fdroid.fdroid",
-  owner = "f-droid",
-  repo = "fdroidclient",
-  asset = { include = "[.]apk$" },
-}
-"#,
+return github_android.package {{
+  name = "{name}",
+  android_package = "{android_package}",
+  owner = "{owner}",
+  repo = "{repo}",
+  asset = {{ include = "[.]apk$" }},
+}}
+"#
+            ),
         )
         .unwrap();
     }
@@ -1126,11 +1257,13 @@ return package_version {
                 .map(|version| UpdateCandidate {
                     version: version.to_owned(),
                     version_code: None,
+                    changelog: None,
                     channel: None,
                     source: None,
                     artifacts: vec![UpdateArtifact {
                         name: "app.apk".to_owned(),
                         url: "https://example.invalid/app.apk".to_owned(),
+                        content_type: None,
                         file_name: Some("app.apk".to_owned()),
                         sha256: None,
                         size: None,

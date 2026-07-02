@@ -283,6 +283,8 @@ pub struct UpdateCandidate {
     #[serde(default)]
     pub version_code: Option<i64>,
     #[serde(default)]
+    pub changelog: Option<String>,
+    #[serde(default)]
     pub channel: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
@@ -294,6 +296,8 @@ pub struct UpdateCandidate {
 pub struct UpdateArtifact {
     pub name: String,
     pub url: String,
+    #[serde(default)]
+    pub content_type: Option<String>,
     #[serde(default)]
     pub file_name: Option<String>,
     #[serde(default)]

@@ -361,10 +361,10 @@ fn lua_string(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::provider_cache::source_response_sha512;
-    use getter_core::repository::{
-        PackageTypeMetadata, RepositoryMetadata, RepositoryPackageDirectoryLayout,
-        REPO_API_VERSION_V1,
-    };
+    #[cfg(feature = "lua")]
+    use getter_core::repository::{PackageTypeMetadata, RepositoryPackageDirectoryLayout};
+    use getter_core::repository::{RepositoryMetadata, REPO_API_VERSION_V1};
+    #[cfg(feature = "lua")]
     use getter_core::runtime::GetterRuntime;
     use getter_core::RepositoryPriority;
 
@@ -576,6 +576,7 @@ mod tests {
         assert_eq!(preview["skipped"][0]["covering_repo_id"], "official");
     }
 
+    #[cfg(feature = "lua")]
     #[test]
     fn apply_writes_valid_fdroid_package_directory() {
         let temp = tempfile::tempdir().unwrap();
@@ -648,6 +649,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "lua")]
     #[test]
     fn generated_fdroid_package_update_check_rejects_manifest_mismatch() {
         let temp = tempfile::tempdir().unwrap();
