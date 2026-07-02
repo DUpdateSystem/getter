@@ -10,8 +10,11 @@ use crate::fdroid_catalog::{
     read_or_refresh_fdroid_catalog, FdroidCatalogOperationError, FdroidEndpointConfig,
     DEFAULT_FDROID_ENDPOINT_ID, DEFAULT_FDROID_ENDPOINT_URL, FDROID_PROVIDER_ID,
 };
+#[cfg(feature = "lua-provider-host-dev")]
+use crate::github_releases::UreqGithubReleaseTransport;
 use crate::github_releases::{
-    read_or_refresh_github_releases, GithubReleaseConfig, GithubReleaseOperationError,
+    read_or_refresh_github_releases, read_or_refresh_github_releases_from_transport_checked,
+    GithubReleaseConfig, GithubReleaseOperationError, GithubReleaseTransport,
     DEFAULT_GITHUB_API_BASE_URL, GITHUB_ASSET_NOT_FOUND, GITHUB_PROVIDER_ID,
 };
 use crate::lua_runtime_hooks::load_runtime_hooks;
@@ -296,6 +299,7 @@ pub fn stable_provider_package_eval_json(
             github_api_base_url: request.github_api_base_url,
             github_releases_json: request.github_releases_json,
             github_include_prereleases: request.github_include_prereleases,
+            github_release_transport: Some(Rc::new(UreqGithubReleaseTransport::new())),
         },
     )?;
     let package = serde_json::to_value(result.package)?;
@@ -399,11 +403,12 @@ struct GithubProviderHostConfig {
     api_base_url: String,
     mode: ProviderCacheMode,
     releases_json: Option<String>,
+    release_transport: Option<Rc<dyn GithubReleaseTransport>>,
     default_include_prereleases: bool,
     manifest: Option<PackageManifest>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct ProviderBackedPackageEvalConfig {
     pub(crate) mode: ProviderCacheMode,
     pub(crate) fdroid_endpoint_id: Option<String>,
@@ -412,6 +417,7 @@ pub(crate) struct ProviderBackedPackageEvalConfig {
     pub(crate) github_endpoint_id: Option<String>,
     pub(crate) github_api_base_url: Option<String>,
     pub(crate) github_releases_json: Option<String>,
+    pub(crate) github_release_transport: Option<Rc<dyn GithubReleaseTransport>>,
     pub(crate) github_include_prereleases: bool,
 }
 
@@ -479,6 +485,7 @@ pub(crate) fn evaluate_provider_backed_package(
                 api_base_url: github_api_base_url,
                 mode: config.mode,
                 releases_json: config.github_releases_json,
+                release_transport: config.github_release_transport,
                 default_include_prereleases: config.github_include_prereleases,
                 manifest,
             },
@@ -565,6 +572,7 @@ fn install_github_dev_host(lua: &Lua, config: GithubDevHostConfig) -> mlua::Resu
         api_base_url: config.api_base_url.clone(),
         mode: config.mode,
         releases_json: config.releases_json.clone(),
+        release_transport: None,
         default_include_prereleases: config.default_include_prereleases,
         manifest: None,
     };
@@ -797,16 +805,27 @@ fn github_release_candidates_envelope(
         repo: request.repo,
     };
     let refresh_fixture = config.releases_json;
+    let refresh_transport = config.release_transport;
     let manifest = config.manifest.clone();
-    let result = read_or_refresh_github_releases(&db, provider_config, config.mode, || {
-        let releases = refresh_fixture.ok_or_else(|| {
-            "GitHub release provider host has no cached releases and no refresh source installed"
-                .to_owned()
-        })?;
-        require_manifest_body(&manifest, GITHUB_PROVIDER_ID, &releases)
-            .map_err(|source| source.to_string())?;
-        Ok(releases)
-    })
+    let result = if let Some(releases) = refresh_fixture {
+        read_or_refresh_github_releases(&db, provider_config, config.mode, || {
+            require_manifest_body(&manifest, GITHUB_PROVIDER_ID, &releases)
+                .map_err(|source| source.to_string())?;
+            Ok(releases)
+        })
+    } else if let Some(transport) = refresh_transport {
+        read_or_refresh_github_releases_from_transport_checked(
+            &db,
+            provider_config,
+            config.mode,
+            transport.as_ref(),
+            |body| require_manifest_body(&manifest, GITHUB_PROVIDER_ID, body).map_err(|source| source.to_string()),
+        )
+    } else {
+        read_or_refresh_github_releases(&db, provider_config, config.mode, || {
+            Err("GitHub release provider host has no cached releases and no refresh source installed".to_owned())
+        })
+    }
     .map_err(mlua::Error::external)?;
     reject_unproven_manifest_cache(
         &manifest,

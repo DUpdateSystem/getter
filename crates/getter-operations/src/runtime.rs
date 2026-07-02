@@ -7,6 +7,8 @@
 //! Android glue.
 
 #[cfg(feature = "lua")]
+use crate::github_releases::{GithubReleaseTransport, UreqGithubReleaseTransport};
+#[cfg(feature = "lua")]
 use crate::lua_provider_host::{
     evaluate_provider_backed_package, LuaProviderHostOperationError,
     ProviderBackedPackageEvalConfig,
@@ -35,6 +37,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 #[cfg(feature = "lua")]
 use std::path::PathBuf;
+#[cfg(feature = "lua")]
+use std::rc::Rc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeOperationError {
@@ -162,8 +166,25 @@ pub fn issue_action_from_registered_package_json(
     db: &MainDb,
     request_json: &str,
 ) -> Result<Value, RuntimeOperationError> {
+    issue_action_from_registered_package_json_with_github_transport(
+        runtime,
+        data_dir,
+        db,
+        request_json,
+        Some(Rc::new(UreqGithubReleaseTransport::new())),
+    )
+}
+
+#[cfg(feature = "lua")]
+fn issue_action_from_registered_package_json_with_github_transport(
+    runtime: &mut GetterRuntime,
+    data_dir: &std::path::Path,
+    db: &MainDb,
+    request_json: &str,
+    github_release_transport: Option<Rc<dyn GithubReleaseTransport>>,
+) -> Result<Value, RuntimeOperationError> {
     let request: RegisteredPackageUpdateActionRequest = parse_request(request_json)?;
-    let evaluated = evaluate_registered_package(data_dir, db, &request)?;
+    let evaluated = evaluate_registered_package(data_dir, db, &request, github_release_transport)?;
     let candidates = StaticPackageUpdatesProvider.check_updates(&evaluated.package);
     let update = check_updates_offline(
         evaluated.package.id.clone(),
@@ -342,6 +363,7 @@ struct OfflineUpdateActionRequest {
 
 #[cfg(feature = "lua")]
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RegisteredPackageUpdateActionRequest {
     package_id: PackageId,
     #[serde(default)]
@@ -405,6 +427,7 @@ fn evaluate_registered_package(
     data_dir: &std::path::Path,
     db: &MainDb,
     request: &RegisteredPackageUpdateActionRequest,
+    github_release_transport: Option<Rc<dyn GithubReleaseTransport>>,
 ) -> Result<RegisteredPackageEvaluation, RuntimeOperationError> {
     let repositories = db.repositories()?;
     let mut missing_path = None;
@@ -441,6 +464,7 @@ fn evaluate_registered_package(
                 github_endpoint_id: None,
                 github_api_base_url: None,
                 github_releases_json: None,
+                github_release_transport: github_release_transport.clone(),
                 github_include_prereleases: false,
             },
         )?;
@@ -497,7 +521,9 @@ mod tests {
     use crate::fdroid_catalog::{FdroidEndpointConfig, FDROID_PROVIDER_ID};
     #[cfg(feature = "lua")]
     use crate::github_releases::{
-        GithubReleaseConfig, DEFAULT_GITHUB_API_BASE_URL, GITHUB_PROVIDER_ID,
+        GithubReleaseConfig, GithubReleaseTransport, GithubReleaseTransportError,
+        GithubReleaseTransportRequest, GithubReleaseTransportResponse, DEFAULT_GITHUB_API_BASE_URL,
+        GITHUB_PROVIDER_ID,
     };
     #[cfg(feature = "lua")]
     use crate::provider_cache::PROVIDER_RESPONSE_PROVENANCE_SCHEMA_V1;
@@ -516,7 +542,11 @@ mod tests {
     #[cfg(feature = "lua")]
     use sha2::{Digest, Sha512};
     #[cfg(feature = "lua")]
+    use std::cell::RefCell;
+    #[cfg(feature = "lua")]
     use std::fs;
+    #[cfg(feature = "lua")]
+    use std::rc::Rc;
 
     #[cfg(feature = "lua")]
     const FDROID_INDEX_FIXTURE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -727,6 +757,140 @@ mod tests {
 
     #[cfg(feature = "lua")]
     #[test]
+    fn registered_package_update_check_refreshes_github_cache_on_miss_with_getter_transport() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let repo_root = data_dir.join("repo/official");
+        write_github_provider_package_repo(&repo_root, GITHUB_RELEASES_FIXTURE);
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        register_repository(&db, "official", "Official", 0, &repo_root);
+        let transport =
+            github_transport_with_body(GITHUB_RELEASES_FIXTURE, Some("W/\"runtime-github\""));
+        let mut runtime = GetterRuntime::new();
+
+        let issued = issue_action_from_registered_package_json_with_github_transport(
+            &mut runtime,
+            data_dir,
+            &db,
+            &json!({
+                "package_id": "android/app/org.fdroid.fdroid",
+                "installed_version": "v1.0.0"
+            })
+            .to_string(),
+            Some(transport.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(transport.requests.borrow().len(), 1);
+        assert_eq!(transport.requests.borrow()[0].owner, "f-droid");
+        assert_eq!(transport.requests.borrow()[0].repo, "fdroidclient");
+        assert_eq!(issued["provider_calls"][0]["provider"], "github");
+        assert_eq!(issued["provider_calls"][0]["source"], "refreshed");
+        assert_eq!(issued["update"]["status"], "update_available");
+        assert_eq!(
+            issued["update"]["selected"]["candidate"]["version"],
+            "v1.20.0"
+        );
+        let config = GithubReleaseConfig {
+            api_base_url: DEFAULT_GITHUB_API_BASE_URL.to_owned(),
+            owner: "f-droid".to_owned(),
+            repo: "fdroidclient".to_owned(),
+        };
+        let cached = CacheDb::open(data_dir.join("cache.db"))
+            .unwrap()
+            .provider_response(&config.cache_key())
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.response_json[0]["tag_name"], "v1.20.0");
+        assert_eq!(cached.freshness_json["etag"], "W/\"runtime-github\"");
+    }
+
+    #[cfg(feature = "lua")]
+    #[test]
+    fn registered_package_update_check_live_github_refresh_allows_free_network_without_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let repo_root = data_dir.join("repo/official");
+        let package_dir = repo_root.join("android/app/org.fdroid.fdroid");
+        write_github_provider_package_with_options(
+            &package_dir,
+            None,
+            true,
+            "F-Droid",
+            "org.fdroid.fdroid",
+            "f-droid",
+            "fdroidclient",
+        );
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        register_repository(&db, "official", "Official", 0, &repo_root);
+        let transport = github_transport_with_body(GITHUB_RELEASES_FIXTURE, None);
+        let mut runtime = GetterRuntime::new();
+
+        let issued = issue_action_from_registered_package_json_with_github_transport(
+            &mut runtime,
+            data_dir,
+            &db,
+            &json!({
+                "package_id": "android/app/org.fdroid.fdroid",
+                "installed_version": "v1.0.0"
+            })
+            .to_string(),
+            Some(transport.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(transport.requests.borrow().len(), 1);
+        assert_eq!(issued["provider_calls"][0]["source"], "refreshed");
+        assert_eq!(issued["update"]["status"], "update_available");
+        assert_eq!(
+            issued["update"]["selected"]["candidate"]["version"],
+            "v1.20.0"
+        );
+    }
+
+    #[cfg(feature = "lua")]
+    #[test]
+    fn registered_package_update_check_rejects_unmanifested_live_github_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path();
+        let repo_root = data_dir.join("repo/official");
+        let package_dir = repo_root.join("android/app/org.fdroid.fdroid");
+        write_github_provider_package_with_options(
+            &package_dir,
+            None,
+            false,
+            "F-Droid",
+            "org.fdroid.fdroid",
+            "f-droid",
+            "fdroidclient",
+        );
+        let db = MainDb::open(data_dir.join("main.db")).unwrap();
+        register_repository(&db, "official", "Official", 0, &repo_root);
+        let transport = github_transport_with_body(GITHUB_RELEASES_FIXTURE, None);
+        let mut runtime = GetterRuntime::new();
+
+        let err = issue_action_from_registered_package_json_with_github_transport(
+            &mut runtime,
+            data_dir,
+            &db,
+            &json!({
+                "package_id": "android/app/org.fdroid.fdroid",
+                "installed_version": "v1.0.0"
+            })
+            .to_string(),
+            Some(transport),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code(), "package.eval_error");
+        assert!(err
+            .to_string()
+            .contains("package.provider.response_not_in_manifest"));
+        assert_eq!(runtime.tasks().len(), 0);
+    }
+
+    #[cfg(feature = "lua")]
+    #[test]
     fn registered_package_update_check_matches_old_upgradeall_github_release_snapshot() {
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path();
@@ -826,10 +990,8 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(err.code(), "package.eval_error");
-        assert!(err
-            .to_string()
-            .contains("F-Droid provider host has no cached catalog"));
+        assert_eq!(err.code(), "runtime.invalid_request");
+        assert!(err.to_string().contains("unknown field `fdroid_index_xml`"));
         assert_eq!(runtime.tasks().len(), 0);
     }
 
@@ -1143,22 +1305,49 @@ return fdroid.package {
         owner: &str,
         repo: &str,
     ) {
+        write_github_provider_package_with_options(
+            package_dir,
+            Some(manifest_body),
+            false,
+            name,
+            android_package,
+            owner,
+            repo,
+        );
+    }
+
+    #[cfg(feature = "lua")]
+    fn write_github_provider_package_with_options(
+        package_dir: &std::path::Path,
+        manifest_body: Option<&str>,
+        allow_free_network: bool,
+        name: &str,
+        android_package: &str,
+        owner: &str,
+        repo: &str,
+    ) {
         fs::create_dir_all(package_dir).unwrap();
+        let mut metadata = json!({
+            "type": "android:app",
+            "android": { "package_name": android_package }
+        });
+        if allow_free_network {
+            metadata["lua"] = json!({
+                "9999.lua": { "permission": ["allow_free_network"] }
+            });
+        }
         fs::write(
             package_dir.join("metadata.jsonc"),
-            format!(
-                r#"{{
-  "type": "android:app",
-  "android": {{ "package_name": "{android_package}" }}
-}}"#
-            ),
+            serde_json::to_string_pretty(&metadata).unwrap(),
         )
         .unwrap();
-        fs::write(
-            package_dir.join("Manifest"),
-            format!("{} fixture-body\n", sha512_hex(manifest_body.as_bytes())),
-        )
-        .unwrap();
+        if let Some(manifest_body) = manifest_body {
+            fs::write(
+                package_dir.join("Manifest"),
+                format!("{} fixture-body\n", sha512_hex(manifest_body.as_bytes())),
+            )
+            .unwrap();
+        }
         fs::write(
             package_dir.join("9999.lua"),
             format!(
@@ -1203,6 +1392,52 @@ return github_android.package {{
         let mut hasher = Sha512::new();
         hasher.update(body);
         format!("{:x}", hasher.finalize())
+    }
+
+    #[cfg(feature = "lua")]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct RecordedGithubReleaseRequest {
+        api_base_url: String,
+        owner: String,
+        repo: String,
+    }
+
+    #[cfg(feature = "lua")]
+    struct MockGithubReleaseTransport {
+        response: RefCell<Result<GithubReleaseTransportResponse, GithubReleaseTransportError>>,
+        requests: RefCell<Vec<RecordedGithubReleaseRequest>>,
+    }
+
+    #[cfg(feature = "lua")]
+    fn github_transport_with_body(
+        body: &str,
+        etag: Option<&str>,
+    ) -> Rc<MockGithubReleaseTransport> {
+        Rc::new(MockGithubReleaseTransport {
+            response: RefCell::new(Ok(GithubReleaseTransportResponse {
+                body: body.to_owned(),
+                etag: etag.map(str::to_owned),
+                last_modified: Some("Wed, 01 Jul 2026 00:00:00 GMT".to_owned()),
+            })),
+            requests: RefCell::new(Vec::new()),
+        })
+    }
+
+    #[cfg(feature = "lua")]
+    impl GithubReleaseTransport for MockGithubReleaseTransport {
+        fn fetch_releases(
+            &self,
+            request: &GithubReleaseTransportRequest<'_>,
+        ) -> Result<GithubReleaseTransportResponse, GithubReleaseTransportError> {
+            self.requests
+                .borrow_mut()
+                .push(RecordedGithubReleaseRequest {
+                    api_base_url: request.api_base_url.to_owned(),
+                    owner: request.owner.to_owned(),
+                    repo: request.repo.to_owned(),
+                });
+            self.response.borrow().clone()
+        }
     }
 
     #[cfg(feature = "lua")]

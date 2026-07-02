@@ -7,6 +7,7 @@ edition.workspace = true
 default = []
 lua = ["getter-core/lua", "dep:mlua"]
 lua-provider-host-dev = ["lua"]
+rustls-platform-verifier = ["ureq/platform-verifier"]
 
 [dependencies]
 json_comments = "0.2"
@@ -18,6 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "1"
+ureq = { version = "3.3.0", default-features = false, features = ["gzip", "rustls"] }
 
 [dev-dependencies]
 tempfile = "3"

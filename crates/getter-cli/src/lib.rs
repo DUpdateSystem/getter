@@ -156,7 +156,7 @@ pub enum CliCommand {
     ProviderGithubReleases {
         owner: String,
         repo: String,
-        releases: PathBuf,
+        releases: Option<PathBuf>,
         asset_include: Option<String>,
         asset_exclude: Option<String>,
         include_prereleases: bool,
@@ -967,7 +967,10 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
             refresh,
         } => {
             let db = open_cache_db(&invocation.data_dir)?;
-            let releases_json = read_github_releases_fixture(&releases)?;
+            let releases_json = releases
+                .as_deref()
+                .map(read_github_releases_fixture)
+                .transpose()?;
             let request = json!({
                 "owner": owner,
                 "repo": repo,
@@ -1241,7 +1244,7 @@ struct AutogenGithubPreviewArgs {
 struct ProviderGithubReleasesArgs {
     owner: String,
     repo: String,
-    releases: PathBuf,
+    releases: Option<PathBuf>,
     asset_include: Option<String>,
     asset_exclude: Option<String>,
     include_prereleases: bool,
@@ -1414,7 +1417,7 @@ fn parse_provider_github_releases_args(
                         "provider github releases --releases requires a fixture path".to_owned(),
                     )
                 })?;
-                parsed.releases = PathBuf::from(path);
+                parsed.releases = Some(PathBuf::from(path));
                 position += 2;
             }
             "--asset-include" => {
@@ -1469,12 +1472,6 @@ fn parse_provider_github_releases_args(
             "provider github releases requires --repo <repo>".to_owned(),
         ));
     }
-    if parsed.releases.as_os_str().is_empty() {
-        return Err(CliError::Usage(
-            "provider github releases requires --releases <fixture.json>".to_owned(),
-        ));
-    }
-
     Ok(parsed)
 }
 
@@ -2249,7 +2246,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> [--package <package-name>...] [--inventory <installed.json>]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen github preview --owner <owner> --repo <repo> --android-package <package-name> --releases <fixture.json> [--display-name <name>] [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases]|autogen github apply --preview <preview.json> (--accept-all|--accept <package-id>...)|provider github releases --owner <owner> --repo <repo> --releases <fixture.json> [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases] [--refresh]|provider github latest-commit --owner <owner> --repo <repo> --commit <fixture.json> [--ref <ref>] [--refresh]|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
+    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> [--package <package-name>...] [--inventory <installed.json>]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen github preview --owner <owner> --repo <repo> --android-package <package-name> --releases <fixture.json> [--display-name <name>] [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases]|autogen github apply --preview <preview.json> (--accept-all|--accept <package-id>...)|provider github releases --owner <owner> --repo <repo> [--releases <fixture.json>] [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases] [--refresh]|provider github latest-commit --owner <owner> --repo <repo> --commit <fixture.json> [--ref <ref>] [--refresh]|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -2375,6 +2372,69 @@ mod tests {
             unpin.command,
             CliCommand::VersionUnpin {
                 package_id: "android/org.fdroid.fdroid".parse().unwrap(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_provider_github_releases_command_with_optional_fixture() {
+        let parsed = parse_args([
+            "getter",
+            "--data-dir",
+            "/tmp/ua-getter",
+            "provider",
+            "github",
+            "releases",
+            "--owner",
+            "DUpdateSystem",
+            "--repo",
+            "UpgradeAll",
+            "--releases",
+            "/tmp/releases.json",
+            "--asset-include",
+            "UpgradeAll_.*[.]apk$",
+            "--asset-exclude",
+            "debug",
+            "--include-prereleases",
+            "--refresh",
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed.command,
+            CliCommand::ProviderGithubReleases {
+                owner: "DUpdateSystem".to_owned(),
+                repo: "UpgradeAll".to_owned(),
+                releases: Some(PathBuf::from("/tmp/releases.json")),
+                asset_include: Some("UpgradeAll_.*[.]apk$".to_owned()),
+                asset_exclude: Some("debug".to_owned()),
+                include_prereleases: true,
+                refresh: true,
+            }
+        );
+
+        let live = parse_args([
+            "getter",
+            "--data-dir",
+            "/tmp/ua-getter",
+            "provider",
+            "github",
+            "releases",
+            "--owner",
+            "DUpdateSystem",
+            "--repo",
+            "UpgradeAll",
+        ])
+        .unwrap();
+        assert_eq!(
+            live.command,
+            CliCommand::ProviderGithubReleases {
+                owner: "DUpdateSystem".to_owned(),
+                repo: "UpgradeAll".to_owned(),
+                releases: None,
+                asset_include: None,
+                asset_exclude: None,
+                include_prereleases: false,
+                refresh: false,
             }
         );
     }
