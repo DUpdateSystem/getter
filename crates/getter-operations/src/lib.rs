@@ -5,6 +5,7 @@
 //! provide raw facts to callers, but the rules for repository coverage,
 //! generated package files, manifests, and tracked state live here.
 
+pub mod app;
 pub mod autogen;
 pub mod download;
 pub mod fdroid_autogen;

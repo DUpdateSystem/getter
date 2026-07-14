@@ -58,6 +58,14 @@ pub enum CliCommand {
         inventory: Option<PathBuf>,
     },
     AppList,
+    AppShow {
+        package_id: PackageId,
+        inventory: Option<PathBuf>,
+    },
+    AppCheck {
+        package_id: PackageId,
+        inventory: Option<PathBuf>,
+    },
     HubList,
     RepoList,
     RepoAdd {
@@ -204,6 +212,16 @@ pub enum CliError {
     Runtime(String),
     #[error("autogen error: {0}")]
     Autogen(String),
+    #[error("app is not tracked: {0}")]
+    AppUntracked(String),
+    #[error("app is disabled: {0}")]
+    AppDisabled(String),
+    #[error("{detail}")]
+    AppOperation {
+        code: &'static str,
+        message: &'static str,
+        detail: String,
+    },
     #[error("provider error: {0}")]
     Provider(String),
     #[error("Legacy Room export bundle is invalid")]
@@ -226,6 +244,9 @@ impl CliError {
             | Self::Update(_)
             | Self::Runtime(_)
             | Self::Autogen(_) => ExitCode::GenericFailure,
+            Self::AppUntracked(_) | Self::AppDisabled(_) | Self::AppOperation { .. } => {
+                ExitCode::GenericFailure
+            }
             Self::Provider(_) => ExitCode::Provider,
             Self::Download(_) => ExitCode::Download,
             Self::InvalidLegacyBundle { .. }
@@ -245,6 +266,9 @@ impl CliError {
             Self::Download(_) => "download.task_error",
             Self::Runtime(_) => "runtime.error",
             Self::Autogen(_) => "autogen.error",
+            Self::AppUntracked(_) => "app.untracked",
+            Self::AppDisabled(_) => "app.disabled",
+            Self::AppOperation { code, .. } => code,
             Self::Provider(_) => "provider.error",
             Self::InvalidLegacyBundle { .. } => "migration.invalid_bundle",
             Self::UnsupportedLegacyBundle { .. } => "migration.unsupported_bundle",
@@ -263,6 +287,9 @@ impl CliError {
             Self::Download(_) => "Getter download task operation failed",
             Self::Runtime(_) => "Getter runtime operation failed",
             Self::Autogen(_) => "Getter autogen operation failed",
+            Self::AppUntracked(_) => "Getter app is not tracked",
+            Self::AppDisabled(_) => "Getter app is disabled",
+            Self::AppOperation { message, .. } => message,
             Self::Provider(_) => "Getter provider operation failed",
             Self::InvalidLegacyBundle { .. } => "Legacy Room export bundle is invalid",
             Self::UnsupportedLegacyBundle { .. } => {
@@ -283,7 +310,10 @@ impl CliError {
             | Self::Download(detail)
             | Self::Runtime(detail)
             | Self::Autogen(detail)
+            | Self::AppUntracked(detail)
+            | Self::AppDisabled(detail)
             | Self::Provider(detail) => Some(detail.as_str()),
+            Self::AppOperation { detail, .. } => Some(detail.as_str()),
             Self::InvalidLegacyBundle { .. }
             | Self::UnsupportedLegacyBundle { .. }
             | Self::InvalidLegacyDb { .. }
@@ -305,6 +335,9 @@ impl CliError {
             | Self::Download(_)
             | Self::Runtime(_)
             | Self::Autogen(_)
+            | Self::AppUntracked(_)
+            | Self::AppDisabled(_)
+            | Self::AppOperation { .. }
             | Self::Provider(_) => None,
         }
     }
@@ -443,6 +476,41 @@ where
             }
         }
         [domain, command] if domain == "app" && command == "list" => CliCommand::AppList,
+        [domain, command, package_id]
+            if domain == "app" && (command == "show" || command == "check") =>
+        {
+            let package_id = parse_package_id(package_id)?;
+            if command == "show" {
+                CliCommand::AppShow {
+                    package_id,
+                    inventory: None,
+                }
+            } else {
+                CliCommand::AppCheck {
+                    package_id,
+                    inventory: None,
+                }
+            }
+        }
+        [domain, command, package_id, flag, inventory]
+            if domain == "app"
+                && (command == "show" || command == "check")
+                && flag == "--inventory" =>
+        {
+            let package_id = parse_package_id(package_id)?;
+            let inventory = Some(PathBuf::from(inventory));
+            if command == "show" {
+                CliCommand::AppShow {
+                    package_id,
+                    inventory,
+                }
+            } else {
+                CliCommand::AppCheck {
+                    package_id,
+                    inventory,
+                }
+            }
+        }
         [domain, command] if domain == "hub" && command == "list" => CliCommand::HubList,
         [domain, command] if domain == "repo" && command == "list" => CliCommand::RepoList,
         [domain, command, id, path] if domain == "repo" && command == "add" => {
@@ -702,6 +770,22 @@ where
     Ok(CliInvocation { data_dir, command })
 }
 
+fn map_app_error(error: getter_operations::app::AppOperationError) -> CliError {
+    match error {
+        getter_operations::app::AppOperationError::Untracked(id) => {
+            CliError::AppUntracked(id.to_string())
+        }
+        getter_operations::app::AppOperationError::Disabled(id) => {
+            CliError::AppDisabled(id.to_string())
+        }
+        other => CliError::AppOperation {
+            code: other.code(),
+            message: other.message(),
+            detail: other.detail(),
+        },
+    }
+}
+
 fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
     match invocation.command {
         CliCommand::Startup { inventory } => {
@@ -730,6 +814,40 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
         CliCommand::AppList => {
             let db = open_main_db(&invocation.data_dir)?;
             Ok(json!({ "apps": tracked_packages_json(db.tracked_packages()?) }))
+        }
+        CliCommand::AppShow {
+            package_id,
+            inventory,
+        } => {
+            let inventory = match inventory {
+                Some(path) => read_installed_inventory(&path)?,
+                None => InstalledInventory::new(Vec::new()),
+            };
+            serde_json::to_value(
+                getter_operations::app::inspect_app(&invocation.data_dir, inventory, &package_id)
+                    .map_err(map_app_error)?,
+            )
+            .map_err(|error| CliError::Storage(error.to_string()))
+        }
+        CliCommand::AppCheck {
+            package_id,
+            inventory,
+        } => {
+            let inventory = match inventory {
+                Some(path) => read_installed_inventory(&path)?,
+                None => InstalledInventory::new(Vec::new()),
+            };
+            let mut runtime = GetterRuntime::new();
+            serde_json::to_value(
+                getter_operations::app::check_app(
+                    &mut runtime,
+                    &invocation.data_dir,
+                    inventory,
+                    &package_id,
+                )
+                .map_err(map_app_error)?,
+            )
+            .map_err(|error| CliError::Storage(error.to_string()))
         }
         CliCommand::HubList => {
             open_initialized_storage(&invocation.data_dir)?;
@@ -2281,6 +2399,8 @@ impl CliCommand {
             Self::Init => "init",
             Self::Startup { .. } => "startup",
             Self::AppList => "app list",
+            Self::AppShow { .. } => "app show",
+            Self::AppCheck { .. } => "app check",
             Self::HubList => "hub list",
             Self::RepoList => "repo list",
             Self::RepoAdd { .. } => "repo add",

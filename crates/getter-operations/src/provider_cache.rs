@@ -6,6 +6,7 @@
 //! diagnostics.
 
 use getter_storage::{CacheDb, ProviderResponseUpsert, StorageError, StoredProviderResponse};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha512};
 
@@ -42,7 +43,7 @@ pub struct ProviderResponseRefresh {
     pub freshness_json: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCacheDiagnostic {
     pub code: String,
     pub message: String,

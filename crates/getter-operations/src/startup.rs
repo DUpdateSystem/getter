@@ -248,7 +248,7 @@ fn diagnostic(code: &str, message: impl Into<String>) -> StartupDiagnostic {
 }
 
 #[cfg_attr(not(feature = "lua"), allow(unused_mut, unused_variables))]
-fn app_summary(
+pub(crate) fn app_summary(
     data_dir: &Path,
     repositories: &[StoredRepository],
     inventory: &InstalledInventory,
@@ -261,16 +261,23 @@ fn app_summary(
         None if tracked.package_resolution
             == StoredPackageResolution::OfficialRepositoryPackage =>
         {
-            repositories.iter().find(|repository| {
-                let root = repository
-                    .path
-                    .as_ref()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| data_dir.join("repo").join(repository.id.as_str()));
-                RepositoryPackageDirectoryLayout::load(&root)
-                    .ok()
-                    .is_some_and(|layout| layout.package(&tracked.package_id).is_some())
-            })
+            repositories
+                .iter()
+                .filter(|repository| {
+                    let root = repository
+                        .path
+                        .as_ref()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| data_dir.join("repo").join(repository.id.as_str()));
+                    RepositoryPackageDirectoryLayout::load(&root)
+                        .ok()
+                        .is_some_and(|layout| layout.package(&tracked.package_id).is_some())
+                })
+                .max_by(|left, right| {
+                    left.priority
+                        .cmp(&right.priority)
+                        .then_with(|| right.id.as_str().cmp(left.id.as_str()))
+                })
         }
         None => None,
     };
@@ -279,6 +286,7 @@ fn app_summary(
         .repository_id
         .as_ref()
         .and_then(|id| repositories.iter().find(|repo| &repo.id == id));
+    let resolved_repository_id = repository.map(|repository| repository.id.to_string());
     let mut name = None;
     let mut installed_target = None;
     let mut warning = StartupWarning::default();
@@ -363,6 +371,49 @@ fn app_summary(
         ));
     }
 
+    finish_app_summary(
+        tracked,
+        resolved_repository_id,
+        name,
+        warning,
+        installed_target,
+        candidates,
+        diagnostics,
+        inventory,
+    )
+}
+
+#[cfg(feature = "lua")]
+pub(crate) fn app_summary_from_resolved(
+    tracked: StoredTrackedPackage,
+    repository_id: Option<String>,
+    inventory: &InstalledInventory,
+    resolved: getter_core::ResolvedPackage,
+) -> StartupAppSummary {
+    let mut warning = StartupWarning::default();
+    warning.free_network = resolved.permissions.free_network;
+    finish_app_summary(
+        tracked,
+        repository_id,
+        Some(resolved.name),
+        warning,
+        resolved.installed.first().map(target_dto),
+        resolved.updates,
+        Vec::new(),
+        inventory,
+    )
+}
+
+fn finish_app_summary(
+    tracked: StoredTrackedPackage,
+    resolved_repository_id: Option<String>,
+    name: Option<String>,
+    warning: StartupWarning,
+    installed_target: Option<StartupInstalledTarget>,
+    candidates: Vec<getter_core::UpdateCandidate>,
+    mut diagnostics: Vec<StartupDiagnostic>,
+    inventory: &InstalledInventory,
+) -> StartupAppSummary {
     let installed_version = installed_target
         .as_ref()
         .and_then(|target| inventory_version(inventory, target));
@@ -411,7 +462,7 @@ fn app_summary(
     };
     StartupAppSummary {
         package_id: tracked.package_id.to_string(),
-        repository_id: tracked.repository_id.map(|id| id.to_string()),
+        repository_id: resolved_repository_id,
         name,
         favorite: tracked.favorite,
         pin_version: tracked.pin_version,

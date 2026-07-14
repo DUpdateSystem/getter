@@ -1,4 +1,5 @@
 use cucumber::{given, then, when, World as _};
+use getter_storage::{MainDb, StoredPackageResolution, TrackedPackageUpsert};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::fs;
@@ -541,7 +542,7 @@ fn create_package_directory_repository(
     .expect("write package metadata");
     fs::write(
         package_dir.join("1.20.0.lua"),
-        "#!/bin/upa-lua v1\nreturn package_version { installed = { { kind = \"android_package\", package_name = \"org.fdroid.fdroid\" } } }",
+        "#!/bin/upa-lua v1\nreturn package_version { installed = { { kind = \"android_package\", package_name = \"org.fdroid.fdroid\" } }, updates = { { version = \"1.20.0\", artifacts = { { name = \"app.apk\", url = \"https://example.invalid/app.apk\" } } } } }",
     )
     .expect("write version Lua");
     if script_count > 1 {
@@ -698,6 +699,78 @@ fn run_getter_repo_validate(world: &mut CliWorld) {
     );
     world.output = Some(output);
     world.json = None;
+}
+
+#[given(expr = "repository {string} is registered with priority {int}")]
+fn registered_repository(world: &mut CliWorld, repo_id: String, priority: i32) {
+    run_getter_repo_add_with_priority(world, &repo_id, priority);
+}
+
+#[given(expr = "package {string} is actively tracked")]
+fn actively_tracked_package(world: &mut CliWorld, package_id: String) {
+    let db = MainDb::open(world.data_dir.as_ref().expect("data dir").join("main.db")).unwrap();
+    db.upsert_tracked_package(&TrackedPackageUpsert {
+        package_id: package_id.parse().unwrap(),
+        enabled: true,
+        favorite: false,
+        pin_version: None,
+        repository_id: None,
+        package_resolution: StoredPackageResolution::OfficialRepositoryPackage,
+    })
+    .unwrap();
+}
+
+#[when(expr = "I run getter app show for {string} with that inventory")]
+fn run_app_show(world: &mut CliWorld, package_id: String) {
+    run_app_command(world, "show", package_id, true);
+}
+
+#[when(expr = "I run getter app check for {string} with that inventory")]
+fn run_app_check(world: &mut CliWorld, package_id: String) {
+    run_app_command(world, "check", package_id, true);
+}
+
+#[when(expr = "I run getter app check for {string} without inventory")]
+fn run_app_check_without_inventory(world: &mut CliWorld, package_id: String) {
+    run_app_command(world, "check", package_id, false);
+}
+
+fn run_app_command(world: &mut CliWorld, command: &str, package_id: String, inventory: bool) {
+    let mut args = vec!["app".to_owned(), command.to_owned(), package_id];
+    if inventory {
+        args.extend([
+            "--inventory".to_owned(),
+            world
+                .inventory
+                .as_ref()
+                .expect("inventory")
+                .display()
+                .to_string(),
+        ]);
+    }
+    world.output = Some(run_getter(world, args));
+    world.json = None;
+}
+
+#[then(expr = "the app result names {string} and reports installed version {string}")]
+fn app_result(world: &mut CliWorld, name: String, version: String) {
+    let json = current_json(world);
+    assert_eq!(json["data"]["name"], name);
+    assert_eq!(json["data"]["installed_version"], version);
+}
+
+#[then("the app check reports an available update and issues an action")]
+fn app_check_available(world: &mut CliWorld) {
+    let json = current_json(world);
+    assert_eq!(json["data"]["app"]["update_status"], "available");
+    assert!(json["data"]["action"]["action_id"].is_string());
+}
+
+#[then(expr = "the command fails with stable error {string}")]
+fn stable_error(world: &mut CliWorld, code: String) {
+    let json = current_json(world);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], code);
 }
 
 #[when("I run getter package eval for that fixture package")]

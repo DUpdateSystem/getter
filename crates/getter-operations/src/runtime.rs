@@ -18,7 +18,7 @@ use crate::lua_provider_host::{
     ProviderBackedPackageEvalConfig,
 };
 #[cfg(feature = "lua")]
-use crate::provider_cache::ProviderCacheMode;
+use crate::provider_cache::{ProviderCacheDiagnostic, ProviderCacheMode};
 #[cfg(feature = "lua")]
 use getter_core::repository::{
     package_directory_cache_key, RepositoryLoadError, RepositoryPackageDirectoryLayout,
@@ -38,6 +38,8 @@ use getter_providers::StaticPackageUpdatesProvider;
 #[cfg(feature = "lua")]
 use getter_storage::{MainDb, StorageError};
 use serde::Deserialize;
+#[cfg(feature = "lua")]
+use serde::Serialize;
 use serde_json::{json, Value};
 #[cfg(feature = "lua")]
 use std::path::PathBuf;
@@ -188,7 +190,7 @@ pub fn issue_action_from_registered_package_json(
 }
 
 #[cfg(feature = "lua")]
-fn issue_action_from_registered_package_json_with_github_transport(
+pub fn issue_action_from_registered_package_json_with_github_transport(
     runtime: &mut GetterRuntime,
     data_dir: &std::path::Path,
     db: &MainDb,
@@ -196,7 +198,51 @@ fn issue_action_from_registered_package_json_with_github_transport(
     github_release_transport: Option<Rc<dyn GithubReleaseTransport>>,
 ) -> Result<Value, RuntimeOperationError> {
     let request: RegisteredPackageUpdateActionRequest = parse_request(request_json)?;
-    let evaluated = evaluate_registered_package(data_dir, db, &request, github_release_transport)?;
+    let result = issue_action_from_registered_package_with_github_transport(
+        runtime,
+        data_dir,
+        db,
+        request,
+        github_release_transport,
+    )?;
+    serde_json::to_value(result)
+        .map_err(|source| RuntimeOperationError::Serialize(source.to_string()))
+}
+
+#[cfg(feature = "lua")]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct RegisteredPackageActionResult {
+    pub package: getter_core::ResolvedPackage,
+    pub update: getter_core::update::OfflineUpdateCheckResult,
+    pub action: Option<IssuedAction>,
+    pub provider_calls: Vec<Value>,
+    pub runtime_hooks: Vec<PathBuf>,
+}
+
+#[cfg(feature = "lua")]
+pub(crate) fn issue_action_from_registered_package_with_github_transport(
+    runtime: &mut GetterRuntime,
+    data_dir: &std::path::Path,
+    db: &MainDb,
+    request: RegisteredPackageUpdateActionRequest,
+    github_release_transport: Option<Rc<dyn GithubReleaseTransport>>,
+) -> Result<RegisteredPackageActionResult, RuntimeOperationError> {
+    let evaluated = evaluate_registered_package(
+        data_dir,
+        db,
+        &request,
+        ProviderCacheMode::UseCached,
+        github_release_transport,
+    )?;
+    issue_action_from_registered_evaluation(runtime, request, evaluated)
+}
+
+#[cfg(feature = "lua")]
+pub(crate) fn issue_action_from_registered_evaluation(
+    runtime: &mut GetterRuntime,
+    request: RegisteredPackageUpdateActionRequest,
+    evaluated: RegisteredPackageEvaluation,
+) -> Result<RegisteredPackageActionResult, RuntimeOperationError> {
     let candidates = StaticPackageUpdatesProvider.check_updates(&evaluated.package);
     let update = check_updates_offline(
         evaluated.package.id.clone(),
@@ -206,25 +252,23 @@ fn issue_action_from_registered_package_json_with_github_transport(
             pin_version: request.pin_version,
         },
     )?;
-    let action = if update.actions.is_empty() {
-        None
-    } else {
-        Some(runtime.issue_action(SealedActionPlan {
+    let action = (!update.actions.is_empty()).then(|| {
+        runtime.issue_action(SealedActionPlan {
             package_id: update.package_id.clone(),
             actions: update.actions.clone(),
             lua_object: PackageVersionLuaObject {
                 object_id: format!("package-update:{}", update.package_id),
                 dependency_digest: evaluated.dependency_digest,
             },
-        }))
-    };
-    Ok(json!({
-        "package": evaluated.package,
-        "update": update,
-        "action": action.map(issued_action_json),
-        "provider_calls": evaluated.provider_calls,
-        "runtime_hooks": evaluated.runtime_hooks,
-    }))
+        })
+    });
+    Ok(RegisteredPackageActionResult {
+        package: evaluated.package,
+        update,
+        action,
+        provider_calls: evaluated.provider_calls,
+        runtime_hooks: evaluated.runtime_hooks,
+    })
 }
 
 pub fn submit_action_json(
@@ -438,14 +482,14 @@ struct OfflineUpdateActionRequest {
 #[cfg(feature = "lua")]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RegisteredPackageUpdateActionRequest {
-    package_id: PackageId,
+pub(crate) struct RegisteredPackageUpdateActionRequest {
+    pub package_id: PackageId,
     #[serde(default)]
-    repository_id: Option<RepositoryId>,
+    pub repository_id: Option<RepositoryId>,
     #[serde(default)]
-    installed_version: Option<String>,
+    pub installed_version: Option<String>,
     #[serde(default, alias = "ignored_version")]
-    pin_version: Option<String>,
+    pub pin_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -490,18 +534,20 @@ struct CleanTasksRequest {
 }
 
 #[cfg(feature = "lua")]
-struct RegisteredPackageEvaluation {
-    package: getter_core::ResolvedPackage,
+pub(crate) struct RegisteredPackageEvaluation {
+    pub package: getter_core::ResolvedPackage,
+    pub diagnostics: Vec<ProviderCacheDiagnostic>,
     dependency_digest: String,
     provider_calls: Vec<Value>,
     runtime_hooks: Vec<PathBuf>,
 }
 
 #[cfg(feature = "lua")]
-fn evaluate_registered_package(
+pub(crate) fn evaluate_registered_package(
     data_dir: &std::path::Path,
     db: &MainDb,
     request: &RegisteredPackageUpdateActionRequest,
+    cache_mode: ProviderCacheMode,
     github_release_transport: Option<Rc<dyn GithubReleaseTransport>>,
 ) -> Result<RegisteredPackageEvaluation, RuntimeOperationError> {
     let repositories = db.repositories()?;
@@ -532,7 +578,7 @@ fn evaluate_registered_package(
             &metadata,
             script,
             ProviderBackedPackageEvalConfig {
-                mode: ProviderCacheMode::UseCached,
+                mode: cache_mode,
                 fdroid_endpoint_id: None,
                 fdroid_endpoint_url: None,
                 fdroid_index_xml: None,
@@ -548,8 +594,17 @@ fn evaluate_registered_package(
             "repo:{}:package:{}:hash:{}",
             cache_key.repository_id, cache_key.package_id, cache_key.package_file_hash
         );
+        let diagnostics = provider_eval
+            .provider_calls
+            .iter()
+            .filter_map(|call| call.get("diagnostics"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|diagnostic| serde_json::from_value(diagnostic.clone()).ok())
+            .collect();
         return Ok(RegisteredPackageEvaluation {
             package: provider_eval.package,
+            diagnostics,
             dependency_digest,
             provider_calls: provider_eval.provider_calls,
             runtime_hooks: provider_eval.runtime_hooks,
