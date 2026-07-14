@@ -650,6 +650,7 @@ dependencies = [
  "getter-storage",
  "json_comments",
  "mlua",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

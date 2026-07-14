@@ -22,4 +22,5 @@ thiserror = "1"
 ureq = { version = "3.3.0", default-features = false, features = ["gzip", "rustls"] }
 
 [dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"

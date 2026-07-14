@@ -25,3 +25,4 @@ pub mod lua_runtime_hooks;
 pub mod provider_cache;
 pub mod read_model;
 pub mod runtime;
+pub mod startup;

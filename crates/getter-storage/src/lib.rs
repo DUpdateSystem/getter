@@ -14,6 +14,11 @@ use serde_json::Value;
 use std::path::Path;
 use std::str::FromStr;
 
+pub const MAIN_STORAGE_CONTRACT_VERSION: u32 = 1;
+pub const CACHE_STORAGE_CONTRACT_VERSION: u32 = 1;
+pub const MAIN_APPLIED_MIGRATION_IDS: &[&str] = &["main-v1", "main-task-v1"];
+pub const CACHE_APPLIED_MIGRATION_IDS: &[&str] = &["cache-v1", "cache-provider-provenance-v1"];
+
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     #[error("sqlite error: {0}")]
@@ -52,10 +57,16 @@ pub struct CacheDb {
 
 impl MainDb {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+        Self::open_with_migration_status(path).map(|(db, _)| db)
+    }
+
+    pub fn open_with_migration_status(
+        path: impl AsRef<Path>,
+    ) -> Result<(Self, bool), StorageError> {
         let conn = Connection::open(path)?;
         let db = Self { conn };
-        db.migrate()?;
-        Ok(db)
+        let migrations_applied = db.migrate()?;
+        Ok((db, migrations_applied))
     }
 
     pub fn open_in_memory() -> Result<Self, StorageError> {
@@ -65,7 +76,7 @@ impl MainDb {
         Ok(db)
     }
 
-    fn migrate(&self) -> Result<(), StorageError> {
+    fn migrate(&self) -> Result<bool, StorageError> {
         self.conn.execute_batch(
             r#"
 PRAGMA foreign_keys = ON;
@@ -146,15 +157,14 @@ CREATE TABLE IF NOT EXISTS install_handoffs (
             "package_resolution",
             "TEXT NOT NULL DEFAULT 'missing_package_definition'",
         )?;
-        self.conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations(id) VALUES ('main-v1')",
-            [],
-        )?;
-        self.conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations(id) VALUES ('main-task-v1')",
-            [],
-        )?;
-        Ok(())
+        let mut migrations_applied = false;
+        for migration_id in MAIN_APPLIED_MIGRATION_IDS {
+            migrations_applied |= self.conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(id) VALUES (?1)",
+                [migration_id],
+            )? > 0;
+        }
+        Ok(migrations_applied)
     }
 
     fn ensure_column(
@@ -838,10 +848,16 @@ WHERE task_id = ?4
 
 impl CacheDb {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+        Self::open_with_migration_status(path).map(|(db, _)| db)
+    }
+
+    pub fn open_with_migration_status(
+        path: impl AsRef<Path>,
+    ) -> Result<(Self, bool), StorageError> {
         let conn = Connection::open(path)?;
         let db = Self { conn };
-        db.migrate()?;
-        Ok(db)
+        let migrations_applied = db.migrate()?;
+        Ok((db, migrations_applied))
     }
 
     pub fn open_in_memory() -> Result<Self, StorageError> {
@@ -851,7 +867,7 @@ impl CacheDb {
         Ok(db)
     }
 
-    fn migrate(&self) -> Result<(), StorageError> {
+    fn migrate(&self) -> Result<bool, StorageError> {
         self.conn.execute_batch(
             r#"
 PRAGMA foreign_keys = ON;
@@ -893,15 +909,14 @@ CREATE TABLE IF NOT EXISTS provider_responses (
             "freshness_json",
             "TEXT NOT NULL DEFAULT '{}'",
         )?;
-        self.conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations(id) VALUES ('cache-v1')",
-            [],
-        )?;
-        self.conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations(id) VALUES ('cache-provider-provenance-v1')",
-            [],
-        )?;
-        Ok(())
+        let mut migrations_applied = false;
+        for migration_id in CACHE_APPLIED_MIGRATION_IDS {
+            migrations_applied |= self.conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(id) VALUES (?1)",
+                [migration_id],
+            )? > 0;
+        }
+        Ok(migrations_applied)
     }
 
     fn ensure_column(
@@ -1407,6 +1422,31 @@ mod tests {
     use super::*;
     use getter_core::repository::REPO_API_VERSION_V1;
     use getter_core::task::TaskExecutor;
+
+    #[test]
+    fn applied_migration_rows_match_public_constants() {
+        let main = MainDb::open_in_memory().unwrap();
+        let main_ids = main
+            .conn
+            .prepare("SELECT id FROM schema_migrations ORDER BY rowid")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(main_ids, MAIN_APPLIED_MIGRATION_IDS);
+
+        let cache = CacheDb::open_in_memory().unwrap();
+        let cache_ids = cache
+            .conn
+            .prepare("SELECT id FROM schema_migrations ORDER BY rowid")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(cache_ids, CACHE_APPLIED_MIGRATION_IDS);
+    }
 
     #[test]
     fn main_db_stores_repository_registry_ordered_by_priority() {

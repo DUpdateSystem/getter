@@ -10,12 +10,14 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha512};
 
 pub const CACHE_REFRESH_FAILED: &str = "cache.refresh_failed";
+pub const CACHE_ONLY_MISS: &str = "cache.cache_only_miss";
 pub const USED_STALE_CACHE: &str = "used_stale_cache";
 pub const PROVIDER_RESPONSE_PROVENANCE_SCHEMA_V1: &str = "provider-response-provenance-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCacheMode {
     UseCached,
+    CacheOnly,
     ForceRefresh,
 }
 
@@ -62,6 +64,8 @@ pub enum ProviderCacheOperationError {
     Storage(#[from] StorageError),
     #[error("provider refresh failed: {0}")]
     RefreshFailed(String),
+    #[error("provider cache-only miss for '{cache_key}' ({provider})")]
+    CacheOnlyMiss { cache_key: String, provider: String },
 }
 
 pub fn read_or_refresh_provider_response<F>(
@@ -90,12 +94,21 @@ where
     F: FnOnce() -> Result<ProviderResponseRefresh, String>,
 {
     let cached = db.provider_response(request.cache_key)?;
-    if request.mode == ProviderCacheMode::UseCached {
+    if matches!(
+        request.mode,
+        ProviderCacheMode::UseCached | ProviderCacheMode::CacheOnly
+    ) {
         if let Some(response) = cached {
             return Ok(ProviderCacheResult {
                 response,
                 source: ProviderCacheSource::Cache,
                 diagnostics: Vec::new(),
+            });
+        }
+        if request.mode == ProviderCacheMode::CacheOnly {
+            return Err(ProviderCacheOperationError::CacheOnlyMiss {
+                cache_key: request.cache_key.to_owned(),
+                provider: request.provider.to_owned(),
             });
         }
     }
@@ -159,7 +172,7 @@ mod tests {
     use std::cell::Cell;
 
     #[test]
-    fn uses_cached_provider_response_without_refreshing() {
+    fn cache_only_hit_returns_cached_response_without_refreshing() {
         let db = CacheDb::open_in_memory().unwrap();
         db.upsert_provider_response(&ProviderResponseUpsert {
             cache_key: "fdroid:official:index".to_owned(),
@@ -177,11 +190,11 @@ mod tests {
             ProviderCacheRequest {
                 cache_key: "fdroid:official:index",
                 provider: "fdroid",
-                mode: ProviderCacheMode::UseCached,
+                mode: ProviderCacheMode::CacheOnly,
             },
             || {
                 refreshed.set(true);
-                Ok(json!({ "revision": "fresh" }))
+                panic!("cache-only mode must not refresh a hit")
             },
         )
         .unwrap();
@@ -190,6 +203,30 @@ mod tests {
         assert_eq!(result.source, ProviderCacheSource::Cache);
         assert_eq!(result.response.response_json["revision"], "cached");
         assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn cache_only_miss_never_invokes_refresh() {
+        let db = CacheDb::open_in_memory().unwrap();
+        let refresh_called = Cell::new(false);
+        let error = read_or_refresh_provider_response(
+            &db,
+            ProviderCacheRequest {
+                cache_key: "github:missing",
+                provider: "github-releases",
+                mode: ProviderCacheMode::CacheOnly,
+            },
+            || {
+                refresh_called.set(true);
+                panic!("cache-only mode must not invoke refresh")
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ProviderCacheOperationError::CacheOnlyMiss { .. }
+        ));
+        assert!(!refresh_called.get());
     }
 
     #[test]

@@ -8,8 +8,8 @@ use getter_core::autogen::InstalledInventory;
 use getter_core::diagnostics::validate_repository_path;
 use getter_core::lua::evaluate_package_directory_script;
 use getter_core::repository::{
-    default_repository_priority, GetterDataDirLayout, RepositoryMetadata,
-    RepositoryPackageDirectoryLayout, REPOSITORY_ROOT_METADATA_FILE, REPO_API_VERSION_V1,
+    default_repository_priority, RepositoryMetadata, RepositoryPackageDirectoryLayout,
+    REPO_API_VERSION_V1,
 };
 use getter_core::runtime::{GetterRuntime, SealedActionPlan};
 use getter_core::task::{
@@ -28,6 +28,7 @@ use getter_operations::github_latest_commit::{self, GithubLatestCommitOperationE
 use getter_operations::github_releases::{self, GithubReleaseOperationError};
 use getter_operations::legacy_room::{self, LegacyRoomOperationError};
 use getter_operations::runtime as runtime_operations;
+use getter_operations::startup as startup_operations;
 use getter_storage::legacy_room::{
     map_legacy_app, LegacyAppKind, LegacyAppRecord, LegacyExtraAppRecord, LegacyPackageResolution,
 };
@@ -44,19 +45,6 @@ const MAIN_DB_FILE: &str = "main.db";
 const CACHE_DB_FILE: &str = "cache.db";
 const MIGRATION_REPORTS_DIR: &str = "migration-reports";
 const LEGACY_ROOM_MIGRATION_ID: &str = "legacy-room-v17";
-const REPOSITORY_ROOT_METADATA_STARTER: &str = r#"{
-  "version": 1,
-  // Autogen writes to "autogen" by default. Uncomment and change this
-  // if generated packages should target another existing repository alias.
-  // "generated_repository": "autogen",
-  "priority": {
-    "local": 100,
-    "official": 0,
-    "autogen": -1
-  }
-}
-"#;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliInvocation {
     pub data_dir: PathBuf,
@@ -66,6 +54,9 @@ pub struct CliInvocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
     Init,
+    Startup {
+        inventory: Option<PathBuf>,
+    },
     AppList,
     HubList,
     RepoList,
@@ -445,6 +436,12 @@ where
     let command_args = &args[2..];
     let command = match command_args {
         [command] if command == "init" => CliCommand::Init,
+        [command] if command == "startup" => CliCommand::Startup { inventory: None },
+        [command, flag, inventory] if command == "startup" && flag == "--inventory" => {
+            CliCommand::Startup {
+                inventory: Some(PathBuf::from(inventory)),
+            }
+        }
         [domain, command] if domain == "app" && command == "list" => CliCommand::AppList,
         [domain, command] if domain == "hub" && command == "list" => CliCommand::HubList,
         [domain, command] if domain == "repo" && command == "list" => CliCommand::RepoList,
@@ -707,16 +704,27 @@ where
 
 fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
     match invocation.command {
+        CliCommand::Startup { inventory } => {
+            let inventory = match inventory {
+                Some(path) => read_installed_inventory(&path)?,
+                None => InstalledInventory::new(Vec::new()),
+            };
+            serde_json::to_value(
+                startup_operations::startup(&invocation.data_dir, inventory)
+                    .map_err(|error| CliError::Storage(error.to_string()))?,
+            )
+            .map_err(|error| CliError::Storage(error.to_string()))
+        }
         CliCommand::Init => {
-            initialize_storage(&invocation.data_dir)?;
-            let layout = initialize_data_dir_layout(&invocation.data_dir)?;
+            let bootstrap = startup_operations::bootstrap_data_dir(&invocation.data_dir)
+                .map_err(|error| CliError::Storage(error.to_string()))?;
             Ok(json!({
-                "data_dir": layout.root,
-                "main_db": layout.main_db,
-                "cache_db": layout.cache_db,
-                "repo": layout.repository_root,
-                "rc": layout.runtime_config_root,
-                "repo_metadata": layout.repository_root.join(REPOSITORY_ROOT_METADATA_FILE),
+                "data_dir": bootstrap.data_dir,
+                "main_db": bootstrap.main_db.path,
+                "cache_db": bootstrap.cache_db.path,
+                "repo": bootstrap.repo,
+                "rc": bootstrap.rc,
+                "repo_metadata": bootstrap.repo_metadata,
             }))
         }
         CliCommand::AppList => {
@@ -1090,26 +1098,6 @@ fn initialize_storage(data_dir: &Path) -> Result<(), CliError> {
     MainDb::open(main_db_path(data_dir))?;
     CacheDb::open(cache_db_path(data_dir))?;
     Ok(())
-}
-
-fn initialize_data_dir_layout(data_dir: &Path) -> Result<GetterDataDirLayout, CliError> {
-    let layout = GetterDataDirLayout::new(data_dir);
-    fs::create_dir_all(&layout.repository_root).map_err(|source| {
-        CliError::Storage(format!("failed to create repository root: {source}"))
-    })?;
-    fs::create_dir_all(&layout.runtime_config_root).map_err(|source| {
-        CliError::Storage(format!("failed to create runtime config root: {source}"))
-    })?;
-    let metadata_path = layout.repository_root.join(REPOSITORY_ROOT_METADATA_FILE);
-    if !metadata_path.exists() {
-        fs::write(&metadata_path, REPOSITORY_ROOT_METADATA_STARTER).map_err(|source| {
-            CliError::Storage(format!(
-                "failed to write repository root metadata '{}': {source}",
-                metadata_path.display()
-            ))
-        })?;
-    }
-    Ok(layout)
 }
 
 fn open_initialized_storage(data_dir: &Path) -> Result<(), CliError> {
@@ -2246,7 +2234,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> [--package <package-name>...] [--inventory <installed.json>]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen github preview --owner <owner> --repo <repo> --android-package <package-name> --releases <fixture.json> [--display-name <name>] [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases]|autogen github apply --preview <preview.json> (--accept-all|--accept <package-id>...)|provider github releases --owner <owner> --repo <repo> [--releases <fixture.json>] [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases] [--refresh]|provider github latest-commit --owner <owner> --repo <repo> --commit <fixture.json> [--ref <ref>] [--refresh]|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
+    "Usage: getter --data-dir <path> <init|startup [--inventory <installed.json>]|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> [--package <package-name>...] [--inventory <installed.json>]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen github preview --owner <owner> --repo <repo> --android-package <package-name> --releases <fixture.json> [--display-name <name>] [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases]|autogen github apply --preview <preview.json> (--accept-all|--accept <package-id>...)|provider github releases --owner <owner> --repo <repo> [--releases <fixture.json>] [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases] [--refresh]|provider github latest-commit --owner <owner> --repo <repo> --commit <fixture.json> [--ref <ref>] [--refresh]|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -2291,6 +2279,7 @@ impl CliCommand {
     fn name(&self) -> &'static str {
         match self {
             Self::Init => "init",
+            Self::Startup { .. } => "startup",
             Self::AppList => "app list",
             Self::HubList => "hub list",
             Self::RepoList => "repo list",
