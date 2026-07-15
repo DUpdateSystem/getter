@@ -22,6 +22,7 @@ use getter_providers::FdroidApp;
 use getter_storage::{CacheDb, MainDb};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub fn preview_fdroid_packages_json(
@@ -301,7 +302,7 @@ fn fdroid_generated_files(
         "type": "android:app",
         "android": { "package_name": app.package_name },
     }))?;
-    let manifest = fdroid_manifest(source_response_sha512);
+    let manifest = fdroid_manifest(source_response_sha512, app);
     let version_lua = fdroid_version_lua(app);
     Ok(vec![
         generated_file("metadata.jsonc", metadata),
@@ -310,11 +311,26 @@ fn fdroid_generated_files(
     ])
 }
 
-fn fdroid_manifest(source_response_sha512: &[String]) -> String {
-    source_response_sha512
-        .iter()
-        .map(|digest| format!("{digest} fdroid-index.xml\n"))
-        .collect()
+fn fdroid_manifest(source_response_sha512: &[String], app: &FdroidApp) -> String {
+    let mut memberships = HashSet::new();
+    let mut manifest = String::new();
+    for digest in source_response_sha512 {
+        let membership = (digest.clone(), "fdroid-index.xml".to_owned());
+        if memberships.insert(membership.clone()) {
+            manifest.push_str(&format!("{} {}\n", membership.0, membership.1));
+        }
+    }
+    for release in &app.packages {
+        if let Some(digest) = release.sha256.as_deref().filter(|digest| {
+            digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            let membership = (digest.to_ascii_lowercase(), release.apk_name.clone());
+            if memberships.insert(membership.clone()) {
+                manifest.push_str(&format!("{} {}\n", membership.0, membership.1));
+            }
+        }
+    }
+    manifest
 }
 
 fn fdroid_version_lua(app: &FdroidApp) -> String {
@@ -460,8 +476,10 @@ mod tests {
         assert_eq!(
             manifest,
             format!(
-                "{} fdroid-index.xml\n",
-                source_response_sha512(FDROID_FIXTURE)
+                "{} fdroid-index.xml\n{} org.fdroid.fdroid_1020000.apk\n{} org.fdroid.fdroid_1019000.apk\n",
+                source_response_sha512(FDROID_FIXTURE),
+                "a".repeat(64),
+                "b".repeat(64),
             )
         );
         assert_eq!(
@@ -473,6 +491,43 @@ mod tests {
             "provider.fdroid.package_not_found"
         );
         assert!(!temp.path().join("repo/autogen").exists());
+    }
+
+    #[test]
+    fn manifest_deduplicates_reused_artifact_membership() {
+        let digest = "A".repeat(64);
+        let app = FdroidApp {
+            package_name: "org.example.app".to_owned(),
+            name: None,
+            summary: None,
+            packages: vec![
+                getter_providers::FdroidRelease {
+                    version: "2".to_owned(),
+                    version_code: Some(2),
+                    apk_name: "app.apk".to_owned(),
+                    sha256: Some(digest.clone()),
+                    size: None,
+                },
+                getter_providers::FdroidRelease {
+                    version: "1".to_owned(),
+                    version_code: Some(1),
+                    apk_name: "app.apk".to_owned(),
+                    sha256: Some(digest.clone()),
+                    size: None,
+                },
+            ],
+        };
+
+        let manifest = fdroid_manifest(&["b".repeat(128)], &app);
+
+        getter_core::manifest::PackageManifest::parse(&manifest).unwrap();
+        assert_eq!(
+            manifest
+                .lines()
+                .filter(|line| *line == format!("{} app.apk", digest.to_ascii_lowercase()))
+                .count(),
+            1
+        );
     }
 
     #[test]

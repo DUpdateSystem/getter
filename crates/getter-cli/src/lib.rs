@@ -66,6 +66,9 @@ pub enum CliCommand {
         package_id: PackageId,
         inventory: Option<PathBuf>,
     },
+    AppDownload {
+        package_id: PackageId,
+    },
     HubList,
     RepoList,
     RepoAdd {
@@ -477,19 +480,20 @@ where
         }
         [domain, command] if domain == "app" && command == "list" => CliCommand::AppList,
         [domain, command, package_id]
-            if domain == "app" && (command == "show" || command == "check") =>
+            if domain == "app"
+                && (command == "show" || command == "check" || command == "download") =>
         {
             let package_id = parse_package_id(package_id)?;
-            if command == "show" {
-                CliCommand::AppShow {
+            match command.as_str() {
+                "show" => CliCommand::AppShow {
                     package_id,
                     inventory: None,
-                }
-            } else {
-                CliCommand::AppCheck {
+                },
+                "check" => CliCommand::AppCheck {
                     package_id,
                     inventory: None,
-                }
+                },
+                _ => CliCommand::AppDownload { package_id },
             }
         }
         [domain, command, package_id, flag, inventory]
@@ -828,6 +832,11 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
                     .map_err(map_app_error)?,
             )
             .map_err(|error| CliError::Storage(error.to_string()))
+        }
+        CliCommand::AppDownload { package_id } => {
+            let result = getter_operations::app::download_app(&invocation.data_dir, &package_id)
+                .map_err(map_app_error)?;
+            serde_json::to_value(result).map_err(|error| CliError::Storage(error.to_string()))
         }
         CliCommand::AppCheck {
             package_id,
@@ -2401,6 +2410,7 @@ impl CliCommand {
             Self::AppList => "app list",
             Self::AppShow { .. } => "app show",
             Self::AppCheck { .. } => "app check",
+            Self::AppDownload { .. } => "app download",
             Self::HubList => "hub list",
             Self::RepoList => "repo list",
             Self::RepoAdd { .. } => "repo add",

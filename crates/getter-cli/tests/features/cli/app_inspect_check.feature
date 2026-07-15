@@ -20,3 +20,16 @@ Feature: Inspect and actively check a tracked app
   Scenario: Check requires installed inventory
     When I run getter app check for "android/app/fdroid" without inventory
     Then the command fails with stable error "inventory.invalid"
+
+  Scenario: Download requires an artifact Manifest checksum
+    When I run getter app download for "android/app/fdroid"
+    Then the command fails with stable error "artifact.manifest_missing"
+
+  Scenario: Download stages an artifact and reuses it on the next invocation
+    Given the package has a deterministic locally served artifact with a Manifest checksum
+    When I run getter app download twice for "android/app/fdroid"
+    Then the first download is downloaded and the second is reused from the same path
+
+  Scenario: Download rejects transport controls
+    When I run getter app download for "android/app/fdroid" with a URL control
+    Then the command fails with stable error "cli.usage"

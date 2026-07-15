@@ -18,7 +18,7 @@ use getter_core::repository::{
 use getter_core::{RepositoryId, ResolvedPackage};
 use sha2::{Digest, Sha512};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -148,20 +148,14 @@ pub fn evaluate_package_directory_script_with_fixture_http_and_runtime_hooks(
 }
 
 #[derive(Debug, Clone)]
-struct PackageManifest {
-    sha512: BTreeSet<String>,
-}
+struct PackageManifest(getter_core::manifest::PackageManifest);
 
 impl PackageManifest {
     fn load(path: impl AsRef<Path>) -> Result<Self, LuaHttpPolicyError> {
         let path = path.as_ref();
         let source = match fs::read_to_string(path) {
             Ok(source) => source,
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self {
-                    sha512: BTreeSet::new(),
-                })
-            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(source) => {
                 return Err(LuaHttpPolicyError::ReadManifest {
                     path: path.to_path_buf(),
@@ -169,37 +163,17 @@ impl PackageManifest {
                 })
             }
         };
-        let mut sha512 = BTreeSet::new();
-        for (line_index, raw_line) in source.lines().enumerate() {
-            let line = raw_line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let hash = line
-                .split_whitespace()
-                .next()
-                .expect("non-empty line has token");
-            if !is_sha512_hex(hash) {
-                return Err(LuaHttpPolicyError::InvalidManifest {
-                    path: path.to_path_buf(),
-                    reason: format!(
-                        "line {} must start with a 128-character SHA-512 hex digest",
-                        line_index + 1
-                    ),
-                });
-            }
-            sha512.insert(hash.to_ascii_lowercase());
-        }
-        Ok(Self { sha512 })
+        getter_core::manifest::PackageManifest::parse(&source)
+            .map(Self)
+            .map_err(|source| LuaHttpPolicyError::InvalidManifest {
+                path: path.to_path_buf(),
+                reason: source.to_string(),
+            })
     }
 
     fn contains(&self, digest: &str) -> bool {
-        self.sha512.contains(digest)
+        self.0.contains_sha512(digest)
     }
-}
-
-fn is_sha512_hex(value: &str) -> bool {
-    value.len() == 128 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn sha512_hex(body: &[u8]) -> String {

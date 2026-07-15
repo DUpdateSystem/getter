@@ -25,6 +25,7 @@ use getter_providers::{
 use getter_storage::{CacheDb, MainDb};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub fn preview_github_android_package_json(
@@ -155,6 +156,7 @@ where
         } else {
             candidates.push(github_candidate_json(
                 &result.source_response_sha512,
+                &update_candidates,
                 &package_id,
                 GithubGeneratedPackageInput {
                     owner: &owner,
@@ -265,11 +267,12 @@ struct GithubGeneratedPackageInput<'a> {
 
 fn github_candidate_json(
     source_response_sha512: &[String],
+    update_candidates: &[getter_core::UpdateCandidate],
     package_id: &PackageId,
     input: GithubGeneratedPackageInput<'_>,
 ) -> AutogenOperationResult<Value> {
     let relative_path = package_relative_path(package_id);
-    let files = github_generated_files(source_response_sha512, &input)?;
+    let files = github_generated_files(source_response_sha512, update_candidates, &input)?;
     let record = AutogenRecord {
         version: AUTOGEN_RECORD_VERSION,
         generator: GITHUB_AUTOGEN_GENERATOR.to_owned(),
@@ -325,6 +328,7 @@ fn github_candidate_json(
 
 fn github_generated_files(
     source_response_sha512: &[String],
+    update_candidates: &[getter_core::UpdateCandidate],
     input: &GithubGeneratedPackageInput<'_>,
 ) -> AutogenOperationResult<Vec<GeneratedPackageFile>> {
     if source_response_sha512.is_empty() {
@@ -338,7 +342,7 @@ fn github_generated_files(
         "display_name": input.display_name,
         "android": { "package_name": input.android_package },
     }))?;
-    let manifest = github_manifest(source_response_sha512);
+    let manifest = github_manifest(source_response_sha512, update_candidates);
     let version_lua = github_version_lua(input);
     Ok(vec![
         generated_file("metadata.jsonc", metadata),
@@ -347,11 +351,31 @@ fn github_generated_files(
     ])
 }
 
-fn github_manifest(source_response_sha512: &[String]) -> String {
-    source_response_sha512
-        .iter()
-        .map(|digest| format!("{digest} github-releases.json\n"))
-        .collect()
+fn github_manifest(
+    source_response_sha512: &[String],
+    update_candidates: &[getter_core::UpdateCandidate],
+) -> String {
+    let mut memberships = HashSet::new();
+    let mut manifest = String::new();
+    for digest in source_response_sha512 {
+        let membership = (digest.clone(), "github-releases.json".to_owned());
+        if memberships.insert(membership.clone()) {
+            manifest.push_str(&format!("{} {}\n", membership.0, membership.1));
+        }
+    }
+    for candidate in update_candidates {
+        for artifact in &candidate.artifacts {
+            if let (Some(file_name), Some(digest)) = (&artifact.file_name, &artifact.sha256) {
+                if digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    let membership = (digest.to_ascii_lowercase(), file_name.clone());
+                    if memberships.insert(membership.clone()) {
+                        manifest.push_str(&format!("{} {}\n", membership.0, membership.1));
+                    }
+                }
+            }
+        }
+    }
+    manifest
 }
 
 fn github_version_lua(input: &GithubGeneratedPackageInput<'_>) -> String {
@@ -564,6 +588,95 @@ mod tests {
     }
 
     #[test]
+    fn manifest_covers_valid_digests_for_every_filtered_candidate() {
+        let first = getter_core::UpdateCandidate {
+            version: "1".to_owned(),
+            version_code: None,
+            channel: Some("stable".to_owned()),
+            changelog: None,
+            source: Some("github".to_owned()),
+            artifacts: vec![getter_core::UpdateArtifact {
+                name: "first.apk".to_owned(),
+                url: "https://example.invalid/first.apk".to_owned(),
+                content_type: None,
+                file_name: Some("first.apk".to_owned()),
+                sha256: Some("A".repeat(64)),
+                size: None,
+            }],
+        };
+        let second = getter_core::UpdateCandidate {
+            version: "2".to_owned(),
+            version_code: None,
+            channel: Some("stable".to_owned()),
+            changelog: None,
+            source: Some("github".to_owned()),
+            artifacts: vec![
+                getter_core::UpdateArtifact {
+                    name: "second.apk".to_owned(),
+                    url: "https://example.invalid/second.apk".to_owned(),
+                    content_type: None,
+                    file_name: Some("second.apk".to_owned()),
+                    sha256: Some("B".repeat(64)),
+                    size: None,
+                },
+                getter_core::UpdateArtifact {
+                    name: "invalid.apk".to_owned(),
+                    url: "https://example.invalid/invalid.apk".to_owned(),
+                    content_type: None,
+                    file_name: Some("invalid.apk".to_owned()),
+                    sha256: Some("not-a-digest".to_owned()),
+                    size: None,
+                },
+            ],
+        };
+
+        let repeated = getter_core::UpdateCandidate {
+            version: "3".to_owned(),
+            version_code: None,
+            channel: Some("stable".to_owned()),
+            changelog: None,
+            source: Some("github".to_owned()),
+            artifacts: vec![getter_core::UpdateArtifact {
+                name: "first.apk".to_owned(),
+                url: "https://example.invalid/new-first.apk".to_owned(),
+                content_type: None,
+                file_name: Some("first.apk".to_owned()),
+                sha256: Some("A".repeat(64)),
+                size: None,
+            }],
+        };
+        let distinct = getter_core::UpdateCandidate {
+            version: "4".to_owned(),
+            version_code: None,
+            channel: Some("stable".to_owned()),
+            changelog: None,
+            source: Some("github".to_owned()),
+            artifacts: vec![getter_core::UpdateArtifact {
+                name: "first.apk".to_owned(),
+                url: "https://example.invalid/distinct-first.apk".to_owned(),
+                content_type: None,
+                file_name: Some("first.apk".to_owned()),
+                sha256: Some("D".repeat(64)),
+                size: None,
+            }],
+        };
+
+        let manifest = github_manifest(&["c".repeat(128)], &[first, second, repeated, distinct]);
+
+        getter_core::manifest::PackageManifest::parse(&manifest).unwrap();
+        assert_eq!(
+            manifest
+                .lines()
+                .filter(|line| *line == format!("{} first.apk", "a".repeat(64)))
+                .count(),
+            1
+        );
+        assert!(manifest.contains(&format!("{} first.apk\n", "d".repeat(64))));
+        assert!(manifest.contains(&format!("{} second.apk\n", "b".repeat(64))));
+        assert!(!manifest.contains("invalid.apk"));
+    }
+
+    #[test]
     fn preview_without_fixture_refreshes_github_releases_through_getter_transport() {
         let temp = tempfile::tempdir().unwrap();
         let main_db = MainDb::open(temp.path().join("main.db")).unwrap();
@@ -688,6 +801,7 @@ mod tests {
             exclude: None,
         };
         let error = github_generated_files(
+            &[],
             &[],
             &GithubGeneratedPackageInput {
                 owner: "DUpdateSystem",

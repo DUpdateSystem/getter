@@ -14,6 +14,7 @@ pub mod autogen;
 pub mod diagnostics;
 #[cfg(feature = "lua")]
 pub mod lua;
+pub mod manifest;
 pub mod repository;
 pub mod runtime;
 pub mod task;

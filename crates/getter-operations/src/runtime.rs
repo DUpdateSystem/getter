@@ -536,6 +536,7 @@ struct CleanTasksRequest {
 #[cfg(feature = "lua")]
 pub(crate) struct RegisteredPackageEvaluation {
     pub package: getter_core::ResolvedPackage,
+    pub package_path: PathBuf,
     pub diagnostics: Vec<ProviderCacheDiagnostic>,
     dependency_digest: String,
     provider_calls: Vec<Value>,
@@ -604,6 +605,7 @@ pub(crate) fn evaluate_registered_package(
             .collect();
         return Ok(RegisteredPackageEvaluation {
             package: provider_eval.package,
+            package_path: package_directory.path.clone(),
             diagnostics,
             dependency_digest,
             provider_calls: provider_eval.provider_calls,

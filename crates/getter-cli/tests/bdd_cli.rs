@@ -3,6 +3,8 @@ use getter_storage::{MainDb, StoredPackageResolution, TrackedPackageUpsert};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
@@ -27,6 +29,8 @@ struct CliWorld {
     fixture_repo_id: Option<String>,
     fixture_repo_path: Option<PathBuf>,
     fixture_package_id: Option<String>,
+    local_artifact_server: Option<std::thread::JoinHandle<()>>,
+    first_download_json: Option<Value>,
     output: Option<std::process::Output>,
     json: Option<Value>,
 }
@@ -735,6 +739,80 @@ fn run_app_check_without_inventory(world: &mut CliWorld, package_id: String) {
     run_app_command(world, "check", package_id, false);
 }
 
+#[given("the package has a deterministic locally served artifact with a Manifest checksum")]
+fn deterministic_local_artifact(world: &mut CliWorld) {
+    let bytes = b"BDD deterministic artifact";
+    let digest = "9951fef5dd31f26c142ff2dcb6de2c56a58a3873c0211fdbaaa9e792d22d4e59";
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local fixture server");
+    let address = listener.local_addr().expect("fixture address");
+    world.local_artifact_server = Some(std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("fixture request");
+        let mut request = [0; 1024];
+        let _ = stream.read(&mut request).expect("read fixture request");
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        )
+        .expect("write fixture response headers");
+        stream.write_all(bytes).expect("write fixture response");
+    }));
+    let package_dir = world
+        .fixture_repo_path
+        .as_ref()
+        .expect("fixture repository")
+        .join(
+            world
+                .fixture_package_id
+                .as_ref()
+                .expect("fixture package")
+                .replace('/', std::path::MAIN_SEPARATOR_STR),
+        );
+    fs::write(package_dir.join("Manifest"), format!("{digest} app.apk\n"))
+        .expect("write artifact Manifest");
+    fs::write(
+        package_dir.join("1.20.0.lua"),
+        format!(r#"#!/bin/upa-lua v1
+return package_version {{ installed = {{ {{ kind = "android_package", package_name = "org.fdroid.fdroid" }} }}, updates = {{ {{ version = "1.20.0", artifacts = {{ {{ name = "app.apk", url = "http://{address}/app.apk", file_name = "app.apk" }} }} }} }} }}"#),
+    )
+    .expect("write local artifact package");
+}
+
+#[when(expr = "I run getter app download for {string}")]
+fn run_app_download(world: &mut CliWorld, package_id: String) {
+    run_app_command(world, "download", package_id, false);
+}
+
+#[when(expr = "I run getter app download twice for {string}")]
+fn run_app_download_twice(world: &mut CliWorld, package_id: String) {
+    run_app_command(world, "download", package_id.clone(), false);
+    let first = world.output.as_ref().expect("first output");
+    assert_success(first);
+    world.first_download_json = Some(parse_stdout(first));
+    world
+        .local_artifact_server
+        .take()
+        .expect("fixture server")
+        .join()
+        .expect("fixture server succeeds");
+    run_app_command(world, "download", package_id, false);
+}
+
+#[when(expr = "I run getter app download for {string} with a URL control")]
+fn run_app_download_with_url_control(world: &mut CliWorld, package_id: String) {
+    world.output = Some(run_getter(
+        world,
+        [
+            "app".to_owned(),
+            "download".to_owned(),
+            package_id,
+            "--url".to_owned(),
+            "https://attacker.invalid/app.apk".to_owned(),
+        ],
+    ));
+    world.json = None;
+}
+
 fn run_app_command(world: &mut CliWorld, command: &str, package_id: String, inventory: bool) {
     let mut args = vec!["app".to_owned(), command.to_owned(), package_id];
     if inventory {
@@ -764,6 +842,21 @@ fn app_check_available(world: &mut CliWorld) {
     let json = current_json(world);
     assert_eq!(json["data"]["app"]["update_status"], "available");
     assert!(json["data"]["action"]["action_id"].is_string());
+}
+
+#[then("the first download is downloaded and the second is reused from the same path")]
+fn download_then_reuse(world: &mut CliWorld) {
+    let first = world
+        .first_download_json
+        .clone()
+        .expect("first download result");
+    let second = current_json(world).clone();
+    assert_eq!(first["data"]["artifacts"][0]["status"], "downloaded");
+    assert_eq!(second["data"]["artifacts"][0]["status"], "reused");
+    assert_eq!(
+        first["data"]["artifacts"][0]["path"],
+        second["data"]["artifacts"][0]["path"]
+    );
 }
 
 #[then(expr = "the command fails with stable error {string}")]
