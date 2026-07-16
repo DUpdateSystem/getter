@@ -66,6 +66,11 @@ function github_android.package(spec)
     endpoint_id = optional_string(spec, "endpoint_id"),
   }
   local result = github_release_candidates()(host_spec)
+  if spec.install ~= nil then
+    for _, candidate in ipairs(result.candidates) do
+      candidate.install = spec.install
+    end
+  end
   local package = {
     name = spec.name,
     source_priority = { "github" },

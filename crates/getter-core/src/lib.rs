@@ -277,6 +277,56 @@ pub struct PackagePermissions {
     pub free_network: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallerCommand {
+    pub executable: String,
+    #[serde(default)]
+    pub args: Vec<InstallerArg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InstallerArg {
+    Literal(String),
+    Artifact(InstallerArtifactReference),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallerArtifactReference {
+    pub artifact: String,
+}
+
+/// A getter-owned, deferred installer declaration. Package evaluation preserves
+/// this JSON value; install operations validate it as an [`InstallerCommand`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct InstallerDeclaration(serde_json::Value);
+
+impl InstallerDeclaration {
+    pub fn new(value: serde_json::Value) -> Self {
+        Self(value)
+    }
+
+    pub fn as_json(&self) -> &serde_json::Value {
+        &self.0
+    }
+
+    pub fn parse(&self) -> Result<InstallerCommand, serde_json::Error> {
+        let mut value = self.0.clone();
+        if let Some(args) = value
+            .as_object_mut()
+            .and_then(|object| object.get_mut("args"))
+        {
+            if args.as_object().is_some_and(serde_json::Map::is_empty) {
+                *args = serde_json::Value::Array(Vec::new());
+            }
+        }
+        serde_json::from_value(value)
+    }
+}
+
 /// Candidate version/update discovered by provider/package logic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UpdateCandidate {
@@ -291,6 +341,8 @@ pub struct UpdateCandidate {
     pub source: Option<String>,
     #[serde(default)]
     pub artifacts: Vec<UpdateArtifact>,
+    #[serde(default)]
+    pub install: Option<InstallerDeclaration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

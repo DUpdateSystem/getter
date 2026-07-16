@@ -15,7 +15,7 @@ use getter_core::runtime::IssuedAction;
 use getter_core::update::compare_versions;
 use getter_core::PackageId;
 #[cfg(feature = "lua")]
-use getter_core::UpdateArtifact;
+use getter_core::{InstallerArg, InstallerCommand, UpdateArtifact};
 use getter_storage::{MainDb, StorageError, StoredTrackedPackage};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "lua")]
@@ -75,6 +75,27 @@ pub enum AppOperationError {
     #[cfg(feature = "lua")]
     #[error("artifact download failed: {0}")]
     ArtifactTransport(#[from] crate::download::RuntimeDownloadTransportError),
+    #[cfg(feature = "lua")]
+    #[error("selected candidate has no installer command")]
+    InstallerMissing,
+    #[cfg(feature = "lua")]
+    #[error("installer declaration schema is invalid: {0}")]
+    InstallerSchema(String),
+    #[cfg(feature = "lua")]
+    #[error("installer artifact reference '{0}' is unknown")]
+    InstallerArtifactUnknown(String),
+    #[cfg(feature = "lua")]
+    #[error("installer artifact name '{0}' is duplicated")]
+    InstallerArtifactDuplicate(String),
+    #[cfg(feature = "lua")]
+    #[error("installer executable '{0}' was not found")]
+    InstallerCommandNotFound(String),
+    #[cfg(feature = "lua")]
+    #[error("installer command could not be spawned: {0}")]
+    InstallerCommandSpawnFailed(std::io::Error),
+    #[cfg(feature = "lua")]
+    #[error("installer command failed with exit code {0}")]
+    InstallerCommandFailed(i32),
 }
 
 impl AppOperationError {
@@ -114,6 +135,20 @@ impl AppOperationError {
             Self::ArtifactIo(_) => "artifact.io_error",
             #[cfg(feature = "lua")]
             Self::ArtifactTransport(_) => "artifact.transport_error",
+            #[cfg(feature = "lua")]
+            Self::InstallerMissing => "installer.missing",
+            #[cfg(feature = "lua")]
+            Self::InstallerSchema(_) => "installer.schema_invalid",
+            #[cfg(feature = "lua")]
+            Self::InstallerArtifactUnknown(_) => "installer.artifact_unknown",
+            #[cfg(feature = "lua")]
+            Self::InstallerArtifactDuplicate(_) => "installer.artifact_duplicate",
+            #[cfg(feature = "lua")]
+            Self::InstallerCommandNotFound(_) => "installer.command_not_found",
+            #[cfg(feature = "lua")]
+            Self::InstallerCommandSpawnFailed(_) => "installer.command_spawn_failed",
+            #[cfg(feature = "lua")]
+            Self::InstallerCommandFailed(_) => "installer.command_failed",
         }
     }
 
@@ -146,6 +181,20 @@ impl AppOperationError {
             Self::ArtifactIo(_) => "Getter artifact staging failed",
             #[cfg(feature = "lua")]
             Self::ArtifactTransport(_) => "Getter artifact download failed",
+            #[cfg(feature = "lua")]
+            Self::InstallerMissing => "Getter package installer is missing",
+            #[cfg(feature = "lua")]
+            Self::InstallerSchema(_) => "Getter package installer schema is invalid",
+            #[cfg(feature = "lua")]
+            Self::InstallerArtifactUnknown(_) => "Getter installer references an unknown artifact",
+            #[cfg(feature = "lua")]
+            Self::InstallerArtifactDuplicate(_) => "Getter installer artifact name is duplicated",
+            #[cfg(feature = "lua")]
+            Self::InstallerCommandNotFound(_) => "Getter installer command was not found",
+            #[cfg(feature = "lua")]
+            Self::InstallerCommandSpawnFailed(_) => "Getter installer command could not be started",
+            #[cfg(feature = "lua")]
+            Self::InstallerCommandFailed(_) => "Getter installer command failed",
         }
     }
 
@@ -168,7 +217,14 @@ impl AppOperationError {
             | Self::ArtifactPathCollision { .. }
             | Self::Sha256Mismatch { .. }
             | Self::ArtifactIo(_)
-            | Self::ArtifactTransport(_) => self.to_string(),
+            | Self::ArtifactTransport(_)
+            | Self::InstallerMissing
+            | Self::InstallerSchema(_)
+            | Self::InstallerArtifactUnknown(_)
+            | Self::InstallerArtifactDuplicate(_)
+            | Self::InstallerCommandNotFound(_)
+            | Self::InstallerCommandSpawnFailed(_)
+            | Self::InstallerCommandFailed(_) => self.to_string(),
         }
     }
 }
@@ -187,6 +243,124 @@ pub struct AppDownloadResult {
     pub repository_id: String,
     pub version: String,
     pub artifacts: Vec<StagedArtifact>,
+}
+
+#[cfg(feature = "lua")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedInstallerCommand {
+    pub executable: PathBuf,
+    pub args: Vec<String>,
+}
+
+#[cfg(feature = "lua")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerOutput {
+    pub status: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+#[cfg(feature = "lua")]
+pub trait CommandResolver {
+    fn resolve(&self, executable: &str) -> Option<PathBuf>;
+}
+#[cfg(feature = "lua")]
+pub trait CommandRunner {
+    fn run(&self, command: &ResolvedInstallerCommand) -> std::io::Result<RunnerOutput>;
+}
+
+#[cfg(feature = "lua")]
+pub trait CommandObserver {
+    fn before_execute(&self, command: &ResolvedInstallerCommand) -> std::io::Result<()>;
+}
+
+#[cfg(feature = "lua")]
+pub struct NoopCommandObserver;
+#[cfg(feature = "lua")]
+impl CommandObserver for NoopCommandObserver {
+    fn before_execute(&self, _: &ResolvedInstallerCommand) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "lua")]
+pub struct PathCommandResolver;
+#[cfg(feature = "lua")]
+impl CommandResolver for PathCommandResolver {
+    fn resolve(&self, executable: &str) -> Option<PathBuf> {
+        which::which(executable).ok()
+    }
+}
+
+#[cfg(feature = "lua")]
+pub struct ProcessCommandRunner;
+#[cfg(feature = "lua")]
+impl CommandRunner for ProcessCommandRunner {
+    fn run(&self, command: &ResolvedInstallerCommand) -> std::io::Result<RunnerOutput> {
+        let mut child = std::process::Command::new(&command.executable)
+            .args(&command.args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            std::io::Error::other("installer runner failed to capture child stdout")
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            std::io::Error::other("installer runner failed to capture child stderr")
+        })?;
+
+        let stdout_reader = std::thread::spawn(move || drain_bounded(stdout));
+        let stderr_reader = std::thread::spawn(move || drain_bounded(stderr));
+        let status = child.wait();
+        let stdout = join_output_reader(stdout_reader, "stdout")?;
+        let stderr = join_output_reader(stderr_reader, "stderr")?;
+        let status = status?;
+
+        Ok(RunnerOutput {
+            status: status.code().unwrap_or(-1),
+            stdout,
+            stderr,
+        })
+    }
+}
+
+#[cfg(feature = "lua")]
+fn drain_bounded(mut stream: impl std::io::Read) -> std::io::Result<Vec<u8>> {
+    const LIMIT: usize = 64 * 1024;
+    let mut captured = Vec::with_capacity(LIMIT);
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(captured);
+        }
+        let remaining = LIMIT.saturating_sub(captured.len());
+        captured.extend_from_slice(&buffer[..read.min(remaining)]);
+    }
+}
+
+#[cfg(feature = "lua")]
+fn join_output_reader(
+    reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    stream: &str,
+) -> std::io::Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| std::io::Error::other(format!("installer runner {stream} reader panicked")))?
+}
+
+#[cfg(feature = "lua")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppInstallResult {
+    pub package_id: PackageId,
+    pub repository_id: String,
+    pub version: String,
+    pub artifacts: Vec<StagedArtifact>,
+    pub command: ResolvedInstallerCommand,
+    pub status: String,
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 #[cfg(feature = "lua")]
@@ -262,6 +436,22 @@ pub fn download_app_with_transports(
     github_release_transport: Option<Rc<dyn GithubReleaseTransport>>,
     download_transport: Rc<dyn crate::download::RuntimeDownloadTransport>,
 ) -> Result<AppDownloadResult, AppOperationError> {
+    prepare_app_with_transports(
+        data_dir,
+        package_id,
+        github_release_transport,
+        download_transport,
+    )
+    .map(|(result, _)| result)
+}
+
+#[cfg(feature = "lua")]
+fn prepare_app_with_transports(
+    data_dir: &Path,
+    package_id: &PackageId,
+    github_release_transport: Option<Rc<dyn GithubReleaseTransport>>,
+    download_transport: Rc<dyn crate::download::RuntimeDownloadTransport>,
+) -> Result<(AppDownloadResult, getter_core::UpdateCandidate), AppOperationError> {
     startup::bootstrap_data_dir(data_dir)?;
     let db = MainDb::open(data_dir.join("main.db"))?;
     let tracked = tracked_package(&db, package_id)?;
@@ -295,7 +485,7 @@ pub fn download_app_with_transports(
     })?;
     let manifest =
         PackageManifest::parse(&manifest_content).map_err(AppOperationError::ManifestInvalid)?;
-    let downloads = data_dir.join("downloads");
+    let downloads = absolute_staging_root(data_dir)?;
     let prepared = candidate
         .artifacts
         .iter()
@@ -328,12 +518,198 @@ pub fn download_app_with_transports(
         .into_iter()
         .map(|artifact| stage_artifact(artifact, download_transport.as_ref()))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(AppDownloadResult {
-        package_id: package_id.clone(),
-        repository_id: evaluation.package.repository.to_string(),
-        version: candidate.version,
-        artifacts,
+    Ok((
+        AppDownloadResult {
+            package_id: package_id.clone(),
+            repository_id: evaluation.package.repository.to_string(),
+            version: candidate.version.clone(),
+            artifacts,
+        },
+        candidate,
+    ))
+}
+
+#[cfg(feature = "lua")]
+pub fn install_app(
+    data_dir: &Path,
+    package_id: &PackageId,
+) -> Result<AppInstallResult, AppOperationError> {
+    install_app_with_observer(data_dir, package_id, &NoopCommandObserver)
+}
+
+#[cfg(feature = "lua")]
+pub fn install_app_with_observer(
+    data_dir: &Path,
+    package_id: &PackageId,
+    observer: &dyn CommandObserver,
+) -> Result<AppInstallResult, AppOperationError> {
+    install_app_with_dependencies_and_observer(
+        data_dir,
+        package_id,
+        Some(Rc::new(
+            crate::github_releases::UreqGithubReleaseTransport::new(),
+        )),
+        Rc::new(crate::download::UreqRuntimeDownloadTransport::new()),
+        &PathCommandResolver,
+        &ProcessCommandRunner,
+        observer,
+    )
+}
+
+#[cfg(feature = "lua")]
+pub fn install_app_with_dependencies(
+    data_dir: &Path,
+    package_id: &PackageId,
+    github_release_transport: Option<Rc<dyn GithubReleaseTransport>>,
+    download_transport: Rc<dyn crate::download::RuntimeDownloadTransport>,
+    resolver: &dyn CommandResolver,
+    runner: &dyn CommandRunner,
+) -> Result<AppInstallResult, AppOperationError> {
+    install_app_with_dependencies_and_observer(
+        data_dir,
+        package_id,
+        github_release_transport,
+        download_transport,
+        resolver,
+        runner,
+        &NoopCommandObserver,
+    )
+}
+
+#[cfg(feature = "lua")]
+pub fn install_app_with_dependencies_and_observer(
+    data_dir: &Path,
+    package_id: &PackageId,
+    github_release_transport: Option<Rc<dyn GithubReleaseTransport>>,
+    download_transport: Rc<dyn crate::download::RuntimeDownloadTransport>,
+    resolver: &dyn CommandResolver,
+    runner: &dyn CommandRunner,
+    observer: &dyn CommandObserver,
+) -> Result<AppInstallResult, AppOperationError> {
+    let (download, candidate) = prepare_app_with_transports(
+        data_dir,
+        package_id,
+        github_release_transport,
+        download_transport,
+    )?;
+    let installer = candidate
+        .install
+        .ok_or(AppOperationError::InstallerMissing)?
+        .parse()
+        .map_err(|error| AppOperationError::InstallerSchema(error.to_string()))?;
+    validate_installer_command(&installer)?;
+    let command = resolve_installer(&installer, &download.artifacts, resolver)?;
+    observer
+        .before_execute(&command)
+        .map_err(AppOperationError::InstallerCommandSpawnFailed)?;
+    let output = runner
+        .run(&command)
+        .map_err(AppOperationError::InstallerCommandSpawnFailed)?;
+    let stdout = bounded_output(&output.stdout);
+    let stderr = bounded_output(&output.stderr);
+    if output.status != 0 {
+        return Err(AppOperationError::InstallerCommandFailed(output.status));
+    }
+    Ok(AppInstallResult {
+        package_id: download.package_id,
+        repository_id: download.repository_id,
+        version: download.version,
+        artifacts: download.artifacts,
+        command,
+        status: "succeeded".into(),
+        exit_code: output.status,
+        stdout,
+        stderr,
     })
+}
+
+#[cfg(feature = "lua")]
+fn resolve_installer(
+    installer: &InstallerCommand,
+    artifacts: &[StagedArtifact],
+    resolver: &dyn CommandResolver,
+) -> Result<ResolvedInstallerCommand, AppOperationError> {
+    let executable = resolver
+        .resolve(&installer.executable)
+        .ok_or_else(|| AppOperationError::InstallerCommandNotFound(installer.executable.clone()))?;
+    let mut by_name = std::collections::HashMap::new();
+    for artifact in artifacts {
+        if by_name
+            .insert(artifact.name.as_str(), &artifact.path)
+            .is_some()
+        {
+            return Err(AppOperationError::InstallerArtifactDuplicate(
+                artifact.name.clone(),
+            ));
+        }
+    }
+    let args = installer
+        .args
+        .iter()
+        .map(|arg| match arg {
+            InstallerArg::Literal(value) => Ok(value.clone()),
+            InstallerArg::Artifact(reference) => by_name
+                .get(reference.artifact.as_str())
+                .map(|path| path.to_string_lossy().into_owned())
+                .ok_or_else(|| {
+                    AppOperationError::InstallerArtifactUnknown(reference.artifact.clone())
+                }),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ResolvedInstallerCommand { executable, args })
+}
+
+#[cfg(feature = "lua")]
+fn validate_installer_command(installer: &InstallerCommand) -> Result<(), AppOperationError> {
+    if installer.executable.is_empty() {
+        return Err(AppOperationError::InstallerSchema(
+            "installer executable must not be empty".to_owned(),
+        ));
+    }
+    if installer.args.iter().any(
+        |arg| matches!(arg, InstallerArg::Artifact(reference) if reference.artifact.is_empty()),
+    ) {
+        return Err(AppOperationError::InstallerSchema(
+            "installer artifact reference must not be empty".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "lua")]
+fn bounded_output(bytes: &[u8]) -> String {
+    const LIMIT: usize = 64 * 1024;
+    String::from_utf8_lossy(&bytes[..bytes.len().min(LIMIT)]).into_owned()
+}
+
+#[cfg(all(test, feature = "lua"))]
+mod installer_staging_tests {
+    use super::absolute_staging_root;
+
+    #[test]
+    fn relative_nonexistent_data_dir_produces_absolute_canonical_staging_root() {
+        let name = format!("target/relative-staging-test-{}", std::process::id());
+        let data_dir = std::path::Path::new(&name);
+        let _ = std::fs::remove_dir_all(data_dir);
+        let root = absolute_staging_root(data_dir).unwrap();
+        assert!(root.is_absolute());
+        assert_eq!(root.file_name().unwrap(), "downloads");
+        assert!(root.parent().unwrap().is_dir());
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+}
+
+#[cfg(feature = "lua")]
+fn absolute_staging_root(data_dir: &Path) -> Result<PathBuf, AppOperationError> {
+    let absolute_data_dir = if data_dir.is_absolute() {
+        data_dir.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(AppOperationError::ArtifactIo)?
+            .join(data_dir)
+    };
+    fs::create_dir_all(&absolute_data_dir)?;
+    Ok(fs::canonicalize(absolute_data_dir)?.join("downloads"))
 }
 
 #[cfg(feature = "lua")]

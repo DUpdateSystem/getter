@@ -39,6 +39,7 @@ use getter_storage::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const MAIN_DB_FILE: &str = "main.db";
@@ -67,6 +68,9 @@ pub enum CliCommand {
         inventory: Option<PathBuf>,
     },
     AppDownload {
+        package_id: PackageId,
+    },
+    AppInstall {
         package_id: PackageId,
     },
     HubList,
@@ -414,7 +418,20 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    match run_inner(args) {
+    let mut captured = Vec::new();
+    let mut output = run_with_command_sink(args, &mut captured);
+    if !captured.is_empty() {
+        output.stderr = String::from_utf8_lossy(&captured).into_owned();
+    }
+    output
+}
+
+pub fn run_with_command_sink<I, S>(args: I, sink: &mut dyn Write) -> CliOutput
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    match run_inner(args, sink) {
         Ok((command_name, data)) => CliOutput {
             exit_code: ExitCode::Success,
             stdout: success_envelope(&command_name, data),
@@ -435,16 +452,45 @@ where
     }
 }
 
-fn run_inner<I, S>(args: I) -> Result<(String, Value), (String, CliError)>
+fn run_inner<I, S>(args: I, sink: &mut dyn Write) -> Result<(String, Value), (String, CliError)>
 where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
     let invocation = parse_args(args).map_err(|error| ("unknown".to_owned(), error))?;
     let command_name = invocation.command.name().to_owned();
-    execute(invocation)
+    execute(invocation, sink)
         .map(|data| (command_name.clone(), data))
         .map_err(|error| (command_name, error))
+}
+
+fn format_resolved_command(command: &Value) -> String {
+    fn quote(value: &str) -> String {
+        if !value.is_empty()
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(&byte))
+        {
+            value.to_owned()
+        } else {
+            format!("'{}'", value.replace('\'', "'\\''"))
+        }
+    }
+    let executable = command
+        .get("executable")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let mut words = vec![quote(executable)];
+    words.extend(
+        command
+            .get("args")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(quote),
+    );
+    format!("installer command: {}\n", words.join(" "))
 }
 
 pub fn parse_args<I, S>(args: I) -> Result<CliInvocation, CliError>
@@ -481,7 +527,10 @@ where
         [domain, command] if domain == "app" && command == "list" => CliCommand::AppList,
         [domain, command, package_id]
             if domain == "app"
-                && (command == "show" || command == "check" || command == "download") =>
+                && (command == "show"
+                    || command == "check"
+                    || command == "download"
+                    || command == "install") =>
         {
             let package_id = parse_package_id(package_id)?;
             match command.as_str() {
@@ -493,7 +542,8 @@ where
                     package_id,
                     inventory: None,
                 },
-                _ => CliCommand::AppDownload { package_id },
+                "download" => CliCommand::AppDownload { package_id },
+                _ => CliCommand::AppInstall { package_id },
             }
         }
         [domain, command, package_id, flag, inventory]
@@ -790,7 +840,7 @@ fn map_app_error(error: getter_operations::app::AppOperationError) -> CliError {
     }
 }
 
-fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
+fn execute(invocation: CliInvocation, command_sink: &mut dyn Write) -> Result<Value, CliError> {
     match invocation.command {
         CliCommand::Startup { inventory } => {
             let inventory = match inventory {
@@ -836,6 +886,27 @@ fn execute(invocation: CliInvocation) -> Result<Value, CliError> {
         CliCommand::AppDownload { package_id } => {
             let result = getter_operations::app::download_app(&invocation.data_dir, &package_id)
                 .map_err(map_app_error)?;
+            serde_json::to_value(result).map_err(|error| CliError::Storage(error.to_string()))
+        }
+        CliCommand::AppInstall { package_id } => {
+            struct StreamingObserver<'a>(std::cell::RefCell<&'a mut dyn Write>);
+            impl getter_operations::app::CommandObserver for StreamingObserver<'_> {
+                fn before_execute(
+                    &self,
+                    command: &getter_operations::app::ResolvedInstallerCommand,
+                ) -> std::io::Result<()> {
+                    let value = serde_json::to_value(command).expect("command serializes");
+                    let mut sink = self.0.borrow_mut();
+                    sink.write_all(format_resolved_command(&value).as_bytes())?;
+                    sink.flush()
+                }
+            }
+            let result = getter_operations::app::install_app_with_observer(
+                &invocation.data_dir,
+                &package_id,
+                &StreamingObserver(std::cell::RefCell::new(command_sink)),
+            )
+            .map_err(map_app_error)?;
             serde_json::to_value(result).map_err(|error| CliError::Storage(error.to_string()))
         }
         CliCommand::AppCheck {
@@ -2411,6 +2482,7 @@ impl CliCommand {
             Self::AppShow { .. } => "app show",
             Self::AppCheck { .. } => "app check",
             Self::AppDownload { .. } => "app download",
+            Self::AppInstall { .. } => "app install",
             Self::HubList => "hub list",
             Self::RepoList => "repo list",
             Self::RepoAdd { .. } => "repo add",

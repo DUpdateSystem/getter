@@ -92,6 +92,7 @@ impl FdroidRelease {
                 sha256: self.sha256.clone(),
                 size: self.size,
             }],
+            install: None,
         }
     }
 }
@@ -405,6 +406,7 @@ fn github_release_update_candidate(
         channel: release.prerelease.then(|| "prerelease".to_owned()),
         source: Some("github".to_owned()),
         artifacts,
+        install: None,
     })
 }
 
@@ -513,6 +515,7 @@ mod tests {
                 channel: Some("stable".to_owned()),
                 source: Some("fixture".to_owned()),
                 artifacts: Vec::new(),
+                install: None,
             }],
         };
 

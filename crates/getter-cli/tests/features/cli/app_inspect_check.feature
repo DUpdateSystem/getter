@@ -30,6 +30,16 @@ Feature: Inspect and actively check a tracked app
     When I run getter app download twice for "android/app/fdroid"
     Then the first download is downloaded and the second is reused from the same path
 
+  Scenario: Install executes exact declared argv
+    Given the package installer uses a fake executable
+    When I run getter app install for "android/app/fdroid"
+    Then the install succeeds with exact literal and artifact argv
+
+  Scenario: Install reports a missing package-declared command
+    Given the package installer names a missing executable
+    When I run getter app install for "android/app/fdroid"
+    Then the command fails with stable error "installer.command_not_found"
+
   Scenario: Download rejects transport controls
     When I run getter app download for "android/app/fdroid" with a URL control
     Then the command fails with stable error "cli.usage"

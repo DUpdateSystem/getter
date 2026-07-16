@@ -778,6 +778,67 @@ return package_version {{ installed = {{ {{ kind = "android_package", package_na
     .expect("write local artifact package");
 }
 
+#[given("the package installer uses a fake executable")]
+fn fake_package_installer(world: &mut CliWorld) {
+    deterministic_local_artifact(world);
+    let temp = world.temp.as_ref().unwrap().path();
+    let source_path = temp.join("fake_installer.rs");
+    let executable = temp.join(format!("fake-installer{}", std::env::consts::EXE_SUFFIX));
+    fs::write(
+        &source_path,
+        r#"fn main() {
+    for argument in std::env::args().skip(1) {
+        println!("{argument}");
+    }
+}"#,
+    )
+    .unwrap();
+    let status = Command::new("rustc")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&executable)
+        .status()
+        .expect("rustc must be available while running Rust tests");
+    assert!(status.success(), "compile platform-native fake installer");
+    let package_dir = world.fixture_repo_path.as_ref().unwrap().join(
+        world
+            .fixture_package_id
+            .as_ref()
+            .unwrap()
+            .replace('/', std::path::MAIN_SEPARATOR_STR),
+    );
+    let source = fs::read_to_string(package_dir.join("1.20.0.lua")).unwrap();
+    let source = source.replacen("artifacts = { { name", &format!("install = {{ executable = {:?}, args = {{ \"install\", {{ artifact = \"app.apk\" }}, \"$HOME;literal\" }} }}, artifacts = {{ {{ name", executable.to_string_lossy()), 1);
+    fs::write(package_dir.join("1.20.0.lua"), source).unwrap();
+}
+
+#[given("the package installer names a missing executable")]
+fn missing_package_installer(world: &mut CliWorld) {
+    deterministic_local_artifact(world);
+    let package_dir = world.fixture_repo_path.as_ref().unwrap().join(
+        world
+            .fixture_package_id
+            .as_ref()
+            .unwrap()
+            .replace('/', std::path::MAIN_SEPARATOR_STR),
+    );
+    let source = fs::read_to_string(package_dir.join("1.20.0.lua")).unwrap();
+    let source = source.replacen(
+        "artifacts = { { name",
+        "install = { executable = \"getter-definitely-missing-installer\", args = {} }, artifacts = { { name",
+        1,
+    );
+    fs::write(package_dir.join("1.20.0.lua"), source).unwrap();
+}
+
+#[when(expr = "I run getter app install for {string}")]
+fn run_app_install(world: &mut CliWorld, package_id: String) {
+    run_app_command(world, "install", package_id, false);
+    if let Some(server) = world.local_artifact_server.take() {
+        server.join().unwrap();
+    }
+}
+
 #[when(expr = "I run getter app download for {string}")]
 fn run_app_download(world: &mut CliWorld, package_id: String) {
     run_app_command(world, "download", package_id, false);
@@ -857,6 +918,18 @@ fn download_then_reuse(world: &mut CliWorld) {
         first["data"]["artifacts"][0]["path"],
         second["data"]["artifacts"][0]["path"]
     );
+}
+
+#[then("the install succeeds with exact literal and artifact argv")]
+fn install_exact_argv(world: &mut CliWorld) {
+    let json = current_json(world);
+    assert_eq!(json["data"]["status"], "succeeded");
+    assert_eq!(json["data"]["command"]["args"][0], "install");
+    assert!(json["data"]["command"]["args"][1]
+        .as_str()
+        .unwrap()
+        .starts_with('/'));
+    assert_eq!(json["data"]["command"]["args"][2], "$HOME;literal");
 }
 
 #[then(expr = "the command fails with stable error {string}")]

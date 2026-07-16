@@ -603,6 +603,7 @@ mod tests {
                 sha256: Some("A".repeat(64)),
                 size: None,
             }],
+            install: None,
         };
         let second = getter_core::UpdateCandidate {
             version: "2".to_owned(),
@@ -628,6 +629,7 @@ mod tests {
                     size: None,
                 },
             ],
+            install: None,
         };
 
         let repeated = getter_core::UpdateCandidate {
@@ -644,6 +646,7 @@ mod tests {
                 sha256: Some("A".repeat(64)),
                 size: None,
             }],
+            install: None,
         };
         let distinct = getter_core::UpdateCandidate {
             version: "4".to_owned(),
@@ -659,6 +662,7 @@ mod tests {
                 sha256: Some("D".repeat(64)),
                 size: None,
             }],
+            install: None,
         };
 
         let manifest = github_manifest(&["c".repeat(128)], &[first, second, repeated, distinct]);

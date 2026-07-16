@@ -6,6 +6,34 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+fn fake_installer(temp: &Path) -> PathBuf {
+    let source = temp.join("fake_installer.rs");
+    let executable = temp.join(format!("fake installer{}", std::env::consts::EXE_SUFFIX));
+    fs::write(
+        &source,
+        r#"fn main() {
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    for argument in &arguments {
+        println!("{argument}");
+    }
+    if arguments.iter().any(|argument| argument == "--fail") {
+        std::process::exit(23);
+    }
+}"#,
+    )
+    .unwrap();
+    let status = Command::new("rustc")
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .status()
+        .expect("rustc must be available while running Rust tests");
+    assert!(status.success(), "compile platform-native fake installer");
+    executable
+}
 
 fn fixture(latest: &str) -> tempfile::TempDir {
     let temp = tempfile::tempdir().unwrap();
@@ -102,6 +130,125 @@ return package_version {{ updates = {{ {{ version="2", artifacts={{{{name="app.a
         second_json["data"]["artifacts"][0]["path"],
         first_json["data"]["artifacts"][0]["path"]
     );
+}
+
+#[test]
+fn app_download_ignores_missing_installer() {
+    let temp = fixture("2");
+    let package = temp.path().join("repo/official/android/com.example");
+    fs::write(package.join("Manifest"), "").unwrap();
+    fs::write(
+        package.join("1.lua"),
+        r#"#!/bin/upa-lua v1
+return package_version { updates = {{ version="2", install =nil }} }"#,
+    )
+    .unwrap();
+    let output = run([
+        "getter",
+        "--data-dir",
+        temp.path().to_str().unwrap(),
+        "app",
+        "download",
+        "android/com.example",
+    ]);
+    assert_eq!(output.exit_code, ExitCode::Success);
+}
+
+#[test]
+fn app_install_rejects_product_command_controls() {
+    let temp = fixture("2");
+    let output = run([
+        "getter",
+        "--data-dir",
+        temp.path().to_str().unwrap(),
+        "app",
+        "install",
+        "android/com.example",
+        "--executable",
+        "pm",
+    ]);
+    assert_eq!(output.exit_code, ExitCode::Usage);
+}
+
+#[test]
+fn app_install_executes_declared_command_and_reports_resolved_argv() {
+    let bytes = b"install artifact";
+    let digest = "462c010ad28c00ae578bcfa52d985c8cb00a89accdd51ac9f05fec5872a7ae25";
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 1024];
+        let _ = stream.read(&mut request).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        )
+        .unwrap();
+        stream.write_all(bytes).unwrap();
+    });
+    let temp = fixture("2");
+    let executable = fake_installer(temp.path());
+    let package = temp.path().join("repo/official/android/com.example");
+    fs::write(package.join("Manifest"), format!("{digest} app.apk\n")).unwrap();
+    fs::write(package.join("1.lua"), format!(r#"#!/bin/upa-lua v1
+return package_version {{ updates={{{{version="2",artifacts={{{{name="app",file_name="app.apk",url="http://{address}/app.apk"}}}},install ={{executable={:?},args={{"install",{{artifact="app"}},"$HOME;literal"}}}}}}}} }}"#, executable.to_string_lossy())).unwrap();
+    let output = run([
+        "getter",
+        "--data-dir",
+        temp.path().to_str().unwrap(),
+        "app",
+        "install",
+        "android/com.example",
+    ]);
+    server.join().unwrap();
+    assert_eq!(output.exit_code, ExitCode::Success, "{}", output.stdout);
+    let json: Value = serde_json::from_str(&output.stdout).unwrap();
+    assert_eq!(json["data"]["command"]["args"][0], "install");
+    assert_eq!(json["data"]["command"]["args"][2], "$HOME;literal");
+    assert!(output.stderr.contains("installer command:"));
+    assert!(output.stderr.contains("'"));
+}
+
+#[test]
+fn app_install_captures_streamed_command_when_child_fails() {
+    let bytes = b"install artifact";
+    let digest = "462c010ad28c00ae578bcfa52d985c8cb00a89accdd51ac9f05fec5872a7ae25";
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 1024];
+        let _ = stream.read(&mut request).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        )
+        .unwrap();
+        stream.write_all(bytes).unwrap();
+    });
+    let temp = fixture("2");
+    let executable = fake_installer(temp.path());
+    let package = temp.path().join("repo/official/android/com.example");
+    fs::write(package.join("Manifest"), format!("{digest} app.apk\n")).unwrap();
+    fs::write(package.join("1.lua"), format!(r#"#!/bin/upa-lua v1
+return package_version {{ updates={{{{version="2",artifacts={{{{name="app",file_name="app.apk",url="http://{address}/app.apk"}}}},install ={{executable={:?},args={{"--fail",{{artifact="app"}}}}}}}}}} }}"#, executable.to_string_lossy())).unwrap();
+    let output = run([
+        "getter",
+        "--data-dir",
+        temp.path().to_str().unwrap(),
+        "app",
+        "install",
+        "android/com.example",
+    ]);
+    server.join().unwrap();
+    assert_eq!(output.exit_code, ExitCode::GenericFailure);
+    let body: Value = serde_json::from_str(&output.stdout).unwrap();
+    assert_eq!(body["error"]["code"], "installer.command_failed");
+    assert!(output.stderr.contains("--fail"));
+    assert!(output.stderr.contains("app.apk"));
 }
 
 #[test]

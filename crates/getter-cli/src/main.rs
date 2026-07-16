@@ -1,5 +1,5 @@
 fn main() {
-    let output = getter_cli::run(std::env::args());
+    let output = getter_cli::run_with_command_sink(std::env::args(), &mut std::io::stderr());
     if !output.stdout.is_empty() {
         print!("{}", output.stdout);
     }

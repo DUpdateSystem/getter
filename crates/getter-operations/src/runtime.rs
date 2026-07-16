@@ -1703,6 +1703,7 @@ return package_version {
                         sha256: None,
                         size: None,
                     }],
+                    install: None,
                 })
                 .collect(),
         }

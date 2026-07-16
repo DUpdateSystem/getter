@@ -5,8 +5,8 @@ use crate::repository::{
     PackageVersionScript, RepositoryLoadError, LUA_API_SHEBANG_V1, REPOSITORY_LUACLASS_DIR,
 };
 use crate::{
-    InstalledTarget, PackageId, PackagePermissions, RepositoryId, ResolvedPackage, UpdateArtifact,
-    UpdateCandidate,
+    InstalledTarget, InstallerDeclaration, PackageId, PackagePermissions, RepositoryId,
+    ResolvedPackage, UpdateArtifact, UpdateCandidate,
 };
 use mlua::{Function, Lua, Table, Value};
 use serde_json::{Map, Number, Value as JsonValue};
@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 const BUILTIN_LUACLASS_MODULES: &[(&str, &str)] = &[
     ("android", include_str!("luaclass/android.lua")),
+    ("installer", include_str!("luaclass/installer.lua")),
     (
         "fdroid_android",
         include_str!("luaclass/fdroid_android.lua"),
@@ -715,6 +716,36 @@ fn package_from_version_json(
     })
 }
 
+fn reject_unknown_keys(
+    path: &Path,
+    object: &Map<String, JsonValue>,
+    kind: &str,
+    allowed: &[&str],
+) -> Result<(), LuaPackageError> {
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(LuaPackageError::Schema {
+            path: path.to_path_buf(),
+            message: format!("unknown {kind} field '{key}'"),
+        });
+    }
+    Ok(())
+}
+
+fn required_nonempty_string<'a>(
+    path: &Path,
+    object: &'a Map<String, JsonValue>,
+    field: &str,
+) -> Result<&'a str, LuaPackageError> {
+    let value = required_string(path, object, field)?;
+    if value.is_empty() {
+        return Err(LuaPackageError::Schema {
+            path: path.to_path_buf(),
+            message: format!("string field '{field}' must not be empty"),
+        });
+    }
+    Ok(value)
+}
+
 fn required_string<'a>(
     path: &Path,
     object: &'a Map<String, JsonValue>,
@@ -785,7 +816,25 @@ fn parse_update_candidates(
                 path: path.to_path_buf(),
                 message: "updates entries must be objects".to_owned(),
             })?;
+            reject_unknown_keys(
+                path,
+                object,
+                "update candidate",
+                &[
+                    "version",
+                    "version_code",
+                    "changelog",
+                    "channel",
+                    "source",
+                    "artifacts",
+                    "install",
+                ],
+            )?;
             let artifacts = parse_update_artifacts(path, object.get("artifacts"))?;
+            let install = object
+                .get("install")
+                .cloned()
+                .map(InstallerDeclaration::new);
             Ok(UpdateCandidate {
                 version: required_string(path, object, "version")?.to_owned(),
                 version_code: optional_i64(path, object, "version_code")?,
@@ -793,6 +842,7 @@ fn parse_update_candidates(
                 channel: optional_string(object, "channel"),
                 source: optional_string(object, "source"),
                 artifacts,
+                install,
             })
         })
         .collect()
@@ -809,15 +859,22 @@ fn parse_update_artifacts(
         path: path.to_path_buf(),
         message: "field 'artifacts' must be an array".to_owned(),
     })?;
-    array
+    let artifacts = array
         .iter()
         .map(|item| {
             let object = item.as_object().ok_or_else(|| LuaPackageError::Schema {
                 path: path.to_path_buf(),
                 message: "artifact entries must be objects".to_owned(),
             })?;
+            reject_unknown_keys(
+                path,
+                object,
+                "artifact",
+                &["name", "url", "content_type", "file_name", "sha256", "size"],
+            )?;
+            let name = required_nonempty_string(path, object, "name")?.to_owned();
             Ok(UpdateArtifact {
-                name: required_string(path, object, "name")?.to_owned(),
+                name,
                 url: required_string(path, object, "url")?.to_owned(),
                 content_type: optional_string(object, "content_type"),
                 file_name: optional_string(object, "file_name"),
@@ -825,7 +882,17 @@ fn parse_update_artifacts(
                 size: optional_u64(path, object, "size")?,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut names = std::collections::HashSet::new();
+    for artifact in &artifacts {
+        if !names.insert(&artifact.name) {
+            return Err(LuaPackageError::Schema {
+                path: path.to_path_buf(),
+                message: format!("duplicate artifact name '{}'", artifact.name),
+            });
+        }
+    }
+    Ok(artifacts)
 }
 
 fn optional_string(object: &Map<String, JsonValue>, field: &str) -> Option<String> {
@@ -947,6 +1014,80 @@ mod tests {
         )
         .unwrap();
         fs::write(package_dir.join("9999.lua"), script_source).unwrap();
+    }
+
+    #[test]
+    fn preserves_chosen_installer_table_declaration_without_eager_validation() {
+        let temp = tempfile::tempdir().unwrap();
+        write_simple_android_package(
+            temp.path(),
+            r#"#!/bin/upa-lua v1
+local installer = require("luaclass.installer")
+return package_version {
+  updates = {{
+    version = "2",
+    artifacts = {{ name = "base", url = "https://example.invalid/base.apk" }},
+    install = installer.command {
+      executable = "fake-installer",
+      args = { "install", installer.artifact("base"), "literal $HOME;not-shell" },
+    },
+  }},
+}"#,
+        );
+
+        let package = evaluate_single_package_directory(temp.path(), "official").unwrap();
+        assert_eq!(
+            package.updates[0].install.as_ref().unwrap().as_json(),
+            &serde_json::json!({
+                "executable": "fake-installer",
+                "args": ["install", {"artifact": "base"}, "literal $HOME;not-shell"]
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_candidate_and_artifact_keys_and_invalid_artifact_names() {
+        for (case, source) in [
+            ("candidate", r#"updates = {{ version="2", surprise=true }}"#),
+            (
+                "artifact",
+                r#"updates = {{ version="2", artifacts={{name="a",url="u",surprise=true}} }}"#,
+            ),
+            (
+                "empty artifact",
+                r#"updates = {{ version="2", artifacts={{name="",url="u"}} }}"#,
+            ),
+            (
+                "duplicate artifact",
+                r#"updates = {{ version="2", artifacts={{name="a",url="u"},{name="a",url="v"}} }}"#,
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            write_simple_android_package(
+                temp.path(),
+                &format!("#!/bin/upa-lua v1\nreturn package_version {{ {source} }}"),
+            );
+            let error = evaluate_single_package_directory(temp.path(), "official").unwrap_err();
+            assert!(
+                matches!(error, LuaPackageError::Schema { .. }),
+                "{case}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_legacy_installer_candidate_field() {
+        let temp = tempfile::tempdir().unwrap();
+        write_simple_android_package(
+            temp.path(),
+            r#"#!/bin/upa-lua v1
+return package_version { updates = {{ version = "2", installer = {} }} }"#,
+        );
+        let error = evaluate_single_package_directory(temp.path(), "official").unwrap_err();
+        assert!(matches!(error, LuaPackageError::Schema { .. }));
+        assert!(error
+            .to_string()
+            .contains("unknown update candidate field 'installer'"));
     }
 
     #[test]
@@ -1727,6 +1868,130 @@ return package_version { name = first .. "|" .. second }
             requests[1].headers.get("X-Test").map(String::as_str),
             Some("yes")
         );
+    }
+
+    #[test]
+    fn fdroid_luaclass_propagates_declared_install_to_every_candidate_without_defaulting() {
+        for declared in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let install = if declared {
+                r#", install = { executable = "pm", args = { "install" } }"#
+            } else {
+                ""
+            };
+            write_simple_android_package(
+                temp.path(),
+                &format!(
+                    r#"#!/bin/upa-lua v1
+local fdroid = require("luaclass.fdroid_android")
+return fdroid.package {{ package_name = "com.example"{install} }}
+"#,
+                ),
+            );
+            let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+            let package_dir = &layout.packages[0];
+            let metadata = layout.package_metadata(package_dir).unwrap();
+            let script = layout.unambiguous_version_script(package_dir).unwrap();
+            let package = evaluate_package_directory_script_with_host_bindings(
+                &RepositoryId::new("official").unwrap(),
+                package_dir,
+                &metadata,
+                script,
+                |lua| {
+                    let candidates = lua.create_table()?;
+                    for index in 1..=2 {
+                        let candidate = lua.create_table()?;
+                        candidate.set("version", index.to_string())?;
+                        candidates.raw_set(index, candidate)?;
+                    }
+                    let fdroid = lua.create_table()?;
+                    fdroid.set(
+                        "update_candidates",
+                        lua.create_function(move |lua, _: Table| {
+                            let result = lua.create_table()?;
+                            result.set("candidates", candidates.clone())?;
+                            Ok(result)
+                        })?,
+                    )?;
+                    let provider = lua.create_table()?;
+                    provider.set("fdroid", fdroid)?;
+                    let getter = lua.create_table()?;
+                    getter.set("provider", provider)?;
+                    lua.globals().set("getter", getter)
+                },
+            )
+            .unwrap();
+            assert_eq!(package.updates.len(), 2);
+            assert!(package.updates.iter().all(|candidate| {
+                candidate
+                    .install
+                    .as_ref()
+                    .map(|install| install.as_json().clone())
+                    == declared.then(|| serde_json::json!({"executable":"pm","args":["install"]}))
+            }));
+        }
+    }
+
+    #[test]
+    fn github_luaclass_propagates_declared_install_to_every_candidate_without_defaulting() {
+        for declared in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let install = if declared {
+                r#", install = { executable = "pm", args = { "install" } }"#
+            } else {
+                ""
+            };
+            write_simple_android_package(
+                temp.path(),
+                &format!(
+                    r#"#!/bin/upa-lua v1
+local github = require("luaclass.github_android_apk")
+return github.package {{ owner = "owner", repo = "repo"{install} }}
+"#,
+                ),
+            );
+            let layout = RepositoryPackageDirectoryLayout::load(temp.path()).unwrap();
+            let package_dir = &layout.packages[0];
+            let metadata = layout.package_metadata(package_dir).unwrap();
+            let script = layout.unambiguous_version_script(package_dir).unwrap();
+            let package = evaluate_package_directory_script_with_host_bindings(
+                &RepositoryId::new("official").unwrap(),
+                package_dir,
+                &metadata,
+                script,
+                |lua| {
+                    let candidates = lua.create_table()?;
+                    for index in 1..=2 {
+                        let candidate = lua.create_table()?;
+                        candidate.set("version", index.to_string())?;
+                        candidates.raw_set(index, candidate)?;
+                    }
+                    let github = lua.create_table()?;
+                    github.set(
+                        "release_candidates",
+                        lua.create_function(move |lua, _: Table| {
+                            let result = lua.create_table()?;
+                            result.set("candidates", candidates.clone())?;
+                            Ok(result)
+                        })?,
+                    )?;
+                    let provider = lua.create_table()?;
+                    provider.set("github", github)?;
+                    let getter = lua.create_table()?;
+                    getter.set("provider", provider)?;
+                    lua.globals().set("getter", getter)
+                },
+            )
+            .unwrap();
+            assert_eq!(package.updates.len(), 2);
+            assert!(package.updates.iter().all(|candidate| {
+                candidate
+                    .install
+                    .as_ref()
+                    .map(|install| install.as_json().clone())
+                    == declared.then(|| serde_json::json!({"executable":"pm","args":["install"]}))
+            }));
+        }
     }
 
     #[test]

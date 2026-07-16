@@ -41,6 +41,11 @@ function fdroid.package(spec)
     endpoint_id = optional_string(spec, "endpoint_id"),
   }
   local result = fdroid_update_candidates()(host_spec)
+  if spec.install ~= nil then
+    for _, candidate in ipairs(result.candidates) do
+      candidate.install = spec.install
+    end
+  end
   return package_version {
     source_priority = { "fdroid" },
     updates = result.candidates,

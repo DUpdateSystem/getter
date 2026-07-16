@@ -509,6 +509,7 @@ mod tests {
                 channel: None,
                 source: None,
                 artifacts: Vec::new(),
+                install: None,
             }],
             UpdateSelectionPolicy::default(),
         )
@@ -553,6 +554,7 @@ mod tests {
                 sha256: None,
                 size: None,
             }],
+            install: None,
         }
     }
 }
