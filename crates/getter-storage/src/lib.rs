@@ -14,9 +14,10 @@ use serde_json::Value;
 use std::path::Path;
 use std::str::FromStr;
 
-pub const MAIN_STORAGE_CONTRACT_VERSION: u32 = 1;
+pub const MAIN_STORAGE_CONTRACT_VERSION: u32 = 2;
 pub const CACHE_STORAGE_CONTRACT_VERSION: u32 = 1;
-pub const MAIN_APPLIED_MIGRATION_IDS: &[&str] = &["main-v1", "main-task-v1"];
+pub const MAIN_APPLIED_MIGRATION_IDS: &[&str] =
+    &["main-v1", "main-task-v1", "main-autogen-transaction-v1"];
 pub const CACHE_APPLIED_MIGRATION_IDS: &[&str] = &["cache-v1", "cache-provider-provenance-v1"];
 
 #[derive(Debug, thiserror::Error)]
@@ -110,6 +111,11 @@ CREATE TABLE IF NOT EXISTS migration_records (
     source TEXT NOT NULL,
     completed_at_unix INTEGER NOT NULL DEFAULT (unixepoch()),
     report_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS autogen_transaction_commits (
+    transaction_id TEXT PRIMARY KEY,
+    committed_at_unix INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 CREATE TABLE IF NOT EXISTS download_tasks (
@@ -233,6 +239,91 @@ ON CONFLICT(id) DO UPDATE SET
                 path.map(|p| p.to_string_lossy().to_string()),
                 revision,
             ],
+        )?;
+        Ok(())
+    }
+
+    pub fn apply_generated_repository_batch_with_marker(
+        &self,
+        metadata: &RepositoryMetadata,
+        path: &Path,
+        package_ids: &[PackageId],
+        transaction_id: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let transaction = self.conn.unchecked_transaction()?;
+        transaction.execute(
+            r#"
+INSERT INTO repositories(id, name, priority, api_version, path, revision)
+VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+ON CONFLICT(id) DO UPDATE SET
+    name = excluded.name,
+    priority = excluded.priority,
+    api_version = excluded.api_version,
+    path = excluded.path,
+    revision = excluded.revision
+"#,
+            params![
+                metadata.id.as_str(),
+                metadata.name,
+                metadata.priority.value(),
+                metadata.api_version,
+                path.to_string_lossy().to_string(),
+            ],
+        )?;
+        for package_id in package_ids {
+            transaction.execute(
+                r#"
+INSERT INTO tracked_packages(
+    package_id, enabled, favorite, pin_version, repository_id, package_resolution
+)
+VALUES (?1, 1, 0, NULL, ?2, ?3)
+ON CONFLICT(package_id) DO UPDATE SET
+    repository_id = CASE
+        WHEN tracked_packages.package_resolution = 'missing_package_definition'
+        THEN excluded.repository_id
+        ELSE tracked_packages.repository_id
+    END,
+    package_resolution = CASE
+        WHEN tracked_packages.package_resolution = 'missing_package_definition'
+        THEN excluded.package_resolution
+        ELSE tracked_packages.package_resolution
+    END
+"#,
+                params![
+                    package_id.to_string(),
+                    metadata.id.as_str(),
+                    StoredPackageResolution::GenerateLocalPackage.as_str(),
+                ],
+            )?;
+        }
+        if let Some(transaction_id) = transaction_id {
+            transaction.execute(
+                "INSERT OR REPLACE INTO autogen_transaction_commits (transaction_id) VALUES (?1)",
+                [transaction_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn has_autogen_transaction_commit(
+        &self,
+        transaction_id: &str,
+    ) -> Result<bool, StorageError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM autogen_transaction_commits WHERE transaction_id = ?1)",
+            [transaction_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn delete_autogen_transaction_commit(
+        &self,
+        transaction_id: &str,
+    ) -> Result<(), StorageError> {
+        self.conn.execute(
+            "DELETE FROM autogen_transaction_commits WHERE transaction_id = ?1",
+            [transaction_id],
         )?;
         Ok(())
     }

@@ -10,6 +10,7 @@ pub mod autogen;
 pub mod download;
 pub mod fdroid_autogen;
 pub mod fdroid_catalog;
+pub mod fdroid_signed_index;
 pub mod github_autogen;
 pub mod github_latest_commit;
 pub mod github_releases;
@@ -23,6 +24,7 @@ mod lua_provider_host;
 #[cfg(feature = "lua")]
 #[doc(hidden)]
 pub mod lua_runtime_hooks;
+pub mod onboarding;
 pub mod provider_cache;
 pub mod read_model;
 pub mod runtime;

@@ -3,12 +3,44 @@
 use getter_core::autogen::{InstalledInventory, InstalledInventoryItem};
 use getter_core::repository::RepositoryMetadata;
 use getter_core::{RepositoryId, RepositoryPriority};
+use getter_operations::onboarding::SetupReadiness;
 use getter_operations::startup::{startup, UpdateStatus};
 use getter_storage::{
     CacheDb, MainDb, ProviderResponseUpsert, StoredPackageResolution, TrackedPackageUpsert,
 };
 use serde_json::json;
 use std::fs;
+
+#[test]
+fn startup_derives_setup_readiness_from_current_inventory_and_tracked_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let actionable = InstalledInventory::new(vec![InstalledInventoryItem::AndroidPackage {
+        package_name: "com.example.app".into(),
+        version_name: Some("1.0".into()),
+        version_code: Some(1),
+        label: Some("Example".into()),
+    }]);
+
+    let fresh = startup(temp.path(), actionable.clone()).unwrap();
+    assert_eq!(fresh.setup.state, SetupReadiness::NeedsPackageSetup);
+
+    let db = MainDb::open(temp.path().join("main.db")).unwrap();
+    db.upsert_tracked_package(&TrackedPackageUpsert {
+        package_id: "android/tracked".parse().unwrap(),
+        repository_id: None,
+        enabled: true,
+        favorite: false,
+        pin_version: None,
+        package_resolution: StoredPackageResolution::OfficialRepositoryPackage,
+    })
+    .unwrap();
+    let tracked = startup(temp.path(), actionable).unwrap();
+    assert_eq!(tracked.setup.state, SetupReadiness::Ready);
+
+    let empty = tempfile::tempdir().unwrap();
+    let no_candidates = startup(empty.path(), InstalledInventory::new(vec![])).unwrap();
+    assert_eq!(no_candidates.setup.state, SetupReadiness::Ready);
+}
 
 #[test]
 fn startup_bootstraps_idempotently_and_joins_static_updates() {

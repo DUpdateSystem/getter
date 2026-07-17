@@ -2,6 +2,7 @@
 
 #[cfg(feature = "lua")]
 use crate::lua_provider_host::{evaluate_provider_backed_package, ProviderBackedPackageEvalConfig};
+use crate::onboarding::{derive_setup_status_cache_only, SetupStatus};
 #[cfg(feature = "lua")]
 use crate::provider_cache::{ProviderCacheMode, CACHE_ONLY_MISS};
 use getter_core::autogen::{
@@ -55,6 +56,7 @@ pub struct StartupSnapshot {
     pub format: String,
     pub version: u32,
     pub bootstrap: BootstrapStatus,
+    pub setup: SetupStatus,
     pub repositories: Vec<StartupRepository>,
     pub apps: Vec<StartupAppSummary>,
     pub update_count: usize,
@@ -206,10 +208,15 @@ pub fn startup(
         .map_err(|error| StartupError::Inventory(error.to_string()))?;
     let bootstrap = bootstrap_data_dir(data_dir)?;
     let db = MainDb::open(&bootstrap.main_db.path)?;
+    crate::autogen::recover_autogen_transactions(data_dir, &db)
+        .map_err(|error| StartupError::Inventory(error.to_string()))?;
+    let cache_db = CacheDb::open(&bootstrap.cache_db.path)?;
     let stored_repositories = db.repositories()?;
     let repositories = stored_repositories.iter().map(repository_dto).collect();
-    let apps: Vec<_> = db
-        .tracked_packages()?
+    let tracked_packages = db.tracked_packages()?;
+    let setup = derive_setup_status_cache_only(data_dir, &db, &cache_db, &inventory)
+        .map_err(|error| StartupError::Inventory(error.to_string()))?;
+    let apps: Vec<_> = tracked_packages
         .into_iter()
         .filter(|p| p.enabled)
         .map(|package| app_summary(data_dir, &stored_repositories, &inventory, package))
@@ -222,6 +229,7 @@ pub fn startup(
         format: STARTUP_SNAPSHOT_FORMAT.to_owned(),
         version: STARTUP_SNAPSHOT_VERSION,
         bootstrap,
+        setup,
         repositories,
         apps,
         update_count,

@@ -10,17 +10,29 @@ lua-provider-host-dev = ["lua"]
 rustls-platform-verifier = ["ureq/platform-verifier"]
 
 [dependencies]
+base64 = "0.22"
+cms = "=0.3.0-pre.2"
+der = "0.8"
+fs2 = "0.4"
 json_comments = "0.2"
 getter-core = { path = "../getter-core", default-features = false }
 getter-providers = { path = "../getter-providers" }
 getter-storage = { path = "../getter-storage" }
+getrandom = "0.4"
 mlua = { version = "0.10", features = ["luajit", "vendored"], optional = true }
 serde = { version = "1", features = ["derive"] }
+rsa = "0.10.0-rc"
 serde_json = "1"
 sha2 = "0.10"
+sha2-11 = { package = "sha2", version = "0.11.0-rc" }
+signature = "3.0.0-rc"
+spki = "0.8"
+subtle = "2.6"
 thiserror = "1"
 which = "=8.0.3"
 ureq = { version = "3.3.0", default-features = false, features = ["gzip", "rustls"] }
+x509-cert = "0.3"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }

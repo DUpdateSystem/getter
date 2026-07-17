@@ -1184,6 +1184,57 @@ fn run_getter_runtime_script(world: &mut CliWorld) {
     world.json = None;
 }
 
+#[when("I run getter setup preview for that inventory")]
+fn run_getter_setup_preview(world: &mut CliWorld) {
+    let inventory = world.inventory.as_ref().expect("inventory exists");
+    let output = run_getter(
+        world,
+        [
+            "setup".to_owned(),
+            "preview".to_owned(),
+            "--inventory".to_owned(),
+            inventory.to_string_lossy().to_string(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter setup apply for that preview with accept-all")]
+fn run_getter_setup_apply_accept_all(world: &mut CliWorld) {
+    let preview = world
+        .autogen_preview
+        .as_ref()
+        .expect("setup preview exists");
+    let output = run_getter(
+        world,
+        [
+            "setup".to_owned(),
+            "apply".to_owned(),
+            "--preview".to_owned(),
+            preview.to_string_lossy().to_string(),
+            "--accept-all".to_owned(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
+#[when("I run getter startup for that inventory")]
+fn run_getter_startup_for_inventory(world: &mut CliWorld) {
+    let inventory = world.inventory.as_ref().expect("inventory exists");
+    let output = run_getter(
+        world,
+        [
+            "startup".to_owned(),
+            "--inventory".to_owned(),
+            inventory.to_string_lossy().to_string(),
+        ],
+    );
+    world.output = Some(output);
+    world.json = None;
+}
+
 #[when("I run getter autogen installed preview for that inventory")]
 fn run_getter_autogen_installed_preview(world: &mut CliWorld) {
     let inventory = world.inventory.as_ref().expect("inventory exists");
@@ -2013,6 +2064,23 @@ fn autogen_repository_has_not_been_written(world: &mut CliWorld) {
         !autogen_repo_path(world).exists(),
         "preview must not create autogen repository"
     );
+}
+
+#[then(expr = "setup state is {string}")]
+fn setup_state_is(world: &mut CliWorld, state: String) {
+    assert_eq!(current_json(world)["data"]["setup"]["state"], state);
+}
+
+#[then("I save the setup preview envelope to a file")]
+fn save_setup_preview_envelope_to_file(world: &mut CliWorld) {
+    let temp = world.temp.as_ref().expect("tempdir exists");
+    let preview = temp.path().join("setup-preview.json");
+    fs::write(
+        &preview,
+        serde_json::to_vec_pretty(current_json(world)).expect("preview serializes"),
+    )
+    .expect("write setup preview");
+    world.autogen_preview = Some(preview);
 }
 
 #[then("I save the autogen preview to a file")]

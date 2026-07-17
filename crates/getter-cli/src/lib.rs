@@ -27,6 +27,7 @@ use getter_operations::github_autogen;
 use getter_operations::github_latest_commit::{self, GithubLatestCommitOperationError};
 use getter_operations::github_releases::{self, GithubReleaseOperationError};
 use getter_operations::legacy_room::{self, LegacyRoomOperationError};
+use getter_operations::onboarding::{self, SetupAcceptance, SetupPreview};
 use getter_operations::runtime as runtime_operations;
 use getter_operations::startup as startup_operations;
 use getter_storage::legacy_room::{
@@ -57,6 +58,13 @@ pub enum CliCommand {
     Init,
     Startup {
         inventory: Option<PathBuf>,
+    },
+    SetupPreview {
+        inventory: PathBuf,
+    },
+    SetupApply {
+        preview: PathBuf,
+        acceptance: SetupAcceptance,
     },
     AppList,
     AppShow {
@@ -522,6 +530,21 @@ where
         [command, flag, inventory] if command == "startup" && flag == "--inventory" => {
             CliCommand::Startup {
                 inventory: Some(PathBuf::from(inventory)),
+            }
+        }
+        [domain, command, flag, inventory]
+            if domain == "setup" && command == "preview" && flag == "--inventory" =>
+        {
+            CliCommand::SetupPreview {
+                inventory: PathBuf::from(inventory),
+            }
+        }
+        [domain, command, flag, preview, rest @ ..]
+            if domain == "setup" && command == "apply" && flag == "--preview" =>
+        {
+            CliCommand::SetupApply {
+                preview: PathBuf::from(preview),
+                acceptance: parse_setup_acceptance(rest)?,
             }
         }
         [domain, command] if domain == "app" && command == "list" => CliCommand::AppList,
@@ -1046,6 +1069,33 @@ fn execute(invocation: CliInvocation, command_sink: &mut dyn Write) -> Result<Va
             .map_err(|source| CliError::Download(format!("failed to serialize handoff: {source}")))
         }
         CliCommand::RuntimeScript { script } => run_runtime_script(&invocation.data_dir, &script),
+        CliCommand::SetupPreview { inventory } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            let cache = open_cache_db(&invocation.data_dir)?;
+            let inventory = read_installed_inventory(&inventory)?;
+            serde_json::to_value(onboarding::preview_setup_with_transport(
+                &invocation.data_dir,
+                &db,
+                &cache,
+                inventory,
+                &FixturelessSetupTransport,
+            )?)
+            .map_err(|error| CliError::Autogen(error.to_string()))
+        }
+        CliCommand::SetupApply {
+            preview,
+            acceptance,
+        } => {
+            let db = open_main_db(&invocation.data_dir)?;
+            let preview = read_setup_preview(&preview)?;
+            serde_json::to_value(onboarding::apply_setup_preview(
+                &invocation.data_dir,
+                &db,
+                &preview,
+                &acceptance,
+            )?)
+            .map_err(|error| CliError::Autogen(error.to_string()))
+        }
         CliCommand::AutogenInstalledPreview { inventory } => {
             let db = open_main_db(&invocation.data_dir)?;
             let inventory = read_installed_inventory(&inventory)?;
@@ -1742,6 +1792,13 @@ fn parse_provider_github_latest_commit_args(
     Ok(parsed)
 }
 
+fn parse_setup_acceptance(args: &[String]) -> Result<SetupAcceptance, CliError> {
+    match parse_autogen_acceptance(args)? {
+        AutogenAcceptance::AcceptAll => Ok(SetupAcceptance::AcceptAll),
+        AutogenAcceptance::Accept(ids) => Ok(SetupAcceptance::Accept(ids)),
+    }
+}
+
 fn parse_autogen_acceptance(args: &[String]) -> Result<AutogenAcceptance, CliError> {
     match args {
         [flag] if flag == "--accept-all" => Ok(AutogenAcceptance::AcceptAll),
@@ -1888,6 +1945,27 @@ fn read_github_commit_fixture(path: &Path) -> Result<String, CliError> {
     fs::read_to_string(path).map_err(|source| {
         CliError::Provider(format!("failed to read GitHub commit fixture: {source}"))
     })
+}
+
+struct FixturelessSetupTransport;
+
+impl onboarding::FdroidCatalogTransport for FixturelessSetupTransport {
+    fn fetch_official_index_xml(&self) -> Result<String, String> {
+        Err("CLI setup preview does not perform live network access".to_owned())
+    }
+}
+
+fn read_setup_preview(path: &Path) -> Result<SetupPreview, CliError> {
+    let bytes = fs::read(path)
+        .map_err(|error| CliError::Autogen(format!("failed to read setup preview: {error}")))?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| CliError::Autogen(format!("invalid setup preview: {error}")))?;
+    let payload = value
+        .get("data")
+        .filter(|_| value.get("ok").and_then(Value::as_bool) == Some(true))
+        .unwrap_or(&value);
+    serde_json::from_value(payload.clone())
+        .map_err(|error| CliError::Autogen(format!("invalid setup preview: {error}")))
 }
 
 fn read_installed_inventory(path: &Path) -> Result<InstalledInventory, CliError> {
@@ -2432,7 +2510,7 @@ fn envelope_to_string(value: Value) -> String {
 }
 
 fn usage_text() -> String {
-    "Usage: getter --data-dir <path> <init|startup [--inventory <installed.json>]|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> [--package <package-name>...] [--inventory <installed.json>]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen github preview --owner <owner> --repo <repo> --android-package <package-name> --releases <fixture.json> [--display-name <name>] [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases]|autogen github apply --preview <preview.json> (--accept-all|--accept <package-id>...)|provider github releases --owner <owner> --repo <repo> [--releases <fixture.json>] [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases] [--refresh]|provider github latest-commit --owner <owner> --repo <repo> --commit <fixture.json> [--ref <ref>] [--refresh]|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
+    "Usage: getter --data-dir <path> <init|startup [--inventory <installed.json>]|setup preview --inventory <installed.json>|setup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|app list|repo list|repo add <repo-id> <path> [--priority <n>]|repo eval <repo-id>|repo validate <path>|package eval <package-id> [--repo <repo-id>]|storage validate|version pin <package-id> <version>|version unpin <package-id>|hub list|update check --fixture <fixture.json>|runtime script --script <script.json>|debug fake-task submit --request <request.json>|debug fake-task run <task-id>|debug fake-task list|debug fake-task cancel <task-id>|debug fake-task events --after <cursor> --limit <n>|debug fake-task install-result <handoff-id> --status <accepted|succeeded|failed|canceled>|autogen installed preview --inventory <installed.json>|autogen installed apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen fdroid preview --index <index.xml> [--package <package-name>...] [--inventory <installed.json>]|autogen fdroid apply --preview <preview.json> (--accept-all|--accept <package-id>...)|autogen github preview --owner <owner> --repo <repo> --android-package <package-name> --releases <fixture.json> [--display-name <name>] [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases]|autogen github apply --preview <preview.json> (--accept-all|--accept <package-id>...)|provider github releases --owner <owner> --repo <repo> [--releases <fixture.json>] [--asset-include <regex>] [--asset-exclude <regex>] [--include-prereleases] [--refresh]|provider github latest-commit --owner <owner> --repo <repo> --commit <fixture.json> [--ref <ref>] [--refresh]|autogen cleanup preview --inventory <installed.json>|autogen cleanup apply --preview <preview.json> (--accept-all|--accept <package-id>...)|legacy import-room-bundle <bundle.json>|legacy import-room-db <db.sqlite>|legacy report-list>\nNote: `debug fake-task` commands are persisted fake-download scaffolding. ADR-0011 runtime task debugging uses `runtime script` and does not preserve task state across CLI invocations.\n".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -2478,6 +2556,8 @@ impl CliCommand {
         match self {
             Self::Init => "init",
             Self::Startup { .. } => "startup",
+            Self::SetupPreview { .. } => "setup preview",
+            Self::SetupApply { .. } => "setup apply",
             Self::AppList => "app list",
             Self::AppShow { .. } => "app show",
             Self::AppCheck { .. } => "app check",
