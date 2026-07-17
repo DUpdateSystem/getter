@@ -15,7 +15,7 @@ use getter_core::runtime::IssuedAction;
 use getter_core::update::compare_versions;
 use getter_core::PackageId;
 #[cfg(feature = "lua")]
-use getter_core::{InstallerArg, InstallerCommand, UpdateArtifact};
+use getter_core::{InstalledTarget, Installer, InstallerArg, InstallerCommand, UpdateArtifact};
 use getter_storage::{MainDb, StorageError, StoredTrackedPackage};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "lua")]
@@ -88,6 +88,12 @@ pub enum AppOperationError {
     #[error("installer artifact name '{0}' is duplicated")]
     InstallerArtifactDuplicate(String),
     #[cfg(feature = "lua")]
+    #[error("installer target is unsupported")]
+    InstallerTargetUnsupported,
+    #[cfg(feature = "lua")]
+    #[error("installer artifact '{0}' is unsupported")]
+    InstallerArtifactUnsupported(String),
+    #[cfg(feature = "lua")]
     #[error("installer executable '{0}' was not found")]
     InstallerCommandNotFound(String),
     #[cfg(feature = "lua")]
@@ -144,6 +150,10 @@ impl AppOperationError {
             #[cfg(feature = "lua")]
             Self::InstallerArtifactDuplicate(_) => "installer.artifact_duplicate",
             #[cfg(feature = "lua")]
+            Self::InstallerTargetUnsupported => "installer.target_unsupported",
+            #[cfg(feature = "lua")]
+            Self::InstallerArtifactUnsupported(_) => "installer.artifact_unsupported",
+            #[cfg(feature = "lua")]
             Self::InstallerCommandNotFound(_) => "installer.command_not_found",
             #[cfg(feature = "lua")]
             Self::InstallerCommandSpawnFailed(_) => "installer.command_spawn_failed",
@@ -190,6 +200,10 @@ impl AppOperationError {
             #[cfg(feature = "lua")]
             Self::InstallerArtifactDuplicate(_) => "Getter installer artifact name is duplicated",
             #[cfg(feature = "lua")]
+            Self::InstallerTargetUnsupported => "Getter installer target is unsupported",
+            #[cfg(feature = "lua")]
+            Self::InstallerArtifactUnsupported(_) => "Getter installer artifact is unsupported",
+            #[cfg(feature = "lua")]
             Self::InstallerCommandNotFound(_) => "Getter installer command was not found",
             #[cfg(feature = "lua")]
             Self::InstallerCommandSpawnFailed(_) => "Getter installer command could not be started",
@@ -222,6 +236,8 @@ impl AppOperationError {
             | Self::InstallerSchema(_)
             | Self::InstallerArtifactUnknown(_)
             | Self::InstallerArtifactDuplicate(_)
+            | Self::InstallerTargetUnsupported
+            | Self::InstallerArtifactUnsupported(_)
             | Self::InstallerCommandNotFound(_)
             | Self::InstallerCommandSpawnFailed(_)
             | Self::InstallerCommandFailed(_) => self.to_string(),
@@ -243,6 +259,39 @@ pub struct AppDownloadResult {
     pub repository_id: String,
     pub version: String,
     pub artifacts: Vec<StagedArtifact>,
+}
+
+#[cfg(feature = "lua")]
+pub const PLATFORM_INSTALL_HANDOFF_FORMAT: &str = "getter-platform-install-handoff";
+#[cfg(feature = "lua")]
+pub const PLATFORM_INSTALL_HANDOFF_VERSION: u32 = 1;
+
+#[cfg(feature = "lua")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformInstallHandoff {
+    pub format: String,
+    pub version: u32,
+    pub package_id: PackageId,
+    pub repository_id: String,
+    pub package_version: String,
+    pub request: PlatformInstallRequest,
+}
+
+#[cfg(feature = "lua")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlatformInstallRequest {
+    AndroidApk {
+        target: AndroidInstallTarget,
+        artifact: StagedArtifact,
+    },
+}
+
+#[cfg(feature = "lua")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AndroidInstallTarget {
+    pub kind: String,
+    pub package_name: String,
 }
 
 #[cfg(feature = "lua")]
@@ -442,7 +491,7 @@ pub fn download_app_with_transports(
         github_release_transport,
         download_transport,
     )
-    .map(|(result, _)| result)
+    .map(|(result, _, _)| result)
 }
 
 #[cfg(feature = "lua")]
@@ -451,7 +500,14 @@ fn prepare_app_with_transports(
     package_id: &PackageId,
     github_release_transport: Option<Rc<dyn GithubReleaseTransport>>,
     download_transport: Rc<dyn crate::download::RuntimeDownloadTransport>,
-) -> Result<(AppDownloadResult, getter_core::UpdateCandidate), AppOperationError> {
+) -> Result<
+    (
+        AppDownloadResult,
+        getter_core::UpdateCandidate,
+        Vec<InstalledTarget>,
+    ),
+    AppOperationError,
+> {
     startup::bootstrap_data_dir(data_dir)?;
     let db = MainDb::open(data_dir.join("main.db"))?;
     let tracked = tracked_package(&db, package_id)?;
@@ -514,6 +570,7 @@ fn prepare_app_with_transports(
         fs::create_dir_all(&downloads)?;
     }
 
+    let installed_targets = evaluation.package.installed.clone();
     let artifacts = prepared
         .into_iter()
         .map(|artifact| stage_artifact(artifact, download_transport.as_ref()))
@@ -526,7 +583,84 @@ fn prepare_app_with_transports(
             artifacts,
         },
         candidate,
+        installed_targets,
     ))
+}
+
+#[cfg(feature = "lua")]
+pub fn prepare_platform_install(
+    data_dir: &Path,
+    package_id: &PackageId,
+) -> Result<PlatformInstallHandoff, AppOperationError> {
+    prepare_platform_install_with_transports(
+        data_dir,
+        package_id,
+        Some(Rc::new(
+            crate::github_releases::UreqGithubReleaseTransport::new(),
+        )),
+        Rc::new(crate::download::UreqRuntimeDownloadTransport::new()),
+    )
+}
+
+#[cfg(feature = "lua")]
+pub fn prepare_platform_install_with_transports(
+    data_dir: &Path,
+    package_id: &PackageId,
+    github_release_transport: Option<Rc<dyn GithubReleaseTransport>>,
+    download_transport: Rc<dyn crate::download::RuntimeDownloadTransport>,
+) -> Result<PlatformInstallHandoff, AppOperationError> {
+    let (download, candidate, installed_targets) = prepare_app_with_transports(
+        data_dir,
+        package_id,
+        github_release_transport,
+        download_transport,
+    )?;
+    let installer = candidate
+        .install
+        .ok_or(AppOperationError::InstallerMissing)?
+        .parse()
+        .map_err(|error| AppOperationError::InstallerSchema(error.to_string()))?;
+    let Installer::AndroidApk(installer) = installer else {
+        return Err(AppOperationError::InstallerTargetUnsupported);
+    };
+    let [InstalledTarget::AndroidPackage { package_name }] = installed_targets.as_slice() else {
+        return Err(AppOperationError::InstallerTargetUnsupported);
+    };
+    if package_name.trim().is_empty() {
+        return Err(AppOperationError::InstallerTargetUnsupported);
+    }
+    let declared_artifact = candidate
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == installer.artifact.artifact)
+        .ok_or_else(|| {
+            AppOperationError::InstallerArtifactUnknown(installer.artifact.artifact.clone())
+        })?;
+    let declared_file_name = declared_artifact
+        .file_name
+        .as_deref()
+        .unwrap_or(&declared_artifact.name);
+    if !declared_file_name.to_ascii_lowercase().ends_with(".apk") {
+        return Err(AppOperationError::InstallerArtifactUnsupported(
+            installer.artifact.artifact,
+        ));
+    }
+    let artifact = unique_staged_artifact(&download.artifacts, &declared_artifact.name)?;
+
+    Ok(PlatformInstallHandoff {
+        format: PLATFORM_INSTALL_HANDOFF_FORMAT.into(),
+        version: PLATFORM_INSTALL_HANDOFF_VERSION,
+        package_id: download.package_id,
+        repository_id: download.repository_id,
+        package_version: download.version,
+        request: PlatformInstallRequest::AndroidApk {
+            target: AndroidInstallTarget {
+                kind: "android".into(),
+                package_name: package_name.clone(),
+            },
+            artifact: artifact.clone(),
+        },
+    })
 }
 
 #[cfg(feature = "lua")]
@@ -586,7 +720,7 @@ pub fn install_app_with_dependencies_and_observer(
     runner: &dyn CommandRunner,
     observer: &dyn CommandObserver,
 ) -> Result<AppInstallResult, AppOperationError> {
-    let (download, candidate) = prepare_app_with_transports(
+    let (download, candidate, _) = prepare_app_with_transports(
         data_dir,
         package_id,
         github_release_transport,
@@ -597,6 +731,9 @@ pub fn install_app_with_dependencies_and_observer(
         .ok_or(AppOperationError::InstallerMissing)?
         .parse()
         .map_err(|error| AppOperationError::InstallerSchema(error.to_string()))?;
+    let Installer::Command(installer) = installer else {
+        return Err(AppOperationError::InstallerTargetUnsupported);
+    };
     validate_installer_command(&installer)?;
     let command = resolve_installer(&installer, &download.artifacts, resolver)?;
     observer
@@ -621,6 +758,23 @@ pub fn install_app_with_dependencies_and_observer(
         stdout,
         stderr,
     })
+}
+
+#[cfg(feature = "lua")]
+fn unique_staged_artifact<'a>(
+    artifacts: &'a [StagedArtifact],
+    name: &str,
+) -> Result<&'a StagedArtifact, AppOperationError> {
+    let mut matches = artifacts.iter().filter(|artifact| artifact.name == name);
+    let artifact = matches
+        .next()
+        .ok_or_else(|| AppOperationError::InstallerArtifactUnknown(name.to_owned()))?;
+    if matches.next().is_some() {
+        return Err(AppOperationError::InstallerArtifactDuplicate(
+            name.to_owned(),
+        ));
+    }
+    Ok(artifact)
 }
 
 #[cfg(feature = "lua")]

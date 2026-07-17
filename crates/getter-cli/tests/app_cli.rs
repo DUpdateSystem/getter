@@ -171,6 +171,44 @@ fn app_install_rejects_product_command_controls() {
 }
 
 #[test]
+fn app_install_rejects_android_apk_platform_declaration_without_execution() {
+    let bytes = b"apk";
+    let digest = "dd37c2d7274f7ea982cb83390c36918fee9ce8889073c44b68cdc00bdb8c3e04";
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 1024];
+        let _ = stream.read(&mut request).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        )
+        .unwrap();
+        stream.write_all(bytes).unwrap();
+    });
+    let temp = fixture("2");
+    let package = temp.path().join("repo/official/android/com.example");
+    fs::write(package.join("Manifest"), format!("{digest} app.apk\n")).unwrap();
+    fs::write(package.join("1.lua"), format!(r#"#!/bin/upa-lua v1
+return package_version {{ updates = {{{{ version="2", artifacts={{{{name="app",file_name="app.apk",url="http://{address}/app.apk"}}}}, install={{kind="android_apk",artifact={{artifact="app"}}}} }}}} }}"#)).unwrap();
+
+    let output = run([
+        "getter",
+        "--data-dir",
+        temp.path().to_str().unwrap(),
+        "app",
+        "install",
+        "android/com.example",
+    ]);
+    server.join().unwrap();
+    assert_eq!(output.exit_code, ExitCode::GenericFailure);
+    let value: Value = serde_json::from_str(&output.stdout).unwrap();
+    assert_eq!(value["error"]["code"], "installer.target_unsupported");
+}
+
+#[test]
 fn app_install_executes_declared_command_and_reports_resolved_argv() {
     let bytes = b"install artifact";
     let digest = "462c010ad28c00ae578bcfa52d985c8cb00a89accdd51ac9f05fec5872a7ae25";

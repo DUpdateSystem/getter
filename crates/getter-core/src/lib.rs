@@ -277,12 +277,23 @@ pub struct PackagePermissions {
     pub free_network: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Installer {
+    AndroidApk(AndroidApkInstaller),
+    Command(InstallerCommand),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstallerCommand {
     pub executable: String,
     #[serde(default)]
     pub args: Vec<InstallerArg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AndroidApkInstaller {
+    pub artifact: InstallerArtifactReference,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -313,7 +324,7 @@ impl InstallerDeclaration {
         &self.0
     }
 
-    pub fn parse(&self) -> Result<InstallerCommand, serde_json::Error> {
+    pub fn parse(&self) -> Result<Installer, serde_json::Error> {
         let mut value = self.0.clone();
         if let Some(args) = value
             .as_object_mut()
@@ -323,7 +334,27 @@ impl InstallerDeclaration {
                 *args = serde_json::Value::Array(Vec::new());
             }
         }
-        serde_json::from_value(value)
+        if value.get("kind").is_some() {
+            #[derive(Deserialize)]
+            #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+            enum TaggedInstaller {
+                AndroidApk {
+                    artifact: InstallerArtifactReference,
+                },
+            }
+
+            return serde_json::from_value(value).and_then(|installer| match installer {
+                TaggedInstaller::AndroidApk { artifact } if artifact.artifact.trim().is_empty() => {
+                    Err(<serde_json::Error as serde::de::Error>::custom(
+                        "android_apk artifact reference must not be empty",
+                    ))
+                }
+                TaggedInstaller::AndroidApk { artifact } => {
+                    Ok(Installer::AndroidApk(AndroidApkInstaller { artifact }))
+                }
+            });
+        }
+        serde_json::from_value(value).map(Installer::Command)
     }
 }
 
@@ -468,6 +499,52 @@ mod tests {
         assert_eq!(RepositoryPriority::LOCAL.value(), 100);
         assert_eq!(RepositoryPriority::DEFAULT.value(), 0);
         assert_eq!(RepositoryPriority::GENERATED_FALLBACK.value(), -1);
+    }
+
+    #[test]
+    fn parses_typed_installers_without_changing_legacy_command_shape() {
+        let android = InstallerDeclaration::new(serde_json::json!({
+            "kind": "android_apk",
+            "artifact": { "artifact": "app.apk" }
+        }));
+        assert_eq!(
+            android.parse().unwrap(),
+            Installer::AndroidApk(AndroidApkInstaller {
+                artifact: InstallerArtifactReference {
+                    artifact: "app.apk".into(),
+                },
+            })
+        );
+
+        let command = InstallerDeclaration::new(serde_json::json!({
+            "executable": "installer",
+            "args": {}
+        }));
+        assert_eq!(
+            command.parse().unwrap(),
+            Installer::Command(InstallerCommand {
+                executable: "installer".into(),
+                args: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_or_extended_android_apk_installers() {
+        for value in [
+            serde_json::json!({"kind": "android_apk"}),
+            serde_json::json!({
+                "kind": "android_apk",
+                "artifact": {"artifact": "app.apk"},
+                "surprise": true
+            }),
+            serde_json::json!({
+                "kind": "android_apk",
+                "artifact": {"artifact": "app.apk", "surprise": true}
+            }),
+        ] {
+            assert!(InstallerDeclaration::new(value).parse().is_err());
+        }
     }
 
     #[test]

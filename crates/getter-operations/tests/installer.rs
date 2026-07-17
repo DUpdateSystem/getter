@@ -4,7 +4,8 @@ use getter_core::repository::RepositoryMetadata;
 use getter_core::{RepositoryId, RepositoryPriority};
 use getter_operations::app::{
     download_app_with_transports, install_app_with_dependencies,
-    install_app_with_dependencies_and_observer, CommandObserver, CommandResolver, CommandRunner,
+    install_app_with_dependencies_and_observer, prepare_platform_install_with_transports,
+    CommandObserver, CommandResolver, CommandRunner, PlatformInstallRequest,
     ResolvedInstallerCommand, RunnerOutput,
 };
 use getter_operations::download::{
@@ -79,16 +80,12 @@ fn fake_installer(temp: &Path) -> PathBuf {
 }"#,
     )
 }
-fn fixture(install: &str, bytes: &[u8]) -> tempfile::TempDir {
+fn fixture_with_metadata(install: &str, bytes: &[u8], metadata: &str) -> tempfile::TempDir {
     let temp = tempfile::tempdir().unwrap();
     getter_operations::startup::bootstrap_data_dir(temp.path()).unwrap();
     let package = temp.path().join("repo/official/android/com.example");
     fs::create_dir_all(&package).unwrap();
-    fs::write(
-        package.join("metadata.jsonc"),
-        r#"{"type":"android:app","android":{"package_name":"com.example"}}"#,
-    )
-    .unwrap();
+    fs::write(package.join("metadata.jsonc"), metadata).unwrap();
     fs::write(
         package.join("Manifest"),
         format!("{} app.apk\n", digest(bytes)),
@@ -118,6 +115,157 @@ return package_version {{ updates = {{{{ version="2", artifacts={{{{name="app",f
     })
     .unwrap();
     temp
+}
+
+fn fixture(install: &str, bytes: &[u8]) -> tempfile::TempDir {
+    fixture_with_metadata(
+        install,
+        bytes,
+        r#"{"type":"android:app","android":{"package_name":"com.example"}}"#,
+    )
+}
+
+#[test]
+fn prepares_android_apk_handoff_from_verified_staging() {
+    let bytes = b"apk";
+    let temp = fixture(r#"{kind="android_apk",artifact={artifact="app"}}"#, bytes);
+
+    let handoff = prepare_platform_install_with_transports(
+        temp.path(),
+        &"android/com.example".parse().unwrap(),
+        None,
+        Rc::new(Bytes(bytes.to_vec())),
+    )
+    .unwrap();
+
+    assert_eq!(handoff.format, "getter-platform-install-handoff");
+    assert_eq!(handoff.version, 1);
+    assert_eq!(handoff.package_id.to_string(), "android/com.example");
+    assert_eq!(handoff.repository_id.as_str(), "official");
+    assert_eq!(handoff.package_version, "2");
+    let artifact_path = match &handoff.request {
+        PlatformInstallRequest::AndroidApk { artifact, .. } => artifact.path.clone(),
+    };
+    assert_eq!(
+        serde_json::to_value(&handoff).unwrap(),
+        serde_json::json!({
+            "format": "getter-platform-install-handoff",
+            "version": 1,
+            "package_id": "android/com.example",
+            "repository_id": "official",
+            "package_version": "2",
+            "request": {
+                "kind": "android_apk",
+                "target": {
+                    "kind": "android",
+                    "package_name": "com.example"
+                },
+                "artifact": {
+                    "name": "app",
+                    "path": artifact_path,
+                    "sha256": digest(bytes),
+                    "status": "downloaded"
+                }
+            }
+        })
+    );
+    let PlatformInstallRequest::AndroidApk { target, artifact } = handoff.request;
+    assert_eq!(target.kind, "android");
+    assert_eq!(target.package_name, "com.example");
+    assert_eq!(artifact.name, "app");
+    assert!(artifact.path.is_absolute());
+    assert_eq!(artifact.sha256, digest(bytes));
+    assert_eq!(artifact.status, "downloaded");
+}
+
+#[test]
+fn platform_prepare_rejects_command_unknown_non_apk_and_malformed_declarations_stably() {
+    let cases = [
+        (
+            r#"{executable="fake-installer",args={}}"#,
+            "installer.target_unsupported",
+        ),
+        (
+            r#"{kind="android_apk",artifact={artifact="missing"}}"#,
+            "installer.artifact_unknown",
+        ),
+        (
+            r#"{kind="android_apk",artifact={artifact="app"},surprise=true}"#,
+            "installer.schema_invalid",
+        ),
+    ];
+    for (install, expected_code) in cases {
+        let bytes = b"apk";
+        let temp = fixture(install, bytes);
+        let error = prepare_platform_install_with_transports(
+            temp.path(),
+            &"android/com.example".parse().unwrap(),
+            None,
+            Rc::new(Bytes(bytes.to_vec())),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), expected_code);
+    }
+
+    let bytes = b"not apk";
+    let temp = fixture(r#"{kind="android_apk",artifact={artifact="app"}}"#, bytes);
+    let package = temp.path().join("repo/official/android/com.example");
+    fs::write(
+        package.join("Manifest"),
+        format!("{} payload.zip\n", digest(bytes)),
+    )
+    .unwrap();
+    fs::write(package.join("1.lua"), r#"#!/bin/upa-lua v1
+return package_version { updates = {{ version="2", artifacts={{name="app",file_name="payload.zip",url="mock://app"}}, install={kind="android_apk",artifact={artifact="app"}} }} }"#).unwrap();
+    let error = prepare_platform_install_with_transports(
+        temp.path(),
+        &"android/com.example".parse().unwrap(),
+        None,
+        Rc::new(Bytes(bytes.to_vec())),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "installer.artifact_unsupported");
+}
+
+#[test]
+fn platform_prepare_requires_exactly_one_nonempty_android_package_target() {
+    let bytes = b"apk";
+    for metadata in [
+        r#"{"type":"generic","generic":{"id":"com.example"}}"#,
+        r#"{"type":"android:app","android":{"package_name":""}}"#,
+    ] {
+        let temp = fixture_with_metadata(
+            r#"{kind="android_apk",artifact={artifact="app"}}"#,
+            bytes,
+            metadata,
+        );
+        let error = prepare_platform_install_with_transports(
+            temp.path(),
+            &"android/com.example".parse().unwrap(),
+            None,
+            Rc::new(Bytes(bytes.to_vec())),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "installer.target_unsupported");
+    }
+}
+
+#[test]
+fn direct_command_install_rejects_android_apk_without_resolving_or_running() {
+    let bytes = b"apk";
+    let temp = fixture(r#"{kind="android_apk",artifact={artifact="app"}}"#, bytes);
+    let runner = Runner::default();
+    let error = install_app_with_dependencies(
+        temp.path(),
+        &"android/com.example".parse().unwrap(),
+        None,
+        Rc::new(Bytes(bytes.to_vec())),
+        &Resolver(PathBuf::from("/fake/bin/installer")),
+        &runner,
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "installer.target_unsupported");
+    assert!(runner.seen.borrow().is_none());
 }
 
 #[test]

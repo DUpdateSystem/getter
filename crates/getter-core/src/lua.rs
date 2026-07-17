@@ -1017,6 +1017,34 @@ mod tests {
     }
 
     #[test]
+    fn android_apk_helper_emits_exact_tagged_artifact_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        write_simple_android_package(
+            temp.path(),
+            r#"#!/bin/upa-lua v1
+local installer = require("luaclass.installer")
+return package_version {
+  updates = {{
+    version = "2",
+    artifacts = {{ name = "app.apk", url = "https://example.invalid/app.apk" }},
+    install = installer.android_apk {
+      artifact = installer.artifact("app.apk"),
+    },
+  }},
+}"#,
+        );
+
+        let package = evaluate_single_package_directory(temp.path(), "official").unwrap();
+        assert_eq!(
+            package.updates[0].install.as_ref().unwrap().as_json(),
+            &serde_json::json!({
+                "kind": "android_apk",
+                "artifact": {"artifact": "app.apk"}
+            })
+        );
+    }
+
+    #[test]
     fn preserves_chosen_installer_table_declaration_without_eager_validation() {
         let temp = tempfile::tempdir().unwrap();
         write_simple_android_package(
