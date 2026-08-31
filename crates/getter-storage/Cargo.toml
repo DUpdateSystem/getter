@@ -1,0 +1,13 @@
+[package]
+name = "getter-storage"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+getter-core = { path = "../getter-core", default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"
