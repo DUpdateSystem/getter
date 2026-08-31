@@ -158,6 +158,7 @@ pub fn issue_action_from_offline_update_check_json(
             runtime.issue_action(SealedActionPlan {
                 package_id: update.package_id.clone(),
                 actions: update.actions.clone(),
+                android_apk_install: None,
                 lua_object: PackageVersionLuaObject {
                     object_id: format!("offline-update:{}", update.package_id),
                     dependency_digest: request
@@ -252,10 +253,17 @@ pub(crate) fn issue_action_from_registered_evaluation(
             pin_version: request.pin_version,
         },
     )?;
+    let android_apk_install = crate::app::seal_android_apk_install_plan(
+        &evaluated.package_path,
+        &evaluated.package,
+        update.selected.as_ref(),
+    )
+    .map_err(|error| RuntimeOperationError::PackageEval(error.to_string()))?;
     let action = (!update.actions.is_empty()).then(|| {
         runtime.issue_action(SealedActionPlan {
             package_id: update.package_id.clone(),
             actions: update.actions.clone(),
+            android_apk_install,
             lua_object: PackageVersionLuaObject {
                 object_id: format!("package-update:{}", update.package_id),
                 dependency_digest: evaluated.dependency_digest,
@@ -1722,6 +1730,7 @@ return package_version {
                     file: "app.apk".to_owned(),
                 },
             ],
+            android_apk_install: None,
             lua_object: lua_object(package_id),
         }
     }
@@ -1733,6 +1742,7 @@ return package_version {
                 url: "https://example.invalid/archive.zip".to_owned(),
                 file_name: "archive.zip".to_owned(),
             }],
+            android_apk_install: None,
             lua_object: lua_object(package_id),
         }
     }

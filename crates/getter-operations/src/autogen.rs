@@ -186,6 +186,7 @@ pub(crate) struct AutogenApplySpec<'a> {
 
 struct PreparedCandidate {
     package_id: PackageId,
+    relative_path: PathBuf,
     target_dir: PathBuf,
     payload: PreviewCandidatePayload,
 }
@@ -596,6 +597,7 @@ fn apply_preview_batch_locked(
             }
             prepared.push(PreparedCandidate {
                 package_id,
+                relative_path,
                 target_dir,
                 payload,
             });
@@ -675,12 +677,21 @@ fn apply_preview_batch_locked(
     })?;
 
     let result_package_ids = journal.package_ids.clone();
+    let result_packages = prepared
+        .iter()
+        .map(|candidate| {
+            json!({
+                "package_id": candidate.package_id.to_string(),
+                "output_relative_path": candidate.relative_path,
+            })
+        })
+        .collect::<Vec<_>>();
     let committed_result = || {
         json!({
             "operation": "autogen.apply",
             "target_repo_id": target_alias.as_str(),
             "accepted_package_ids": result_package_ids,
-            "applied": result_package_ids.iter().map(|id| json!({ "package_id": id })).collect::<Vec<_>>(),
+            "applied": result_packages,
             "written": result_package_ids.len(),
             "applied_count": result_package_ids.len(),
         })
@@ -1460,6 +1471,13 @@ mod tests {
                 .unwrap();
 
         assert_eq!(result["target_repo_id"], "autogen");
+        assert_eq!(
+            result["applied"][0],
+            json!({
+                "package_id": "android/app/com.example.autogen",
+                "output_relative_path": "android/app/com.example.autogen",
+            })
+        );
         assert!(data_dir.join("repo/autogen").is_dir());
         assert!(data_dir
             .join("repo/autogen/android/app/com.example.autogen/metadata.jsonc")

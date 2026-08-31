@@ -1,16 +1,21 @@
 #![cfg(feature = "lua")]
 
 use getter_core::repository::RepositoryMetadata;
+use getter_core::runtime::GetterRuntime;
 use getter_core::{RepositoryId, RepositoryPriority};
 use getter_operations::app::{
     download_app_with_transports, install_app_with_dependencies,
-    install_app_with_dependencies_and_observer, prepare_platform_install_with_transports,
-    CommandObserver, CommandResolver, CommandRunner, PlatformInstallRequest,
-    ResolvedInstallerCommand, RunnerOutput,
+    install_app_with_dependencies_and_observer, prepare_platform_install_for_task,
+    prepare_platform_install_with_transports, CommandObserver, CommandResolver, CommandRunner,
+    PlatformInstallRequest, ResolvedInstallerCommand, RunnerOutput,
 };
 use getter_operations::download::{
     RuntimeDownloadSink, RuntimeDownloadTransport, RuntimeDownloadTransportError,
     RuntimeDownloadTransportRequest,
+};
+use getter_operations::runtime::{
+    issue_action_from_registered_package_json_with_github_transport,
+    submit_action_and_download_json_with_transport,
 };
 use getter_storage::{MainDb, StoredPackageResolution, TrackedPackageUpsert};
 use sha2::{Digest, Sha256};
@@ -126,6 +131,138 @@ fn fixture(install: &str, bytes: &[u8]) -> tempfile::TempDir {
 }
 
 #[test]
+fn task_scoped_prepare_uses_the_sealed_candidate_and_task_staging() {
+    let bytes = b"apk";
+    let temp = fixture(r#"{kind="android_apk",artifact={artifact="app"}}"#, bytes);
+    let db = MainDb::open(temp.path().join("main.db")).unwrap();
+    let mut runtime = GetterRuntime::new();
+    let issued = issue_action_from_registered_package_json_with_github_transport(
+        &mut runtime,
+        temp.path(),
+        &db,
+        &serde_json::json!({
+            "package_id": "android/com.example",
+            "installed_version": "1"
+        })
+        .to_string(),
+        None,
+    )
+    .unwrap();
+    let action_id = issued["action"]["action_id"].as_str().unwrap();
+    let task = submit_action_and_download_json_with_transport(
+        &mut runtime,
+        temp.path(),
+        &serde_json::json!({"action_id": action_id}).to_string(),
+        &Bytes(bytes.to_vec()),
+    )
+    .unwrap();
+    assert_eq!(task["status"], "running");
+    assert_eq!(task["phase"]["category"], "waiting_user");
+    assert_eq!(task["phase"]["reason"], "install_handoff");
+    let task_id = task["task_id"].as_str().unwrap();
+    let task_path = PathBuf::from(task["downloaded_file"]["local_path"].as_str().unwrap());
+
+    let package = temp.path().join("repo/official/android/com.example");
+    fs::write(
+        package.join("metadata.jsonc"),
+        r#"{"type":"android:app","android":{"package_name":"com.changed"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        package.join("Manifest"),
+        format!("{} app.apk\n", digest(b"changed")),
+    )
+    .unwrap();
+    fs::write(
+        package.join("1.lua"),
+        r#"#!/bin/upa-lua v1
+return package_version { updates = {{ version="99", artifacts={{name="app",file_name="app.apk",url="mock://changed"}}, install={kind="android_apk",artifact={artifact="app"}} }} }"#,
+    )
+    .unwrap();
+
+    let handoff = prepare_platform_install_for_task(&runtime, temp.path(), task_id).unwrap();
+
+    assert_eq!(handoff.task_id.as_deref(), Some(task_id));
+    assert_eq!(serde_json::to_value(&handoff).unwrap()["task_id"], task_id);
+    assert_eq!(handoff.package_id.to_string(), "android/com.example");
+    assert_eq!(handoff.repository_id, "official");
+    assert_eq!(handoff.package_version, "2");
+    let PlatformInstallRequest::AndroidApk { target, artifact } = handoff.request;
+    assert_eq!(target.package_name, "com.example");
+    assert_eq!(artifact.name, "app");
+    assert_eq!(artifact.path, task_path);
+    assert_eq!(artifact.sha256, digest(bytes));
+}
+
+#[test]
+fn task_scoped_prepare_rejects_staged_bytes_changed_after_getter_download() {
+    let bytes = b"apk";
+    let temp = fixture(r#"{kind="android_apk",artifact={artifact="app"}}"#, bytes);
+    let db = MainDb::open(temp.path().join("main.db")).unwrap();
+    let mut runtime = GetterRuntime::new();
+    let issued = issue_action_from_registered_package_json_with_github_transport(
+        &mut runtime,
+        temp.path(),
+        &db,
+        &serde_json::json!({
+            "package_id": "android/com.example",
+            "installed_version": "1"
+        })
+        .to_string(),
+        None,
+    )
+    .unwrap();
+    let action_id = issued["action"]["action_id"].as_str().unwrap();
+    let task = submit_action_and_download_json_with_transport(
+        &mut runtime,
+        temp.path(),
+        &serde_json::json!({"action_id": action_id}).to_string(),
+        &Bytes(bytes.to_vec()),
+    )
+    .unwrap();
+    let task_id = task["task_id"].as_str().unwrap();
+    let task_path = task["downloaded_file"]["local_path"].as_str().unwrap();
+    fs::write(task_path, b"bad").unwrap();
+
+    let error = prepare_platform_install_for_task(&runtime, temp.path(), task_id).unwrap_err();
+
+    assert_eq!(error.code(), "artifact.sha256_mismatch");
+}
+
+#[test]
+fn task_scoped_prepare_reports_missing_sealed_android_plan() {
+    let bytes = b"apk";
+    let temp = fixture(r#"{executable="fake-installer",args={}}"#, bytes);
+    let db = MainDb::open(temp.path().join("main.db")).unwrap();
+    let mut runtime = GetterRuntime::new();
+    let issued = issue_action_from_registered_package_json_with_github_transport(
+        &mut runtime,
+        temp.path(),
+        &db,
+        &serde_json::json!({
+            "package_id": "android/com.example",
+            "installed_version": "1"
+        })
+        .to_string(),
+        None,
+    )
+    .unwrap();
+    let action_id = issued["action"]["action_id"].as_str().unwrap();
+    let task = submit_action_and_download_json_with_transport(
+        &mut runtime,
+        temp.path(),
+        &serde_json::json!({"action_id": action_id}).to_string(),
+        &Bytes(bytes.to_vec()),
+    )
+    .unwrap();
+    let task_id = task["task_id"].as_str().unwrap();
+
+    let error = prepare_platform_install_for_task(&runtime, temp.path(), task_id).unwrap_err();
+
+    assert_eq!(error.code(), "installer.task_plan_missing");
+}
+
+#[test]
 fn prepares_android_apk_handoff_from_verified_staging() {
     let bytes = b"apk";
     let temp = fixture(r#"{kind="android_apk",artifact={artifact="app"}}"#, bytes);
@@ -140,6 +277,7 @@ fn prepares_android_apk_handoff_from_verified_staging() {
 
     assert_eq!(handoff.format, "getter-platform-install-handoff");
     assert_eq!(handoff.version, 1);
+    assert_eq!(handoff.task_id, None);
     assert_eq!(handoff.package_id.to_string(), "android/com.example");
     assert_eq!(handoff.repository_id.as_str(), "official");
     assert_eq!(handoff.package_version, "2");

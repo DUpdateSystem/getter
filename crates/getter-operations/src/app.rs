@@ -8,14 +8,20 @@ use getter_core::autogen::{validate_installed_inventory, InstalledInventory};
 use getter_core::manifest::{ManifestError, PackageManifest};
 #[cfg(feature = "lua")]
 use getter_core::repository::PACKAGE_MANIFEST_FILE;
-#[cfg(feature = "lua")]
-use getter_core::runtime::GetterRuntime;
 use getter_core::runtime::IssuedAction;
+#[cfg(feature = "lua")]
+use getter_core::runtime::{
+    GetterRuntime, RuntimeError, RuntimeTaskStatus, SealedAndroidApkInstallPlan, TaskPhase,
+    TaskPhaseCategory, TaskPhaseReason,
+};
 #[cfg(feature = "lua")]
 use getter_core::update::compare_versions;
 use getter_core::PackageId;
 #[cfg(feature = "lua")]
-use getter_core::{InstalledTarget, Installer, InstallerArg, InstallerCommand, UpdateArtifact};
+use getter_core::{
+    InstalledTarget, Installer, InstallerArg, InstallerCommand, ResolvedPackage, SelectedUpdate,
+    UpdateArtifact,
+};
 use getter_storage::{MainDb, StorageError, StoredTrackedPackage};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "lua")]
@@ -94,6 +100,17 @@ pub enum AppOperationError {
     #[error("installer artifact '{0}' is unsupported")]
     InstallerArtifactUnsupported(String),
     #[cfg(feature = "lua")]
+    #[error("runtime task '{task_id}' has no sealed Android APK install plan")]
+    TaskInstallPlanMissing { task_id: String },
+    #[cfg(feature = "lua")]
+    #[error("runtime task '{task_id}' has no staged install artifact")]
+    TaskInstallArtifactMissing { task_id: String },
+    #[cfg(feature = "lua")]
+    #[error(
+        "runtime task '{task_id}' staged artifact does not match its sealed install plan: {detail}"
+    )]
+    TaskInstallArtifactMismatch { task_id: String, detail: String },
+    #[cfg(feature = "lua")]
     #[error("installer executable '{0}' was not found")]
     InstallerCommandNotFound(String),
     #[cfg(feature = "lua")]
@@ -154,6 +171,12 @@ impl AppOperationError {
             #[cfg(feature = "lua")]
             Self::InstallerArtifactUnsupported(_) => "installer.artifact_unsupported",
             #[cfg(feature = "lua")]
+            Self::TaskInstallPlanMissing { .. } => "installer.task_plan_missing",
+            #[cfg(feature = "lua")]
+            Self::TaskInstallArtifactMissing { .. } => "installer.task_artifact_missing",
+            #[cfg(feature = "lua")]
+            Self::TaskInstallArtifactMismatch { .. } => "installer.task_artifact_mismatch",
+            #[cfg(feature = "lua")]
             Self::InstallerCommandNotFound(_) => "installer.command_not_found",
             #[cfg(feature = "lua")]
             Self::InstallerCommandSpawnFailed(_) => "installer.command_spawn_failed",
@@ -204,6 +227,18 @@ impl AppOperationError {
             #[cfg(feature = "lua")]
             Self::InstallerArtifactUnsupported(_) => "Getter installer artifact is unsupported",
             #[cfg(feature = "lua")]
+            Self::TaskInstallPlanMissing { .. } => {
+                "Getter runtime task has no sealed Android install plan"
+            }
+            #[cfg(feature = "lua")]
+            Self::TaskInstallArtifactMissing { .. } => {
+                "Getter runtime task has no staged install artifact"
+            }
+            #[cfg(feature = "lua")]
+            Self::TaskInstallArtifactMismatch { .. } => {
+                "Getter runtime task artifact does not match its sealed install plan"
+            }
+            #[cfg(feature = "lua")]
             Self::InstallerCommandNotFound(_) => "Getter installer command was not found",
             #[cfg(feature = "lua")]
             Self::InstallerCommandSpawnFailed(_) => "Getter installer command could not be started",
@@ -238,6 +273,9 @@ impl AppOperationError {
             | Self::InstallerArtifactDuplicate(_)
             | Self::InstallerTargetUnsupported
             | Self::InstallerArtifactUnsupported(_)
+            | Self::TaskInstallPlanMissing { .. }
+            | Self::TaskInstallArtifactMissing { .. }
+            | Self::TaskInstallArtifactMismatch { .. }
             | Self::InstallerCommandNotFound(_)
             | Self::InstallerCommandSpawnFailed(_)
             | Self::InstallerCommandFailed(_) => self.to_string(),
@@ -271,6 +309,8 @@ pub const PLATFORM_INSTALL_HANDOFF_VERSION: u32 = 1;
 pub struct PlatformInstallHandoff {
     pub format: String,
     pub version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
     pub package_id: PackageId,
     pub repository_id: String,
     pub package_version: String,
@@ -588,6 +628,178 @@ fn prepare_app_with_transports(
 }
 
 #[cfg(feature = "lua")]
+pub(crate) fn seal_android_apk_install_plan(
+    package_path: &Path,
+    package: &ResolvedPackage,
+    selected: Option<&SelectedUpdate>,
+) -> Result<Option<SealedAndroidApkInstallPlan>, AppOperationError> {
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let Some(declaration) = selected.candidate.install.clone() else {
+        return Ok(None);
+    };
+    let installer = declaration
+        .parse()
+        .map_err(|error| AppOperationError::InstallerSchema(error.to_string()))?;
+    let Installer::AndroidApk(installer) = installer else {
+        return Ok(None);
+    };
+    let [InstalledTarget::AndroidPackage { package_name }] = package.installed.as_slice() else {
+        return Err(AppOperationError::InstallerTargetUnsupported);
+    };
+    if package_name.trim().is_empty() {
+        return Err(AppOperationError::InstallerTargetUnsupported);
+    }
+    let declared_artifact = selected
+        .candidate
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == installer.artifact.artifact)
+        .ok_or_else(|| {
+            AppOperationError::InstallerArtifactUnknown(installer.artifact.artifact.clone())
+        })?;
+    if selected
+        .artifact
+        .as_ref()
+        .map(|artifact| artifact.name.as_str())
+        != Some(declared_artifact.name.as_str())
+    {
+        return Err(AppOperationError::InstallerArtifactUnsupported(
+            declared_artifact.name.clone(),
+        ));
+    }
+    let declared_file_name = declared_artifact
+        .file_name
+        .as_deref()
+        .unwrap_or(declared_artifact.name.as_str());
+    if !declared_file_name.to_ascii_lowercase().ends_with(".apk") {
+        return Err(AppOperationError::InstallerArtifactUnsupported(
+            declared_artifact.name.clone(),
+        ));
+    }
+    let manifest_content =
+        fs::read_to_string(package_path.join(PACKAGE_MANIFEST_FILE)).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                AppOperationError::ManifestMissing
+            } else {
+                AppOperationError::ArtifactIo(error)
+            }
+        })?;
+    let manifest =
+        PackageManifest::parse(&manifest_content).map_err(AppOperationError::ManifestInvalid)?;
+    let artifact_sha256 = manifest_artifact_digest(&manifest, declared_artifact)?;
+
+    Ok(Some(SealedAndroidApkInstallPlan {
+        repository_id: package.repository.to_string(),
+        package_version: selected.candidate.version.clone(),
+        package_name: package_name.clone(),
+        artifact_name: declared_artifact.name.clone(),
+        artifact_file_name: crate::download::safe_download_file_name(declared_file_name),
+        artifact_sha256,
+    }))
+}
+
+#[cfg(feature = "lua")]
+pub fn prepare_platform_install_for_task(
+    runtime: &GetterRuntime,
+    data_dir: &Path,
+    task_id: &str,
+) -> Result<PlatformInstallHandoff, AppOperationError> {
+    let task = runtime
+        .task(task_id)
+        .map_err(crate::runtime::RuntimeOperationError::from)?;
+    if task.status != RuntimeTaskStatus::Running
+        || task.phase
+            != TaskPhase::with_reason(
+                TaskPhaseCategory::WaitingUser,
+                TaskPhaseReason::InstallHandoff,
+            )
+    {
+        return Err(crate::runtime::RuntimeOperationError::from(
+            RuntimeError::TaskNotWaitingForUser(task_id.to_owned()),
+        )
+        .into());
+    }
+    let plan = runtime
+        .android_apk_install_plan(task_id)
+        .map_err(crate::runtime::RuntimeOperationError::from)?
+        .ok_or_else(|| AppOperationError::TaskInstallPlanMissing {
+            task_id: task_id.to_owned(),
+        })?;
+    let downloaded =
+        task.downloaded_file
+            .ok_or_else(|| AppOperationError::TaskInstallArtifactMissing {
+                task_id: task_id.to_owned(),
+            })?;
+    let expected_path =
+        data_dir
+            .join("downloads")
+            .join(task_id)
+            .join(crate::download::safe_download_file_name(
+                &plan.artifact_file_name,
+            ));
+    let actual_path = PathBuf::from(&downloaded.local_path);
+    if downloaded.file_name != plan.artifact_file_name || actual_path != expected_path {
+        return Err(AppOperationError::TaskInstallArtifactMismatch {
+            task_id: task_id.to_owned(),
+            detail: "file name or Getter-owned task path changed".to_owned(),
+        });
+    }
+    if downloaded.sha256 != plan.artifact_sha256 {
+        return Err(AppOperationError::Sha256Mismatch {
+            artifact: plan.artifact_name,
+            expected: plan.artifact_sha256,
+            actual: downloaded.sha256,
+        });
+    }
+    let metadata = fs::metadata(&actual_path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            AppOperationError::TaskInstallArtifactMissing {
+                task_id: task_id.to_owned(),
+            }
+        } else {
+            AppOperationError::ArtifactIo(error)
+        }
+    })?;
+    if metadata.len() != downloaded.size_bytes {
+        return Err(AppOperationError::TaskInstallArtifactMismatch {
+            task_id: task_id.to_owned(),
+            detail: "file size changed after Getter staging".to_owned(),
+        });
+    }
+    let current_sha256 = sha256_file(&actual_path)?;
+    if current_sha256 != plan.artifact_sha256 {
+        return Err(AppOperationError::Sha256Mismatch {
+            artifact: plan.artifact_name,
+            expected: plan.artifact_sha256,
+            actual: current_sha256,
+        });
+    }
+
+    Ok(PlatformInstallHandoff {
+        format: PLATFORM_INSTALL_HANDOFF_FORMAT.into(),
+        version: PLATFORM_INSTALL_HANDOFF_VERSION,
+        task_id: Some(task.task_id),
+        package_id: task.package_id,
+        repository_id: plan.repository_id,
+        package_version: plan.package_version,
+        request: PlatformInstallRequest::AndroidApk {
+            target: AndroidInstallTarget {
+                kind: "android".into(),
+                package_name: plan.package_name,
+            },
+            artifact: StagedArtifact {
+                name: plan.artifact_name,
+                path: actual_path,
+                sha256: plan.artifact_sha256,
+                status: "downloaded".to_owned(),
+            },
+        },
+    })
+}
+
+#[cfg(feature = "lua")]
 pub fn prepare_platform_install(
     data_dir: &Path,
     package_id: &PackageId,
@@ -650,6 +862,7 @@ pub fn prepare_platform_install_with_transports(
     Ok(PlatformInstallHandoff {
         format: PLATFORM_INSTALL_HANDOFF_FORMAT.into(),
         version: PLATFORM_INSTALL_HANDOFF_VERSION,
+        task_id: None,
         package_id: download.package_id,
         repository_id: download.repository_id,
         package_version: download.version,
@@ -867,17 +1080,16 @@ fn absolute_staging_root(data_dir: &Path) -> Result<PathBuf, AppOperationError> 
 }
 
 #[cfg(feature = "lua")]
-fn prepare_artifact(
-    downloads: &Path,
+fn manifest_artifact_digest(
     manifest: &PackageManifest,
     artifact: &UpdateArtifact,
-) -> Result<PreparedArtifact, AppOperationError> {
+) -> Result<String, AppOperationError> {
     let file_name = artifact
         .file_name
         .as_deref()
         .unwrap_or(artifact.name.as_str());
     let members = manifest.artifact_sha256_members(file_name);
-    let digest = if let Some(hint) = artifact.sha256.as_deref() {
+    if let Some(hint) = artifact.sha256.as_deref() {
         if hint.len() != 64 || !hint.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(AppOperationError::ArtifactSha256Invalid {
                 artifact: artifact.name.clone(),
@@ -890,24 +1102,32 @@ fn prepare_artifact(
                 file_name: file_name.to_owned(),
             });
         }
-        hint
-    } else {
-        match members {
-            [] => {
-                return Err(AppOperationError::ManifestArtifactMissing {
-                    artifact: artifact.name.clone(),
-                    file_name: file_name.to_owned(),
-                });
-            }
-            [digest] => digest.clone(),
-            _ => {
-                return Err(AppOperationError::ManifestArtifactAmbiguous {
-                    artifact: artifact.name.clone(),
-                    file_name: file_name.to_owned(),
-                });
-            }
-        }
-    };
+        return Ok(hint);
+    }
+    match members {
+        [] => Err(AppOperationError::ManifestArtifactMissing {
+            artifact: artifact.name.clone(),
+            file_name: file_name.to_owned(),
+        }),
+        [digest] => Ok(digest.clone()),
+        _ => Err(AppOperationError::ManifestArtifactAmbiguous {
+            artifact: artifact.name.clone(),
+            file_name: file_name.to_owned(),
+        }),
+    }
+}
+
+#[cfg(feature = "lua")]
+fn prepare_artifact(
+    downloads: &Path,
+    manifest: &PackageManifest,
+    artifact: &UpdateArtifact,
+) -> Result<PreparedArtifact, AppOperationError> {
+    let file_name = artifact
+        .file_name
+        .as_deref()
+        .unwrap_or(artifact.name.as_str());
+    let digest = manifest_artifact_digest(manifest, artifact)?;
     let name = sanitized_artifact_file_name(file_name);
     let final_path = downloads.join(format!("{digest}-{name}"));
     let temporary_path = PathBuf::from(format!(
@@ -920,6 +1140,14 @@ fn prepare_artifact(
         temporary_path,
         digest,
     })
+}
+
+#[cfg(feature = "lua")]
+fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[cfg(feature = "lua")]

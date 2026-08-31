@@ -301,7 +301,7 @@ struct RuntimeFileDownloadResult {
     sha256: String,
 }
 
-fn safe_download_file_name(raw: &str) -> String {
+pub(crate) fn safe_download_file_name(raw: &str) -> String {
     let base = raw
         .trim()
         .rsplit(['/', '\\'])
@@ -546,6 +546,7 @@ mod tests {
                 url: url.to_owned(),
                 file_name: file_name.to_owned(),
             }],
+            android_apk_install: None,
         }
     }
 

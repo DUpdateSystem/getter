@@ -17,10 +17,22 @@ pub struct PackageVersionLuaObject {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedAndroidApkInstallPlan {
+    pub repository_id: String,
+    pub package_version: String,
+    pub package_name: String,
+    pub artifact_name: String,
+    pub artifact_file_name: String,
+    pub artifact_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SealedActionPlan {
     pub package_id: PackageId,
     #[serde(default)]
     pub actions: Vec<UpdateAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub android_apk_install: Option<SealedAndroidApkInstallPlan>,
     pub lua_object: PackageVersionLuaObject,
 }
 
@@ -324,6 +336,13 @@ impl GetterRuntime {
         task_id: &str,
     ) -> Result<Option<RuntimeDownloadPlan>, RuntimeError> {
         Ok(self.task_ref(task_id)?.plan.download_action())
+    }
+
+    pub fn android_apk_install_plan(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<SealedAndroidApkInstallPlan>, RuntimeError> {
+        Ok(self.task_ref(task_id)?.plan.android_apk_install.clone())
     }
 
     pub fn start_task(&mut self, task_id: &str) -> Result<TaskSnapshot, RuntimeError> {
@@ -1027,6 +1046,14 @@ mod tests {
                     file: "app.apk".to_owned(),
                 },
             ],
+            android_apk_install: Some(SealedAndroidApkInstallPlan {
+                repository_id: "official".to_owned(),
+                package_version: "1.0.0".to_owned(),
+                package_name: "org.fdroid.fdroid".to_owned(),
+                artifact_name: "app.apk".to_owned(),
+                artifact_file_name: "app.apk".to_owned(),
+                artifact_sha256: "a".repeat(64),
+            }),
         }
     }
 
@@ -1042,6 +1069,7 @@ mod tests {
                 url: "https://example.invalid/file.bin".to_owned(),
                 file_name: "file.bin".to_owned(),
             }],
+            android_apk_install: None,
         }
     }
 }
