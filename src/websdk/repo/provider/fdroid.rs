@@ -225,16 +225,12 @@ impl FDroidProvider {
             match reader.read_event() {
                 Err(e) => return Err(Box::new(e)),
                 Ok(Event::Eof) => return Ok((package_id, Vec::new())),
-                Ok(Event::Start(e)) => {
-                    if e.name().as_ref() == b"application" {
-                        for attr in e.attributes().filter_map(|id| id.ok()) {
-                            if attr.key.as_ref() == b"id" {
-                                package_id =
-                                    String::from_utf8_lossy(attr.value.as_ref()).to_string();
-                                let releases =
-                                    FDroidProvider::decode_release_xml(reader, url).await?;
-                                return Ok((package_id, releases));
-                            }
+                Ok(Event::Start(e)) if e.name().as_ref() == b"application" => {
+                    for attr in e.attributes().filter_map(|id| id.ok()) {
+                        if attr.key.as_ref() == b"id" {
+                            package_id = String::from_utf8_lossy(attr.value.as_ref()).to_string();
+                            let releases = FDroidProvider::decode_release_xml(reader, url).await?;
+                            return Ok((package_id, releases));
                         }
                     }
                 }
