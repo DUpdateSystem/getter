@@ -124,7 +124,7 @@ static PROVIDER: Lazy<std::sync::Arc<rustls::crypto::CryptoProvider>> =
     Lazy::new(|| std::sync::Arc::new(rustls::crypto::ring::default_provider()));
 
 // Https config error wrapper error
-struct HttpsConfigError {
+pub(crate) struct HttpsConfigError {
     error: Box<dyn std::error::Error + Send + Sync>,
 }
 impl fmt::Display for HttpsConfigError {
@@ -143,7 +143,7 @@ impl std::error::Error for HttpsConfigError {
     }
 }
 
-fn https_config() -> Result<hyper_rustls::HttpsConnector<HttpConnector>, HttpsConfigError> {
+pub(crate) fn tls_client_config() -> Result<ClientConfig, HttpsConfigError> {
     let provider = PROVIDER.clone();
     let tls: rustls::ClientConfig;
     #[cfg(feature = "rustls-platform-verifier")]
@@ -184,8 +184,12 @@ fn https_config() -> Result<hyper_rustls::HttpsConnector<HttpConnector>, HttpsCo
     {
         compile_error!("No TLS backend enabled");
     }
+    Ok(tls)
+}
+
+fn https_config() -> Result<hyper_rustls::HttpsConnector<HttpConnector>, HttpsConfigError> {
     Ok(hyper_rustls::HttpsConnectorBuilder::new()
-        .with_tls_config(tls)
+        .with_tls_config(tls_client_config()?)
         .https_or_http()
         .enable_http1()
         .enable_http2()

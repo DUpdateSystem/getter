@@ -45,6 +45,9 @@ impl TraumaDownloader {
     /// * `timeout_seconds` - Timeout for each download in seconds
     pub fn new(max_concurrent: usize, retries: usize, timeout_seconds: u64) -> Self {
         let client = reqwest::Client::builder()
+            .tls_backend_preconfigured(
+                crate::utils::http::tls_client_config().expect("Failed to configure download TLS"),
+            )
             .timeout(std::time::Duration::from_secs(timeout_seconds))
             .build()
             .expect("Failed to create HTTP client");
