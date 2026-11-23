@@ -183,8 +183,8 @@ mod tests {
             .await;
 
         let id_map = AppDataMap::from([(ANDROID_APP_TYPE, "com.agoines.relaxhelp")]);
-        let proxy_url = format!("{} -> {}", LSPOSED_REPO_API_URL, server.url());
-        let hub_data = HubDataMap::from([("proxy_url", proxy_url.as_str())]);
+        let proxy_url = format!("{} -> {}/modules.json", LSPOSED_REPO_API_URL, server.url());
+        let hub_data = HubDataMap::from([(REVERSE_PROXY, proxy_url.as_str())]);
 
         let lsposed_provider = LsposedRepoProvider::new();
         assert!(lsposed_provider
@@ -206,8 +206,8 @@ mod tests {
             .await;
 
         let id_map = AppDataMap::from([(ANDROID_APP_TYPE, "com.agoines.relaxhelp")]);
-        let proxy_url = format!("{} -> {}", LSPOSED_REPO_API_URL, server.url());
-        let hub_data = HubDataMap::from([("proxy_url", proxy_url.as_str())]);
+        let proxy_url = format!("{} -> {}/modules.json", LSPOSED_REPO_API_URL, server.url());
+        let hub_data = HubDataMap::from([(REVERSE_PROXY, proxy_url.as_str())]);
 
         let lsposed_provider = LsposedRepoProvider::new();
         let releases = lsposed_provider
