@@ -30,6 +30,10 @@ static PROVIDER_MAP: Lazy<Arc<RwLock<ProviderMap>>> = Lazy::new(|| {
             Arc::new(FDroidProvider::new()) as Arc<dyn BaseProvider + Send + Sync>,
         ),
         (
+            "a2631981-6de7-4d31-a172-ae934f53bf51",
+            Arc::new(FDroidProvider::izzy_on_droid()) as Arc<dyn BaseProvider + Send + Sync>,
+        ),
+        (
             "a84e2fbe-1478-4db5-80ae-75d00454c7eb",
             Arc::new(GitLabProvider::new()) as Arc<dyn BaseProvider + Send + Sync>,
         ),
