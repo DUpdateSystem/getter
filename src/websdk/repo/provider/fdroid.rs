@@ -11,26 +11,48 @@ use super::super::data::release::*;
 use super::base_provider::*;
 
 const FDROID_URL: &str = "https://f-droid.org";
+const IZZY_ON_DROID_URL: &str = "https://apt.izzysoft.de/fdroid";
 
-pub struct FDroidProvider;
+pub struct FDroidProvider {
+    repository_url: &'static str,
+}
 
 impl FDroidProvider {
     pub fn new() -> FDroidProvider {
-        FDroidProvider {}
+        Self {
+            repository_url: FDROID_URL,
+        }
+    }
+
+    pub fn izzy_on_droid() -> Self {
+        Self {
+            repository_url: IZZY_ON_DROID_URL,
+        }
     }
 
     pub fn get_api_url(url: &str) -> String {
         format!("{}/repo/index.xml", url)
     }
 
-    fn get_urls(data_map: &DataMap) -> (String, String) {
-        let url = data_map.hub_data.get(KEY_REPO_URL).unwrap_or(&FDROID_URL);
+    fn get_urls(&self, data_map: &DataMap) -> (String, String) {
+        let url = data_map
+            .hub_data
+            .get(KEY_REPO_URL)
+            .unwrap_or(&self.repository_url);
         let api_url = if let Some(api_url) = data_map.hub_data.get(KEY_REPO_API_URL) {
             api_url.to_string()
         } else {
             FDroidProvider::get_api_url(url)
         };
         (url.to_string(), api_url)
+    }
+
+    fn availability_url(&self, url: &str, package: &str) -> String {
+        if self.repository_url == IZZY_ON_DROID_URL {
+            format!("{url}/index/apk/{package}/")
+        } else {
+            format!("{url}/packages/{package}")
+        }
     }
 }
 
@@ -43,12 +65,13 @@ impl BaseProvider for FDroidProvider {
         function_type: &FunctionType,
         data_map: &DataMap,
     ) -> Vec<String> {
-        let (url, api_url) = FDroidProvider::get_urls(data_map);
+        let (url, api_url) = self.get_urls(data_map);
         let id_map = data_map.app_data;
         match function_type {
             FunctionType::CheckAppAvailable => vec![format!(
-                "{}/packages/{}/HEAD",
-                url, id_map[ANDROID_APP_TYPE]
+                "{}/HEAD",
+                self.availability_url(&url, id_map[ANDROID_APP_TYPE])
+                    .trim_end_matches('/')
             )],
             FunctionType::GetLatestRelease | FunctionType::GetReleases => vec![api_url.to_string()],
             FunctionType::GetDownload => vec![],
@@ -56,10 +79,10 @@ impl BaseProvider for FDroidProvider {
     }
 
     async fn check_app_available(&self, fin: &FIn) -> FOut<bool> {
-        let (url, _) = FDroidProvider::get_urls(&fin.data_map);
+        let (url, _) = self.get_urls(&fin.data_map);
         let id_map = fin.data_map.app_data;
         let package_id = id_map[ANDROID_APP_TYPE];
-        let api_url = format!("{}/packages/{}", url, package_id);
+        let api_url = self.availability_url(&url, package_id);
         let api_url = self.replace_proxy_url(fin, &api_url);
 
         if let Ok(parsed_url) = api_url.parse() {
@@ -71,7 +94,7 @@ impl BaseProvider for FDroidProvider {
     }
 
     async fn get_releases(&self, fin: &FIn) -> FOut<Vec<ReleaseData>> {
-        let (url, api_url) = FDroidProvider::get_urls(&fin.data_map);
+        let (url, api_url) = self.get_urls(&fin.data_map);
         let id_map = fin.data_map.app_data;
         let package_id = id_map[ANDROID_APP_TYPE];
         let api_url = self.replace_proxy_url(fin, &api_url);
@@ -95,11 +118,12 @@ impl BaseProvider for FDroidProvider {
             return FOut::new_empty();
         }
         let mut releases_fout = Vec::new();
+        let download_base = format!("{url}/repo");
         if let Ok(content) = std::str::from_utf8(&index.unwrap()) {
             let mut reader = Reader::from_str(content.trim());
             loop {
                 let (xml_package_id, releases) =
-                    FDroidProvider::get_releases_from_xml(&mut reader, &url)
+                    FDroidProvider::get_releases_from_xml(&mut reader, &download_base)
                         .await
                         .unwrap();
                 if xml_package_id == package_id {
@@ -304,7 +328,12 @@ mod tests {
         let fout = provider.get_releases(&fin).await;
         let releases = fout.result.unwrap();
         assert!(!releases.is_empty());
-        assert_eq!(releases[0].assets[0].file_type, "apk");
+        let asset = &releases[0].assets[0];
+        assert_eq!(asset.file_type, "apk");
+        assert_eq!(
+            asset.download_url,
+            format!("{FDROID_URL}/repo/{}", asset.file_name)
+        );
     }
 
     #[tokio::test]
@@ -326,6 +355,45 @@ mod tests {
         let fout = provider.get_releases(&fin).await;
         let releases = fout.result.unwrap();
         assert!(releases.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_izzy_on_droid_availability_and_releases() {
+        let package_id = "app.ninesevennine.twofactorauthenticator";
+        let path = format!("/index/apk/{package_id}/");
+        let mut server = Server::new_async().await;
+        let availability = server
+            .mock("GET", path.as_str())
+            .with_status(200)
+            .create_async()
+            .await;
+        let index = server
+            .mock("GET", "/repo/index.xml")
+            .with_body(format!("<fdroid><application id=\"{package_id}\"><package><version>1.2sp3</version><apkname>{package_id}_10023003.apk</apkname></package></application></fdroid>"))
+            .create_async()
+            .await;
+        let app = AppDataMap::from([(ANDROID_APP_TYPE, package_id)]);
+        let route = format!("{IZZY_ON_DROID_URL} -> {}", server.url());
+        let hub = HubDataMap::from([(REVERSE_PROXY, route.as_str())]);
+        let request = FIn::new_with_frag(&app, &hub, None);
+        let uuid = "a2631981-6de7-4d31-a172-ae934f53bf51";
+        assert!(super::super::check_app_available(uuid, &request)
+            .await
+            .unwrap()
+            .result
+            .unwrap());
+        let releases = super::super::get_releases(uuid, &request)
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(releases[0].version_number, "1.2sp3");
+        assert_eq!(
+            releases[0].assets[0].download_url,
+            format!("{IZZY_ON_DROID_URL}/repo/{package_id}_10023003.apk")
+        );
+        availability.assert_async().await;
+        index.assert_async().await;
     }
 
     #[tokio::test]
